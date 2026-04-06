@@ -5,7 +5,7 @@ A single-binary Go CLI for managing multiple Claude OAuth sessions locally, with
 ## Install
 
 ```bash
-go install github.com/hbinhng/ccm@latest
+go install github.com/hbinhng/claude-credentials-manager@latest
 ```
 
 Or build from source:

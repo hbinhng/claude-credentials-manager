@@ -1,7 +1,7 @@
 package cmd
 
 import (
-	"github.com/hbinhng/ccm/internal/claude"
+	"github.com/hbinhng/claude-credentials-manager/internal/claude"
 	"github.com/spf13/cobra"
 )
 

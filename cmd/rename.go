@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"regexp"
 
-	"github.com/hbinhng/ccm/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
 
