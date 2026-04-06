@@ -1,5 +1,6 @@
 ccm
 *.exe
 dist/
-npm/bin/
+npm/bin/*
+!npm/bin/ccm
 .claire/
