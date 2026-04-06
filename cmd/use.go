@@ -18,9 +18,10 @@ func init() {
 }
 
 var useCmd = &cobra.Command{
-	Use:   "use <id-or-name>",
-	Short: "Activate a credential for Claude Code",
-	Args:  cobra.ExactArgs(1),
+	Use:               "use <id-or-name>",
+	Short:             "Activate a credential for Claude Code",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeCredential,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cred, err := store.Resolve(args[0])
 		if err != nil {
