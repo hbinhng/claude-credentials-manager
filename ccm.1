@@ -1,0 +1,178 @@
+.TH CCM 1 "April 2026" "ccm" "User Commands"
+.SH NAME
+ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
+.SH SYNOPSIS
+.B ccm
+.I command
+.RI [ arguments ]
+.SH DESCRIPTION
+.B ccm
+is a command-line tool for managing multiple Claude Code OAuth credentials.
+It allows you to authenticate multiple Claude accounts, switch between them,
+and manage their lifecycle (refresh, rename, remove).
+.PP
+Credentials are stored locally in
+.B ~/.ccm/
+as individual JSON files with permission 0600. When a credential is activated,
+.B ccm
+creates a symlink (or file copy on Windows) from
+.B ~/.claude/.credentials.json
+to
+.BR ~/.claude/ccm.credentials.json ,
+allowing Claude Code to use the selected account.
+.PP
+The original
+.B ~/.claude/.credentials.json
+is backed up to
+.B ~/.claude/bk.credentials.json
+on first activation and can be restored at any time.
+.SH COMMANDS
+.TP
+.B login
+Authenticate a new Claude account via OAuth (PKCE flow). Opens the browser
+for authorization; the user pastes the authorization code back into the terminal.
+A new credential is created with a UUID identifier.
+.TP
+.BI "use " id-or-name
+Activate a credential for Claude Code. Writes the selected credential to
+.B ~/.claude/ccm.credentials.json
+and symlinks
+.B ~/.claude/.credentials.json
+to it. If the token is expired, prompts to refresh before activation.
+.TP
+.B status
+List all credentials in a table showing: ID (8-char prefix), name,
+status (valid/expired), expiry time, usage quota, and an active marker (*).
+.TP
+.BI "refresh " id-or-name
+Refresh the OAuth token for a credential. If the credential is currently
+active, the active credential file is also updated.
+.TP
+.BI "logout " id-or-name
+Remove a credential. If the credential is currently active, prompts for
+confirmation unless
+.B \-f
+or
+.B \-\-force
+is specified.
+.TP
+.BI "rename " "id-or-name new-name"
+Assign a friendly name to a credential.
+.I new-name
+must be 1\(en32 characters consisting of alphanumeric characters, hyphens,
+or underscores. Names must be unique across all credentials.
+.TP
+.B restore
+Undo
+.BR "ccm use" :
+remove the symlink (or managed copy) and restore the original
+.B ~/.claude/.credentials.json
+from backup.
+.SH CREDENTIAL RESOLUTION
+All commands accepting
+.I id-or-name
+resolve the argument in the following order:
+.TP 4
+1.
+Exact UUID match
+.TP 4
+2.
+Exact name match
+.TP 4
+3.
+UUID prefix match (minimum 4 characters). If the prefix is ambiguous
+(matches multiple credentials), an error is returned listing all matches.
+.SH OPTIONS
+.TP
+.BR \-f ", " \-\-force
+(logout only) Skip confirmation when removing an active credential.
+.TP
+.BR \-h ", " \-\-help
+Show help for any command.
+.SH FILES
+.TP
+.B ~/.ccm/
+Credential storage directory. Each credential is stored as
+.IR <uuid> .credentials.json
+with permission 0600.
+.TP
+.B ~/.claude/.credentials.json
+Claude Code credential file. Managed by
+.B ccm
+as a symlink (Unix) or copy (Windows) when a credential is active.
+.TP
+.B ~/.claude/ccm.credentials.json
+Active credential written by
+.BR ccm .
+The symlink target on Unix systems.
+.TP
+.B ~/.claude/bk.credentials.json
+Backup of the original credential file, created on first
+.B ccm use
+invocation. Never overwritten if it already exists.
+.SH EXAMPLES
+Authenticate a new account:
+.PP
+.RS
+.nf
+$ ccm login
+.fi
+.RE
+.PP
+Give the credential a friendly name:
+.PP
+.RS
+.nf
+$ ccm rename a1b2c3d4 work
+.fi
+.RE
+.PP
+Switch to the "work" credential:
+.PP
+.RS
+.nf
+$ ccm use work
+.fi
+.RE
+.PP
+View all credentials and their status:
+.PP
+.RS
+.nf
+$ ccm status
+.fi
+.RE
+.PP
+Refresh an expired token:
+.PP
+.RS
+.nf
+$ ccm refresh work
+.fi
+.RE
+.PP
+Restore original credentials:
+.PP
+.RS
+.nf
+$ ccm restore
+.fi
+.RE
+.SH PLATFORM NOTES
+On Unix and macOS, credential switching uses symbolic links. On Windows,
+file copies are used instead, with a
+.B ccmSourceId
+marker in the JSON to track the active credential.
+.SH EXIT STATUS
+.TP
+.B 0
+Success.
+.TP
+.B 1
+An error occurred.
+.SH AUTHOR
+hbinhng <https://github.com/hbinhng>
+.SH SEE ALSO
+.BR claude (1)
+.PP
+Project repository: https://github.com/hbinhng/claude-credentials-manager
