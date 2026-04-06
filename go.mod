@@ -1,4 +1,4 @@
-module github.com/hbinhng/ccm
+module github.com/hbinhng/claude-credentials-manager
 
 go 1.24.0
 

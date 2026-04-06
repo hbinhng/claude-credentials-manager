@@ -6,8 +6,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/hbinhng/ccm/internal/claude"
-	"github.com/hbinhng/ccm/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/claude"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
 

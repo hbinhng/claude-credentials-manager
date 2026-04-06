@@ -8,8 +8,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/hbinhng/ccm/internal/oauth"
-	"github.com/hbinhng/ccm/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
 

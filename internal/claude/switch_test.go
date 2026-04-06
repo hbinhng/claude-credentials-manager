@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/hbinhng/ccm/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 // setupFakeHome creates a temp directory, sets HOME to it, creates ~/.claude/,

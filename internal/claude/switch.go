@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/hbinhng/ccm/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 func claudeDir() string {
