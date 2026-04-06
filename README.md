@@ -4,16 +4,48 @@ A single-binary Go CLI for managing multiple Claude OAuth sessions locally, with
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```bash
+brew install hbinhng/tap/ccm
+```
+
+This installs the `ccm` binary and the `man ccm` manual page.
+
+### Download binary
+
+Grab the latest release for your platform from [Releases](https://github.com/hbinhng/claude-credentials-manager/releases), then:
+
+```bash
+chmod +x ccm-*        # Linux / macOS
+sudo mv ccm-* /usr/local/bin/ccm
+```
+
+### Go install
+
 ```bash
 go install github.com/hbinhng/claude-credentials-manager@latest
 ```
 
-Or build from source:
+### Build from source
 
 ```bash
 git clone https://github.com/hbinhng/claude-credentials-manager.git
 cd claude-credentials-manager
 go build -o ccm .
+```
+
+### Shell completion
+
+```bash
+# zsh (add to ~/.zshrc)
+eval "$(ccm completion zsh)"
+
+# bash (add to ~/.bashrc)
+eval "$(ccm completion bash)"
+
+# fish
+ccm completion fish | source
 ```
 
 ## Commands
