@@ -1,0 +1,33 @@
+{
+  "name": "claude-credentials-manager",
+  "version": "1.0.2",
+  "description": "Claude Credentials Manager — manage multiple Claude OAuth sessions for Claude Code",
+  "bin": {
+    "ccm": "bin/ccm"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "keywords": [
+    "claude",
+    "claude-code",
+    "oauth",
+    "credentials",
+    "cli"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hbinhng/claude-credentials-manager.git"
+  },
+  "homepage": "https://github.com/hbinhng/claude-credentials-manager",
+  "license": "MIT"
+}

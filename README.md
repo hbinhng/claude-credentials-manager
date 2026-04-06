@@ -4,6 +4,12 @@ A single-binary Go CLI for managing multiple Claude OAuth sessions locally, with
 
 ## Install
 
+### npm
+
+```bash
+npm install -g claude-credentials-manager
+```
+
 ### Homebrew (macOS / Linux)
 
 ```bash

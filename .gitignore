@@ -1,3 +1,5 @@
 ccm
 *.exe
+dist/
+npm/bin/
 .claire/
