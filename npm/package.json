@@ -1,5 +1,5 @@
 {
-  "name": "claude-credentials-manager",
+  "name": "ccm-go",
   "version": "1.0.2",
   "description": "Claude Credentials Manager — manage multiple Claude OAuth sessions for Claude Code",
   "bin": {
