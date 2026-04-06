@@ -16,9 +16,10 @@ func init() {
 }
 
 var refreshCmd = &cobra.Command{
-	Use:   "refresh <id-or-name>",
-	Short: "Refresh OAuth token for a credential",
-	Args:  cobra.ExactArgs(1),
+	Use:               "refresh <id-or-name>",
+	Short:             "Refresh OAuth token for a credential",
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeCredential,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cred, err := store.Resolve(args[0])
 		if err != nil {

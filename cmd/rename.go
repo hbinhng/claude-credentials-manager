@@ -15,9 +15,10 @@ func init() {
 var namePattern = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 
 var renameCmd = &cobra.Command{
-	Use:   "rename <id-or-name> <new-name>",
-	Short: "Rename a credential",
-	Args:  cobra.ExactArgs(2),
+	Use:               "rename <id-or-name> <new-name>",
+	Short:             "Rename a credential",
+	Args:              cobra.ExactArgs(2),
+	ValidArgsFunction: completeCredential,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cred, err := store.Resolve(args[0])
 		if err != nil {
