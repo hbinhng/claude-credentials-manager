@@ -1,0 +1,2 @@
+# Include bin/ in published package (overrides .gitignore)
+!bin/

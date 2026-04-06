@@ -1,2 +1,4 @@
 ccm
 *.exe
+dist/
+npm/bin/
