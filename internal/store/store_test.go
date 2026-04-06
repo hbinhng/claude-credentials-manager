@@ -16,6 +16,7 @@ func setHome(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("USERPROFILE", tmp) // Windows compat
 	return tmp
 }
 
