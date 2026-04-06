@@ -1,0 +1,3 @@
+#!/bin/sh
+echo "ccm: binary not installed. Run: npm rebuild ccm-go" >&2
+exit 1
