@@ -32,7 +32,9 @@ fs.mkdirSync(binDir, { recursive: true });
 
 function download(url) {
   return new Promise((resolve, reject) => {
-    https.get(url, (res) => {
+    const opts = new URL(url);
+    opts.headers = { "User-Agent": "ccm-go" };
+    https.get(opts, (res) => {
       if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
         return download(res.headers.location).then(resolve, reject);
       }
