@@ -16,7 +16,9 @@ func setupFakeHome(t *testing.T) (claudeDir string, cleanup func()) {
 	t.Helper()
 	tmpHome := t.TempDir()
 	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpHome)
+	os.Setenv("USERPROFILE", tmpHome) // Windows compat
 
 	dir := filepath.Join(tmpHome, ".claude")
 	if err := os.MkdirAll(dir, 0700); err != nil {
@@ -25,6 +27,7 @@ func setupFakeHome(t *testing.T) (claudeDir string, cleanup func()) {
 
 	return dir, func() {
 		os.Setenv("HOME", oldHome)
+		os.Setenv("USERPROFILE", oldUserProfile)
 	}
 }
 
@@ -34,9 +37,12 @@ func setupFakeHomeNoClaudeDir(t *testing.T) (tmpHome string, cleanup func()) {
 	t.Helper()
 	tmpHome = t.TempDir()
 	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpHome)
+	os.Setenv("USERPROFILE", tmpHome)
 	return tmpHome, func() {
 		os.Setenv("HOME", oldHome)
+		os.Setenv("USERPROFILE", oldUserProfile)
 	}
 }
 
@@ -794,5 +800,175 @@ func TestUse_SwitchBetweenCredentials(t *testing.T) {
 	}
 	if !IsActive("cred-beta") {
 		t.Error("IsActive(\"cred-beta\") should be true")
+	}
+}
+
+// --- isCCMManaged content-based detection (Windows path) ---
+
+func TestIsCCMManaged_Symlink(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Write ccm.credentials.json
+	ccm := filepath.Join(dir, "ccm.credentials.json")
+	data, _ := json.Marshal(map[string]any{"ccmSourceId": "x"})
+	os.WriteFile(ccm, data, 0600)
+
+	// Symlink .credentials.json -> ccm.credentials.json
+	creds := filepath.Join(dir, ".credentials.json")
+	os.Symlink("ccm.credentials.json", creds)
+
+	if !isCCMManaged(creds) {
+		t.Error("isCCMManaged should return true for symlink to ccm.credentials.json")
+	}
+}
+
+func TestIsCCMManaged_RegularFileWithoutMarker(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	creds := filepath.Join(dir, ".credentials.json")
+	os.WriteFile(creds, []byte(`{"claudeAiOauth":{}}`), 0600)
+
+	if isCCMManaged(creds) {
+		t.Error("isCCMManaged should return false for regular file without ccmSourceId")
+	}
+}
+
+func TestIsCCMManaged_RegularFileWithMarker(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// This simulates a Windows-style copy with the ccmSourceId marker
+	creds := filepath.Join(dir, ".credentials.json")
+	data, _ := json.Marshal(map[string]any{
+		"ccmSourceId":   "test-id",
+		"claudeAiOauth": map[string]any{"accessToken": "tok"},
+	})
+	os.WriteFile(creds, data, 0600)
+
+	// On Linux useSymlinks()=true, so isCCMManaged checks for symlink first.
+	// A regular file with marker is NOT considered managed on symlink systems.
+	if useSymlinks() {
+		if isCCMManaged(creds) {
+			t.Error("on symlink system, regular file with marker should not be considered managed")
+		}
+	}
+}
+
+func TestIsCCMManaged_NonExistent(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	creds := filepath.Join(dir, ".credentials.json")
+	if isCCMManaged(creds) {
+		t.Error("isCCMManaged should return false for non-existent file")
+	}
+}
+
+// --- writeCredentialsFile (Windows copy path) ---
+
+func TestWriteCredentialsFile(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("copy-test")
+	if err := writeCredentialsFile(cred); err != nil {
+		t.Fatalf("writeCredentialsFile() error: %v", err)
+	}
+
+	creds := filepath.Join(dir, ".credentials.json")
+	data, err := os.ReadFile(creds)
+	if err != nil {
+		t.Fatalf("read .credentials.json: %v", err)
+	}
+
+	var parsed struct {
+		CCMSourceID   string          `json:"ccmSourceId"`
+		ClaudeAiOauth json.RawMessage `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if parsed.CCMSourceID != "copy-test" {
+		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "copy-test")
+	}
+	if parsed.ClaudeAiOauth == nil {
+		t.Error("claudeAiOauth should not be nil")
+	}
+}
+
+func TestWriteCredentialsFile_Permissions(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("perm-copy")
+	if err := writeCredentialsFile(cred); err != nil {
+		t.Fatalf("writeCredentialsFile() error: %v", err)
+	}
+
+	creds := filepath.Join(dir, ".credentials.json")
+	info, err := os.Stat(creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := info.Mode().Perm(); perm != 0600 {
+		t.Errorf("permissions = %o, want 0600", perm)
+	}
+}
+
+func TestWriteCredentialsFile_Overwrites(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred1 := makeCred("first-copy")
+	writeCredentialsFile(cred1)
+
+	cred2 := makeCred("second-copy")
+	writeCredentialsFile(cred2)
+
+	creds := filepath.Join(dir, ".credentials.json")
+	data, _ := os.ReadFile(creds)
+	var parsed struct {
+		CCMSourceID string `json:"ccmSourceId"`
+	}
+	json.Unmarshal(data, &parsed)
+	if parsed.CCMSourceID != "second-copy" {
+		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "second-copy")
+	}
+}
+
+// --- Restore with content-based detection ---
+
+func TestRestore_CCMManagedRegularFile(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Simulate Windows-style: .credentials.json is a regular file with ccmSourceId
+	// AND a symlink (so Restore detects it on Linux too)
+	backup := filepath.Join(dir, "bk.credentials.json")
+	os.WriteFile(backup, []byte(`{"original": true}`), 0600)
+
+	ccm := filepath.Join(dir, "ccm.credentials.json")
+	ccmData, _ := json.Marshal(map[string]any{
+		"ccmSourceId":   "x",
+		"claudeAiOauth": map[string]any{},
+	})
+	os.WriteFile(ccm, ccmData, 0600)
+
+	creds := filepath.Join(dir, ".credentials.json")
+	os.Symlink("ccm.credentials.json", creds)
+
+	if err := Restore(); err != nil {
+		t.Fatalf("Restore() error: %v", err)
+	}
+
+	// Original should be restored
+	data, err := os.ReadFile(creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != `{"original": true}` {
+		t.Errorf("restored content = %q, want original", data)
 	}
 }
