@@ -292,7 +292,7 @@ func TestFilePermissions(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 
-	info, err := os.Stat(credPath(cred.ID))
+	info, err := os.Stat(CredPath(cred.ID))
 	if err != nil {
 		t.Fatalf("stat credential file: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestDelete(t *testing.T) {
 		t.Fatalf("Delete: %v", err)
 	}
 
-	if _, err := os.Stat(credPath(cred.ID)); !os.IsNotExist(err) {
+	if _, err := os.Stat(CredPath(cred.ID)); !os.IsNotExist(err) {
 		t.Errorf("credential file should be gone, got err=%v", err)
 	}
 }

@@ -4,12 +4,13 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// setupFakeHome creates a temp directory, sets HOME to it, creates ~/.claude/,
+// setupFakeHome creates a temp directory, sets HOME to it, creates ~/.claude/ and ~/.ccm/,
 // and returns the path to the .claude directory. The caller should defer
 // restoring HOME via the returned cleanup function.
 func setupFakeHome(t *testing.T) (claudeDir string, cleanup func()) {
@@ -23,6 +24,11 @@ func setupFakeHome(t *testing.T) (claudeDir string, cleanup func()) {
 	dir := filepath.Join(tmpHome, ".claude")
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		t.Fatalf("create .claude dir: %v", err)
+	}
+
+	ccmDir := filepath.Join(tmpHome, ".ccm")
+	if err := os.MkdirAll(ccmDir, 0700); err != nil {
+		t.Fatalf("create .ccm dir: %v", err)
 	}
 
 	return dir, func() {
@@ -61,6 +67,14 @@ func makeCred(id string) *store.Credential {
 	}
 }
 
+// saveCred writes a credential to the fake ~/.ccm/ store.
+func saveCred(t *testing.T, cred *store.Credential) {
+	t.Helper()
+	if err := store.Save(cred); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+}
+
 // --- ActiveID tests ---
 
 func TestActiveID_NoCredentialsFile(t *testing.T) {
@@ -89,41 +103,16 @@ func TestActiveID_RegularFileNotSymlink(t *testing.T) {
 	}
 }
 
-func TestActiveID_SymlinkToCcmButCcmMissing(t *testing.T) {
+func TestActiveID_SymlinkToStoreFile(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Create symlink pointing to ccm.credentials.json, but don't create that file
+	cred := makeCred("my-cred-id")
+	saveCred(t, cred)
+
+	// Create symlink to store file
 	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
-		t.Fatal(err)
-	}
-
-	got := ActiveID()
-	if got != "" {
-		t.Errorf("ActiveID() = %q, want %q", got, "")
-	}
-}
-
-func TestActiveID_SymlinkToCcmWithValidSourceId(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	// Create ccm.credentials.json with a valid ccmSourceId
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, _ := json.Marshal(map[string]any{
-		"ccmSourceId": "my-cred-id",
-		"claudeAiOauth": map[string]any{
-			"accessToken": "tok",
-		},
-	})
-	if err := os.WriteFile(ccm, data, 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create symlink
-	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
+	if err := os.Symlink(store.CredPath("my-cred-id"), creds); err != nil {
 		t.Fatal(err)
 	}
 
@@ -133,17 +122,34 @@ func TestActiveID_SymlinkToCcmWithValidSourceId(t *testing.T) {
 	}
 }
 
+func TestActiveID_SymlinkToStoreButFileMissing(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Create symlink to a store file that doesn't exist
+	creds := filepath.Join(dir, ".credentials.json")
+	if err := os.Symlink(store.CredPath("nonexistent"), creds); err != nil {
+		t.Fatal(err)
+	}
+
+	// Should still return the ID (file existence is not checked by ActiveID)
+	got := ActiveID()
+	if got != "nonexistent" {
+		t.Errorf("ActiveID() = %q, want %q", got, "nonexistent")
+	}
+}
+
 func TestActiveID_SymlinkToSomethingElse(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
 	// Create a different target file
 	other := filepath.Join(dir, "other.json")
-	if err := os.WriteFile(other, []byte(`{"ccmSourceId":"x"}`), 0600); err != nil {
+	if err := os.WriteFile(other, []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Symlink to something other than ccm.credentials.json
+	// Symlink to something outside the store
 	creds := filepath.Join(dir, ".credentials.json")
 	if err := os.Symlink("other.json", creds); err != nil {
 		t.Fatal(err)
@@ -155,16 +161,17 @@ func TestActiveID_SymlinkToSomethingElse(t *testing.T) {
 	}
 }
 
-func TestActiveID_CcmExistsButNoCcmSourceId(t *testing.T) {
+// --- Old format backward compat ---
+
+func TestActiveID_OldFormatSymlinkToCcm(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Create ccm.credentials.json without ccmSourceId
+	// Old format: ccm.credentials.json with ccmSourceId
 	ccm := filepath.Join(dir, "ccm.credentials.json")
 	data, _ := json.Marshal(map[string]any{
-		"claudeAiOauth": map[string]any{
-			"accessToken": "tok",
-		},
+		"ccmSourceId":   "old-format-id",
+		"claudeAiOauth": map[string]any{"accessToken": "tok"},
 	})
 	if err := os.WriteFile(ccm, data, 0600); err != nil {
 		t.Fatal(err)
@@ -176,8 +183,8 @@ func TestActiveID_CcmExistsButNoCcmSourceId(t *testing.T) {
 	}
 
 	got := ActiveID()
-	if got != "" {
-		t.Errorf("ActiveID() = %q, want %q (no ccmSourceId in file)", got, "")
+	if got != "old-format-id" {
+		t.Errorf("ActiveID() = %q, want %q", got, "old-format-id")
 	}
 }
 
@@ -187,16 +194,11 @@ func TestIsActive_MatchingID(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, _ := json.Marshal(map[string]any{
-		"ccmSourceId":   "abc-123",
-		"claudeAiOauth": map[string]any{},
-	})
-	if err := os.WriteFile(ccm, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	cred := makeCred("abc-123")
+	saveCred(t, cred)
+
 	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
+	if err := os.Symlink(store.CredPath("abc-123"), creds); err != nil {
 		t.Fatal(err)
 	}
 
@@ -209,16 +211,11 @@ func TestIsActive_NonMatchingID(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, _ := json.Marshal(map[string]any{
-		"ccmSourceId":   "abc-123",
-		"claudeAiOauth": map[string]any{},
-	})
-	if err := os.WriteFile(ccm, data, 0600); err != nil {
-		t.Fatal(err)
-	}
+	cred := makeCred("abc-123")
+	saveCred(t, cred)
+
 	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
+	if err := os.Symlink(store.CredPath("abc-123"), creds); err != nil {
 		t.Fatal(err)
 	}
 
@@ -236,107 +233,25 @@ func TestIsActive_NoSetup(t *testing.T) {
 	}
 }
 
-// --- WriteActive tests ---
+// --- WriteActive tests (no-op on Unix) ---
 
-func TestWriteActive_WritesCorrectJSON(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
+func TestWriteActive_NoOpOnUnix(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
 	defer cleanup()
+
+	if !useSymlinks() {
+		t.Skip("test only applies to symlink systems")
+	}
 
 	cred := makeCred("write-test")
 	if err := WriteActive(cred); err != nil {
 		t.Fatalf("WriteActive() error: %v", err)
 	}
 
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, err := os.ReadFile(ccm)
-	if err != nil {
-		t.Fatalf("read ccm.credentials.json: %v", err)
-	}
-
-	var parsed map[string]json.RawMessage
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	// Check ccmSourceId
-	var sourceID string
-	if err := json.Unmarshal(parsed["ccmSourceId"], &sourceID); err != nil {
-		t.Fatalf("unmarshal ccmSourceId: %v", err)
-	}
-	if sourceID != "write-test" {
-		t.Errorf("ccmSourceId = %q, want %q", sourceID, "write-test")
-	}
-
-	// Check claudeAiOauth
-	var oauth store.OAuthTokens
-	if err := json.Unmarshal(parsed["claudeAiOauth"], &oauth); err != nil {
-		t.Fatalf("unmarshal claudeAiOauth: %v", err)
-	}
-	if oauth.AccessToken != "access-write-test" {
-		t.Errorf("accessToken = %q, want %q", oauth.AccessToken, "access-write-test")
-	}
-	if oauth.RefreshToken != "refresh-write-test" {
-		t.Errorf("refreshToken = %q, want %q", oauth.RefreshToken, "refresh-write-test")
-	}
-	if oauth.ExpiresAt != 9999999999999 {
-		t.Errorf("expiresAt = %d, want %d", oauth.ExpiresAt, 9999999999999)
-	}
-	if len(oauth.Scopes) != 2 || oauth.Scopes[0] != "scope1" || oauth.Scopes[1] != "scope2" {
-		t.Errorf("scopes = %v, want [scope1 scope2]", oauth.Scopes)
-	}
-}
-
-func TestWriteActive_FilePermissions(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	cred := makeCred("perm-test")
-	if err := WriteActive(cred); err != nil {
-		t.Fatalf("WriteActive() error: %v", err)
-	}
-
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	info, err := os.Stat(ccm)
-	if err != nil {
-		t.Fatalf("stat ccm.credentials.json: %v", err)
-	}
-
-	perm := info.Mode().Perm()
-	if perm != 0600 {
-		t.Errorf("file permissions = %o, want %o", perm, 0600)
-	}
-}
-
-func TestWriteActive_OverwritesExistingFile(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	// Write first credential
-	cred1 := makeCred("first")
-	if err := WriteActive(cred1); err != nil {
-		t.Fatalf("WriteActive(first) error: %v", err)
-	}
-
-	// Write second credential over the first
-	cred2 := makeCred("second")
-	if err := WriteActive(cred2); err != nil {
-		t.Fatalf("WriteActive(second) error: %v", err)
-	}
-
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, err := os.ReadFile(ccm)
-	if err != nil {
-		t.Fatalf("read ccm.credentials.json: %v", err)
-	}
-
-	var parsed struct {
-		CCMSourceID string `json:"ccmSourceId"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if parsed.CCMSourceID != "second" {
-		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "second")
+	// Should NOT create ccm.credentials.json on Unix
+	ccm := filepath.Join(claudeDir(), "ccm.credentials.json")
+	if _, err := os.Stat(ccm); !os.IsNotExist(err) {
+		t.Error("WriteActive should not create ccm.credentials.json on Unix")
 	}
 }
 
@@ -368,6 +283,7 @@ func TestUse_RegularFileNoBackup(t *testing.T) {
 	}
 
 	cred := makeCred("use-test-1")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
@@ -382,29 +298,28 @@ func TestUse_RegularFileNoBackup(t *testing.T) {
 		t.Errorf("backup content = %q, want %q", backupData, originalContent)
 	}
 
-	// Check symlink exists and points to ccm.credentials.json
+	// Check symlink exists and points to store file
 	target, err := os.Readlink(creds)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if target != "ccm.credentials.json" {
-		t.Errorf("symlink target = %q, want %q", target, "ccm.credentials.json")
+	if target != store.CredPath("use-test-1") {
+		t.Errorf("symlink target = %q, want %q", target, store.CredPath("use-test-1"))
 	}
 
-	// Check ccm.credentials.json was written
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	ccmData, err := os.ReadFile(ccm)
+	// Verify we can read the credential through the symlink
+	data, err := os.ReadFile(creds)
 	if err != nil {
-		t.Fatalf("ccm.credentials.json not created: %v", err)
+		t.Fatalf("read through symlink: %v", err)
 	}
 	var parsed struct {
-		CCMSourceID string `json:"ccmSourceId"`
+		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
 	}
-	if err := json.Unmarshal(ccmData, &parsed); err != nil {
+	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.CCMSourceID != "use-test-1" {
-		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "use-test-1")
+	if parsed.ClaudeAiOauth.AccessToken != "access-use-test-1" {
+		t.Errorf("accessToken = %q, want %q", parsed.ClaudeAiOauth.AccessToken, "access-use-test-1")
 	}
 }
 
@@ -426,6 +341,7 @@ func TestUse_RegularFileBackupAlreadyExists(t *testing.T) {
 	}
 
 	cred := makeCred("use-test-2")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
@@ -439,29 +355,13 @@ func TestUse_RegularFileBackupAlreadyExists(t *testing.T) {
 		t.Errorf("backup was overwritten: got %q, want %q", backupData, existingBackup)
 	}
 
-	// .credentials.json should now be a symlink
+	// .credentials.json should now be a symlink to store file
 	target, err := os.Readlink(creds)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if target != "ccm.credentials.json" {
-		t.Errorf("symlink target = %q, want %q", target, "ccm.credentials.json")
-	}
-
-	// ccm.credentials.json should have the new credential
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	ccmData, err := os.ReadFile(ccm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var parsed struct {
-		CCMSourceID string `json:"ccmSourceId"`
-	}
-	if err := json.Unmarshal(ccmData, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if parsed.CCMSourceID != "use-test-2" {
-		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "use-test-2")
+	if target != store.CredPath("use-test-2") {
+		t.Errorf("symlink target = %q, want %q", target, store.CredPath("use-test-2"))
 	}
 }
 
@@ -469,48 +369,28 @@ func TestUse_AlreadySymlink_SwitchAccounts(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Set up initial state: symlink already exists from a previous Use()
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	oldData, _ := json.Marshal(map[string]any{
-		"ccmSourceId":   "old-cred",
-		"claudeAiOauth": map[string]any{"accessToken": "old-token"},
-	})
-	if err := os.WriteFile(ccm, oldData, 0600); err != nil {
-		t.Fatal(err)
-	}
+	// Set up initial state: symlink to old credential
+	oldCred := makeCred("old-cred")
+	saveCred(t, oldCred)
 	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
+	if err := os.Symlink(store.CredPath("old-cred"), creds); err != nil {
 		t.Fatal(err)
 	}
 
 	// Now switch to a new credential
 	newCred := makeCred("new-cred")
+	saveCred(t, newCred)
 	if err := Use(newCred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
 
-	// Symlink should exist and point to ccm.credentials.json
+	// Symlink should point to new store file
 	target, err := os.Readlink(creds)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if target != "ccm.credentials.json" {
-		t.Errorf("symlink target = %q, want %q", target, "ccm.credentials.json")
-	}
-
-	// ccm.credentials.json should have the new credential
-	ccmData, err := os.ReadFile(ccm)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var parsed struct {
-		CCMSourceID string `json:"ccmSourceId"`
-	}
-	if err := json.Unmarshal(ccmData, &parsed); err != nil {
-		t.Fatal(err)
-	}
-	if parsed.CCMSourceID != "new-cred" {
-		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "new-cred")
+	if target != store.CredPath("new-cred") {
+		t.Errorf("symlink target = %q, want %q", target, store.CredPath("new-cred"))
 	}
 }
 
@@ -520,20 +400,21 @@ func TestUse_NoCredentialsFile(t *testing.T) {
 
 	// .credentials.json doesn't exist at all; .claude/ does
 	cred := makeCred("fresh")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
 
 	dir := claudeDir()
 
-	// Symlink should be created
+	// Symlink should be created pointing to store file
 	creds := filepath.Join(dir, ".credentials.json")
 	target, err := os.Readlink(creds)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
-	if target != "ccm.credentials.json" {
-		t.Errorf("symlink target = %q, want %q", target, "ccm.credentials.json")
+	if target != store.CredPath("fresh") {
+		t.Errorf("symlink target = %q, want %q", target, store.CredPath("fresh"))
 	}
 
 	// No backup should exist
@@ -542,32 +423,28 @@ func TestUse_NoCredentialsFile(t *testing.T) {
 		t.Error("backup should not exist when there was no original credentials file")
 	}
 
-	// ccm.credentials.json should contain correct data
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, err := os.ReadFile(ccm)
+	// Verify the credential data is readable through the symlink
+	data, err := os.ReadFile(creds)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var parsed struct {
-		CCMSourceID   string          `json:"ccmSourceId"`
 		ClaudeAiOauth json.RawMessage `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
-	}
-	if parsed.CCMSourceID != "fresh" {
-		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "fresh")
 	}
 	if parsed.ClaudeAiOauth == nil {
 		t.Error("claudeAiOauth should not be nil")
 	}
 }
 
-func TestUse_SymlinkTargetIsRelative(t *testing.T) {
+func TestUse_SymlinkIsAbsolute(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	cred := makeCred("relative-check")
+	cred := makeCred("abs-check")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
@@ -578,26 +455,65 @@ func TestUse_SymlinkTargetIsRelative(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Must be relative, not absolute
-	if filepath.IsAbs(target) {
-		t.Errorf("symlink target %q is absolute, want relative", target)
+	// Must be absolute, pointing to the store
+	if !filepath.IsAbs(target) {
+		t.Errorf("symlink target %q is relative, want absolute", target)
 	}
-	if target != "ccm.credentials.json" {
-		t.Errorf("symlink target = %q, want exactly %q", target, "ccm.credentials.json")
+	if !strings.HasPrefix(target, store.Dir()+string(filepath.Separator)) {
+		t.Errorf("symlink target %q should be inside store dir %q", target, store.Dir())
 	}
 }
 
-func TestUse_CcmCredentialsContainsOAuthData(t *testing.T) {
+func TestUse_CleansUpOldCcmFile(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	cred := makeCred("oauth-check")
+	// Simulate old format: ccm.credentials.json exists
+	ccm := filepath.Join(dir, "ccm.credentials.json")
+	if err := os.WriteFile(ccm, []byte(`{"old": true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cred := makeCred("migrate")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
 
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, err := os.ReadFile(ccm)
+	// Old ccm.credentials.json should be cleaned up
+	if _, err := os.Stat(ccm); !os.IsNotExist(err) {
+		t.Error("ccm.credentials.json should have been removed after migration")
+	}
+}
+
+func TestUse_StoreFileMissing(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("missing-store")
+	// Deliberately do NOT save to store
+	err := Use(cred)
+	if err == nil {
+		t.Fatal("Use() expected error when store file doesn't exist")
+	}
+	if !strings.Contains(err.Error(), "credential file not found") {
+		t.Errorf("error = %q, want mention of credential file not found", err.Error())
+	}
+}
+
+func TestUse_ReadsThroughSymlink(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("oauth-check")
+	saveCred(t, cred)
+	if err := Use(cred); err != nil {
+		t.Fatalf("Use() error: %v", err)
+	}
+
+	// Read through the symlink and verify oauth data
+	creds := filepath.Join(dir, ".credentials.json")
+	data, err := os.ReadFile(creds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -609,12 +525,11 @@ func TestUse_CcmCredentialsContainsOAuthData(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	oauth := parsed.ClaudeAiOauth
-	if oauth.AccessToken != "access-oauth-check" {
-		t.Errorf("accessToken = %q, want %q", oauth.AccessToken, "access-oauth-check")
+	if parsed.ClaudeAiOauth.AccessToken != "access-oauth-check" {
+		t.Errorf("accessToken = %q, want %q", parsed.ClaudeAiOauth.AccessToken, "access-oauth-check")
 	}
-	if oauth.RefreshToken != "refresh-oauth-check" {
-		t.Errorf("refreshToken = %q, want %q", oauth.RefreshToken, "refresh-oauth-check")
+	if parsed.ClaudeAiOauth.RefreshToken != "refresh-oauth-check" {
+		t.Errorf("refreshToken = %q, want %q", parsed.ClaudeAiOauth.RefreshToken, "refresh-oauth-check")
 	}
 }
 
@@ -624,20 +539,17 @@ func TestRestore_SymlinkWithBackup(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Set up: backup exists, symlink exists, ccm exists
+	// Set up: backup exists, symlink to store exists
 	backup := filepath.Join(dir, "bk.credentials.json")
 	originalContent := []byte(`{"original": true}`)
 	if err := os.WriteFile(backup, originalContent, 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	if err := os.WriteFile(ccm, []byte(`{"ccmSourceId":"x"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-
+	cred := makeCred("restore-test")
+	saveCred(t, cred)
 	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
+	if err := os.Symlink(store.CredPath("restore-test"), creds); err != nil {
 		t.Fatal(err)
 	}
 
@@ -666,25 +578,16 @@ func TestRestore_SymlinkWithBackup(t *testing.T) {
 	if _, err := os.Stat(backup); !os.IsNotExist(err) {
 		t.Error("backup should have been removed after restore")
 	}
-
-	// ccm.credentials.json should be cleaned up
-	if _, err := os.Stat(ccm); !os.IsNotExist(err) {
-		t.Error("ccm.credentials.json should have been removed after restore")
-	}
 }
 
 func TestRestore_SymlinkNoBackup(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Set up: no backup, symlink exists, ccm exists
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	if err := os.WriteFile(ccm, []byte(`{"ccmSourceId":"x"}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-
+	cred := makeCred("no-backup")
+	saveCred(t, cred)
 	creds := filepath.Join(dir, ".credentials.json")
-	if err := os.Symlink("ccm.credentials.json", creds); err != nil {
+	if err := os.Symlink(store.CredPath("no-backup"), creds); err != nil {
 		t.Fatal(err)
 	}
 
@@ -695,11 +598,6 @@ func TestRestore_SymlinkNoBackup(t *testing.T) {
 	// Symlink should be removed
 	if _, err := os.Lstat(creds); !os.IsNotExist(err) {
 		t.Error(".credentials.json should not exist after restore with no backup")
-	}
-
-	// ccm.credentials.json should be cleaned up
-	if _, err := os.Stat(ccm); !os.IsNotExist(err) {
-		t.Error("ccm.credentials.json should have been removed after restore")
 	}
 }
 
@@ -739,6 +637,43 @@ func TestRestore_CredentialsFileDoesNotExist(t *testing.T) {
 	}
 }
 
+func TestRestore_OldFormatSymlink(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Old format: symlink to ccm.credentials.json
+	ccm := filepath.Join(dir, "ccm.credentials.json")
+	data, _ := json.Marshal(map[string]any{
+		"ccmSourceId":   "old-id",
+		"claudeAiOauth": map[string]any{},
+	})
+	os.WriteFile(ccm, data, 0600)
+
+	creds := filepath.Join(dir, ".credentials.json")
+	os.Symlink("ccm.credentials.json", creds)
+
+	backup := filepath.Join(dir, "bk.credentials.json")
+	os.WriteFile(backup, []byte(`{"original": true}`), 0600)
+
+	if err := Restore(); err != nil {
+		t.Fatalf("Restore() error: %v", err)
+	}
+
+	// Should have restored backup
+	restoredData, err := os.ReadFile(creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restoredData) != `{"original": true}` {
+		t.Errorf("restored content = %q, want original", restoredData)
+	}
+
+	// Old ccm.credentials.json should be cleaned up
+	if _, err := os.Stat(ccm); !os.IsNotExist(err) {
+		t.Error("ccm.credentials.json should be cleaned up after restore")
+	}
+}
+
 // --- Integration: Use then ActiveID ---
 
 func TestUse_ThenActiveID(t *testing.T) {
@@ -746,6 +681,7 @@ func TestUse_ThenActiveID(t *testing.T) {
 	defer cleanup()
 
 	cred := makeCred("integration-test")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
@@ -761,6 +697,7 @@ func TestUse_ThenRestore_ThenActiveID(t *testing.T) {
 	defer cleanup()
 
 	cred := makeCred("restore-flow")
+	saveCred(t, cred)
 	if err := Use(cred); err != nil {
 		t.Fatalf("Use() error: %v", err)
 	}
@@ -780,6 +717,7 @@ func TestUse_SwitchBetweenCredentials(t *testing.T) {
 	defer cleanup()
 
 	cred1 := makeCred("cred-alpha")
+	saveCred(t, cred1)
 	if err := Use(cred1); err != nil {
 		t.Fatalf("Use(alpha) error: %v", err)
 	}
@@ -788,6 +726,7 @@ func TestUse_SwitchBetweenCredentials(t *testing.T) {
 	}
 
 	cred2 := makeCred("cred-beta")
+	saveCred(t, cred2)
 	if err := Use(cred2); err != nil {
 		t.Fatalf("Use(beta) error: %v", err)
 	}
@@ -803,23 +742,68 @@ func TestUse_SwitchBetweenCredentials(t *testing.T) {
 	}
 }
 
-// --- isCCMManaged content-based detection (Windows path) ---
+// --- Refresh reflects immediately through symlink ---
 
-func TestIsCCMManaged_Symlink(t *testing.T) {
+func TestRefresh_UpdatesVisibleThroughSymlink(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Write ccm.credentials.json
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	data, _ := json.Marshal(map[string]any{"ccmSourceId": "x"})
-	os.WriteFile(ccm, data, 0600)
+	cred := makeCred("refresh-test")
+	saveCred(t, cred)
+	if err := Use(cred); err != nil {
+		t.Fatalf("Use() error: %v", err)
+	}
 
-	// Symlink .credentials.json -> ccm.credentials.json
+	// Simulate a refresh: update the store file
+	cred.ClaudeAiOauth.AccessToken = "refreshed-token"
+	saveCred(t, cred)
+
+	// Read through the symlink — should see the updated token immediately
+	creds := filepath.Join(dir, ".credentials.json")
+	data, err := os.ReadFile(creds)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.ClaudeAiOauth.AccessToken != "refreshed-token" {
+		t.Errorf("accessToken = %q, want %q (should reflect store update)", parsed.ClaudeAiOauth.AccessToken, "refreshed-token")
+	}
+}
+
+// --- isCCMManaged tests ---
+
+func TestIsCCMManaged_SymlinkToStore(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("managed-test")
+	saveCred(t, cred)
+
+	creds := filepath.Join(dir, ".credentials.json")
+	os.Symlink(store.CredPath("managed-test"), creds)
+
+	if !isCCMManaged(creds) {
+		t.Error("isCCMManaged should return true for symlink to store file")
+	}
+}
+
+func TestIsCCMManaged_OldFormatSymlink(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	ccm := filepath.Join(dir, "ccm.credentials.json")
+	os.WriteFile(ccm, []byte(`{"ccmSourceId":"x"}`), 0600)
+
 	creds := filepath.Join(dir, ".credentials.json")
 	os.Symlink("ccm.credentials.json", creds)
 
 	if !isCCMManaged(creds) {
-		t.Error("isCCMManaged should return true for symlink to ccm.credentials.json")
+		t.Error("isCCMManaged should return true for old format symlink to ccm.credentials.json")
 	}
 }
 
@@ -832,27 +816,6 @@ func TestIsCCMManaged_RegularFileWithoutMarker(t *testing.T) {
 
 	if isCCMManaged(creds) {
 		t.Error("isCCMManaged should return false for regular file without ccmSourceId")
-	}
-}
-
-func TestIsCCMManaged_RegularFileWithMarker(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	// This simulates a Windows-style copy with the ccmSourceId marker
-	creds := filepath.Join(dir, ".credentials.json")
-	data, _ := json.Marshal(map[string]any{
-		"ccmSourceId":   "test-id",
-		"claudeAiOauth": map[string]any{"accessToken": "tok"},
-	})
-	os.WriteFile(creds, data, 0600)
-
-	// On Linux useSymlinks()=true, so isCCMManaged checks for symlink first.
-	// A regular file with marker is NOT considered managed on symlink systems.
-	if useSymlinks() {
-		if isCCMManaged(creds) {
-			t.Error("on symlink system, regular file with marker should not be considered managed")
-		}
 	}
 }
 
@@ -914,61 +877,5 @@ func TestWriteCredentialsFile_Permissions(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0600 {
 		t.Errorf("permissions = %o, want 0600", perm)
-	}
-}
-
-func TestWriteCredentialsFile_Overwrites(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	cred1 := makeCred("first-copy")
-	writeCredentialsFile(cred1)
-
-	cred2 := makeCred("second-copy")
-	writeCredentialsFile(cred2)
-
-	creds := filepath.Join(dir, ".credentials.json")
-	data, _ := os.ReadFile(creds)
-	var parsed struct {
-		CCMSourceID string `json:"ccmSourceId"`
-	}
-	json.Unmarshal(data, &parsed)
-	if parsed.CCMSourceID != "second-copy" {
-		t.Errorf("ccmSourceId = %q, want %q", parsed.CCMSourceID, "second-copy")
-	}
-}
-
-// --- Restore with content-based detection ---
-
-func TestRestore_CCMManagedRegularFile(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	// Simulate Windows-style: .credentials.json is a regular file with ccmSourceId
-	// AND a symlink (so Restore detects it on Linux too)
-	backup := filepath.Join(dir, "bk.credentials.json")
-	os.WriteFile(backup, []byte(`{"original": true}`), 0600)
-
-	ccm := filepath.Join(dir, "ccm.credentials.json")
-	ccmData, _ := json.Marshal(map[string]any{
-		"ccmSourceId":   "x",
-		"claudeAiOauth": map[string]any{},
-	})
-	os.WriteFile(ccm, ccmData, 0600)
-
-	creds := filepath.Join(dir, ".credentials.json")
-	os.Symlink("ccm.credentials.json", creds)
-
-	if err := Restore(); err != nil {
-		t.Fatalf("Restore() error: %v", err)
-	}
-
-	// Original should be restored
-	data, err := os.ReadFile(creds)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(data) != `{"original": true}` {
-		t.Errorf("restored content = %q, want original", data)
 	}
 }

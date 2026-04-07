@@ -60,7 +60,7 @@ var refreshCmd = &cobra.Command{
 			newExpiry.Local().Format("15:04:05"),
 		)
 
-		// If this credential is the active one, update ~/.claude/ccm.credentials.json
+		// If this credential is the active one, sync the active file (Windows only; no-op on Unix)
 		if claude.IsActive(cred.ID) {
 			if err := claude.WriteActive(cred); err != nil {
 				fmt.Printf("Warning: could not update active credential: %v\n", err)

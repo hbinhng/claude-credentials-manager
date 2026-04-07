@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
@@ -23,6 +24,7 @@ func backupPath() string {
 	return filepath.Join(claudeDir(), "bk.credentials.json")
 }
 
+// ccmPath returns the path to the old intermediate file (used for cleanup/migration).
 func ccmPath() string {
 	return filepath.Join(claudeDir(), "ccm.credentials.json")
 }
@@ -31,13 +33,30 @@ func useSymlinks() bool {
 	return runtime.GOOS != "windows"
 }
 
+// symlinkPointsToStore checks if the symlink target is inside the CCM store directory.
+func symlinkPointsToStore(target string) bool {
+	storeDir := store.Dir()
+	return strings.HasPrefix(target, storeDir+string(filepath.Separator))
+}
+
 // isCCMManaged checks whether .credentials.json is managed by CCM.
-// On Unix this means it's a symlink to ccm.credentials.json.
+// On Unix this means it's a symlink to a file in ~/.ccm/.
 // On Windows (no symlinks) it checks for the ccmSourceId marker inside the file.
 func isCCMManaged(path string) bool {
 	if useSymlinks() {
 		target, err := os.Readlink(path)
-		return err == nil && target == "ccm.credentials.json"
+		if err != nil {
+			return false
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		if symlinkPointsToStore(target) {
+			return true
+		}
+		// Old format: relative symlink to ccm.credentials.json
+		raw, _ := os.Readlink(path)
+		return raw == "ccm.credentials.json"
 	}
 	// Windows: check file content for marker
 	data, err := os.ReadFile(path)
@@ -52,18 +71,44 @@ func isCCMManaged(path string) bool {
 
 // ActiveID returns the credential ID currently active, or empty string.
 func ActiveID() string {
-	if !isCCMManaged(credentialsPath()) {
+	path := credentialsPath()
+	if !isCCMManaged(path) {
 		return ""
 	}
-	// On symlink systems, read from ccm.credentials.json (the symlink target).
-	// On Windows, .credentials.json IS the copy, so read it directly.
-	var data []byte
-	var err error
+
 	if useSymlinks() {
-		data, err = os.ReadFile(ccmPath())
-	} else {
-		data, err = os.ReadFile(credentialsPath())
+		target, err := os.Readlink(path)
+		if err != nil {
+			return ""
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		// New format: extract ID from store path
+		if symlinkPointsToStore(target) {
+			base := filepath.Base(target)
+			id := strings.TrimSuffix(base, ".credentials.json")
+			if id != "" && id != base {
+				return id
+			}
+			return ""
+		}
+		// Old format fallback: read ccmSourceId from ccm.credentials.json
+		data, err := os.ReadFile(ccmPath())
+		if err != nil {
+			return ""
+		}
+		var wrapper struct {
+			CCMSourceID string `json:"ccmSourceId"`
+		}
+		if json.Unmarshal(data, &wrapper) == nil {
+			return wrapper.CCMSourceID
+		}
+		return ""
 	}
+
+	// Windows: read ccmSourceId from .credentials.json
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
 	}
@@ -81,21 +126,14 @@ func IsActive(id string) bool {
 	return ActiveID() == id
 }
 
-// WriteActive writes the credential's OAuth tokens to ~/.claude/ccm.credentials.json.
+// WriteActive updates the active credential file after a refresh.
+// On Unix: no-op since .credentials.json symlinks directly to the store file.
+// On Windows: writes a wrapper JSON to .credentials.json.
 func WriteActive(cred *store.Credential) error {
-	wrapper := map[string]any{
-		"claudeAiOauth": cred.ClaudeAiOauth,
-		"ccmSourceId":   cred.ID,
+	if useSymlinks() {
+		return nil
 	}
-	data, err := json.MarshalIndent(wrapper, "", "  ")
-	if err != nil {
-		return err
-	}
-	tmp := ccmPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, ccmPath())
+	return writeCredentialsFile(cred)
 }
 
 // writeCredentialsFile writes the ccm wrapper JSON directly to .credentials.json.
@@ -117,8 +155,8 @@ func writeCredentialsFile(cred *store.Credential) error {
 }
 
 // Use activates a credential for Claude Code.
-// On Unix: writes ccm.credentials.json and symlinks .credentials.json to it.
-// On Windows: writes ccm.credentials.json and copies the content to .credentials.json.
+// On Unix: symlinks .credentials.json directly to ~/.ccm/{id}.credentials.json.
+// On Windows: copies the content to .credentials.json with a ccmSourceId marker.
 func Use(cred *store.Credential) error {
 	dir := claudeDir()
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -150,16 +188,20 @@ func Use(cred *store.Credential) error {
 		}
 	}
 
-	// Write ccm.credentials.json
-	if err := WriteActive(cred); err != nil {
-		return fmt.Errorf("write ccm credentials: %w", err)
-	}
-
 	if useSymlinks() {
-		// Unix: create relative symlink .credentials.json -> ccm.credentials.json
-		if err := os.Symlink("ccm.credentials.json", target); err != nil {
+		// Verify the store file exists
+		storePath := store.CredPath(cred.ID)
+		if _, err := os.Stat(storePath); os.IsNotExist(err) {
+			return fmt.Errorf("credential file not found: %s", storePath)
+		}
+
+		// Symlink .credentials.json directly to ~/.ccm/{id}.credentials.json
+		if err := os.Symlink(storePath, target); err != nil {
 			return fmt.Errorf("create symlink: %w", err)
 		}
+
+		// Clean up old intermediate file if present (migration)
+		os.Remove(ccmPath())
 	} else {
 		// Windows: copy content directly to .credentials.json
 		if err := writeCredentialsFile(cred); err != nil {
@@ -174,7 +216,6 @@ func Use(cred *store.Credential) error {
 func Restore() error {
 	target := credentialsPath()
 	backup := backupPath()
-	ccm := ccmPath()
 
 	info, err := os.Lstat(target)
 	if err != nil {
@@ -205,8 +246,8 @@ func Restore() error {
 		fmt.Println("No backup found. ~/.claude/.credentials.json removed.")
 	}
 
-	// Clean up ccm.credentials.json
-	os.Remove(ccm)
+	// Clean up old ccm.credentials.json if present
+	os.Remove(ccmPath())
 
 	return nil
 }
