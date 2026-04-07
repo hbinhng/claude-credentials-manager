@@ -17,7 +17,7 @@ func EnsureDir() error {
 	return os.MkdirAll(Dir(), 0700)
 }
 
-func credPath(id string) string {
+func CredPath(id string) string {
 	return filepath.Join(Dir(), id+".credentials.json")
 }
 
@@ -29,15 +29,15 @@ func Save(cred *Credential) error {
 	if err != nil {
 		return err
 	}
-	tmp := credPath(cred.ID) + ".tmp"
+	tmp := CredPath(cred.ID) + ".tmp"
 	if err := os.WriteFile(tmp, data, 0600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, credPath(cred.ID))
+	return os.Rename(tmp, CredPath(cred.ID))
 }
 
 func Load(id string) (*Credential, error) {
-	data, err := os.ReadFile(credPath(id))
+	data, err := os.ReadFile(CredPath(id))
 	if err != nil {
 		return nil, err
 	}
@@ -49,7 +49,7 @@ func Load(id string) (*Credential, error) {
 }
 
 func Delete(id string) error {
-	return os.Remove(credPath(id))
+	return os.Remove(CredPath(id))
 }
 
 func List() ([]*Credential, error) {
