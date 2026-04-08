@@ -37,9 +37,14 @@ var loginCmd = &cobra.Command{
 			scopes = oauth.Scopes
 		}
 
+		name := oauth.FetchProfile(tokens.AccessToken).Email
+		if name == "" {
+			name = id
+		}
+
 		cred := &store.Credential{
 			ID:   id,
-			Name: id,
+			Name: name,
 			ClaudeAiOauth: store.OAuthTokens{
 				AccessToken:  tokens.AccessToken,
 				RefreshToken: tokens.RefreshToken,
@@ -54,8 +59,10 @@ var loginCmd = &cobra.Command{
 			return fmt.Errorf("save credentials: %w", err)
 		}
 
-		fmt.Printf("\nLogged in as %s\n", id)
-		fmt.Printf("Use `ccm rename %s <name>` to set a friendly name.\n", id[:8])
+		fmt.Printf("\nLogged in as %s\n", name)
+		if name == id {
+			fmt.Printf("Use `ccm rename %s <name>` to set a friendly name.\n", id[:8])
+		}
 		return nil
 	},
 }

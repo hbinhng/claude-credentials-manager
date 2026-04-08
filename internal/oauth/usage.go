@@ -149,6 +149,11 @@ func formatResetTime(s string) string {
 	if diff < time.Hour {
 		return fmt.Sprintf("in %dm", int(diff.Minutes()))
 	}
+	if diff >= 48*time.Hour {
+		days := int(diff.Hours()) / 24
+		hours := int(diff.Hours()) % 24
+		return fmt.Sprintf("in %dd%dh", days, hours)
+	}
 	return fmt.Sprintf("in %dh%dm", int(diff.Hours()), int(diff.Minutes())%60)
 }
 
