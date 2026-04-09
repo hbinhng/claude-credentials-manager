@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"sort"
+	"sync"
 	"text/tabwriter"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
@@ -35,9 +36,23 @@ var statusCmd = &cobra.Command{
 
 		activeID := claude.ActiveID()
 
+		usages := make([]*oauth.UsageInfo, len(creds))
+		var wg sync.WaitGroup
+		for i, c := range creds {
+			if c.IsExpired() {
+				continue
+			}
+			wg.Add(1)
+			go func(i int, token string) {
+				defer wg.Done()
+				usages[i] = oauth.FetchUsage(token)
+			}(i, c.ClaudeAiOauth.AccessToken)
+		}
+		wg.Wait()
+
 		w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "ID\tNAME\tTIER\tSTATUS\tEXPIRES\tACTIVE")
-		for _, c := range creds {
+		for i, c := range creds {
 			active := ""
 			if c.ID == activeID {
 				active = "*"
@@ -60,10 +75,10 @@ var statusCmd = &cobra.Command{
 				active,
 			)
 
-			if c.IsExpired() {
+			info := usages[i]
+			if info == nil {
 				continue
 			}
-			info := oauth.FetchUsage(c.ClaudeAiOauth.AccessToken)
 			if info.Error != "" {
 				fmt.Fprintf(w, "\t\t\tquota: error\t\t\n")
 			} else {
