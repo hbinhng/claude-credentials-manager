@@ -37,7 +37,8 @@ var loginCmd = &cobra.Command{
 			scopes = oauth.Scopes
 		}
 
-		name := oauth.FetchProfile(tokens.AccessToken).Email
+		profile := oauth.FetchProfile(tokens.AccessToken)
+		name := profile.Email
 		if name == "" {
 			name = id
 		}
@@ -51,6 +52,7 @@ var loginCmd = &cobra.Command{
 				ExpiresAt:    time.Now().UnixMilli() + tokens.ExpiresIn*1000,
 				Scopes:       scopes,
 			},
+			Subscription:    store.Subscription{Tier: profile.Tier},
 			CreatedAt:       now,
 			LastRefreshedAt: now,
 		}
