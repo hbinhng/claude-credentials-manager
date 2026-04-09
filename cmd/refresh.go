@@ -85,6 +85,10 @@ func doRefreshCredential(identity string, printf func(string, ...any) (int, erro
 	cred.ClaudeAiOauth.Scopes = scopes
 	cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
 
+	if profile := oauth.FetchProfile(cred.ClaudeAiOauth.AccessToken); profile.Tier != "" {
+		cred.Subscription.Tier = profile.Tier
+	}
+
 	if err := store.Save(cred); err != nil {
 		return nil, fmt.Errorf("save credentials: %w", err)
 	}

@@ -36,7 +36,7 @@ var statusCmd = &cobra.Command{
 		activeID := claude.ActiveID()
 
 		w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "ID\tNAME\tSTATUS\tEXPIRES\tACTIVE")
+		fmt.Fprintln(w, "ID\tNAME\tTIER\tSTATUS\tEXPIRES\tACTIVE")
 		for _, c := range creds {
 			active := ""
 			if c.ID == activeID {
@@ -46,10 +46,15 @@ var statusCmd = &cobra.Command{
 			if displayName == c.ID {
 				displayName = c.ID[:8] + "..."
 			}
+			tier := c.Subscription.Tier
+			if tier == "" {
+				tier = "-"
+			}
 
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
 				c.ID[:8],
 				displayName,
+				tier,
 				c.Status(),
 				c.ExpiresIn(),
 				active,
@@ -60,14 +65,14 @@ var statusCmd = &cobra.Command{
 			}
 			info := oauth.FetchUsage(c.ClaudeAiOauth.AccessToken)
 			if info.Error != "" {
-				fmt.Fprintf(w, "\t\tquota: error\t\t\n")
+				fmt.Fprintf(w, "\t\t\tquota: error\t\t\n")
 			} else {
 				for _, q := range info.Quotas {
 					reset := ""
 					if q.ResetsAt != "" {
 						reset = " (resets " + q.ResetsAt + ")"
 					}
-					fmt.Fprintf(w, "\t\t%s: %.0f%%%s\t\t\n", q.Name, q.Remaining, reset)
+					fmt.Fprintf(w, "\t\t\t%s: %.0f%%%s\t\t\n", q.Name, q.Remaining, reset)
 				}
 			}
 		}

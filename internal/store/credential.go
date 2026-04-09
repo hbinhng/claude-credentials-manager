@@ -9,12 +9,17 @@ type OAuthTokens struct {
 	Scopes       []string `json:"scopes"`
 }
 
+type Subscription struct {
+	Tier string `json:"tier"`
+}
+
 type Credential struct {
-	ID              string      `json:"id"`
-	Name            string      `json:"name"`
-	ClaudeAiOauth   OAuthTokens `json:"claudeAiOauth"`
-	CreatedAt       string      `json:"createdAt"`
-	LastRefreshedAt string      `json:"lastRefreshedAt"`
+	ID              string       `json:"id"`
+	Name            string       `json:"name"`
+	ClaudeAiOauth   OAuthTokens  `json:"claudeAiOauth"`
+	Subscription    Subscription `json:"subscription"`
+	CreatedAt       string       `json:"createdAt"`
+	LastRefreshedAt string       `json:"lastRefreshedAt"`
 }
 
 func (c *Credential) IsExpired() bool {
