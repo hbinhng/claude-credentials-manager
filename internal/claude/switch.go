@@ -126,6 +126,16 @@ func IsActive(id string) bool {
 	return ActiveID() == id
 }
 
+// IsManaged reports whether ~/.claude/.credentials.json is currently managed by CCM.
+func IsManaged() bool {
+	return isCCMManaged(credentialsPath())
+}
+
+// CredentialsPath returns the path to ~/.claude/.credentials.json.
+func CredentialsPath() string {
+	return credentialsPath()
+}
+
 // WriteActive updates the active credential file after a refresh.
 // On Unix: no-op since .credentials.json symlinks directly to the store file.
 // On Windows: writes a wrapper JSON to .credentials.json.

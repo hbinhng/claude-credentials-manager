@@ -1,4 +1,4 @@
-.TH CCM 1 "April 2026" "ccm 1.4.1" "User Commands"
+.TH CCM 1 "April 2026" "ccm 1.5.0" "User Commands"
 .SH NAME
 ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH SYNOPSIS
@@ -9,9 +9,9 @@ ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH DESCRIPTION
 .B ccm
 is a command-line tool for managing multiple Claude Code OAuth credentials.
-It allows you to authenticate multiple Claude accounts, switch between them,
-view usage quotas and subscription tiers, and manage their lifecycle
-(refresh, rename, remove).
+It allows you to authenticate multiple Claude accounts, import an existing
+unmanaged credential, switch between them, view usage quotas and
+subscription tiers, and manage their lifecycle (refresh, rename, remove).
 .PP
 Credentials are stored locally in
 .B ~/.ccm/
@@ -46,6 +46,25 @@ returned authorization code back into the terminal. A new credential is
 created with a UUID identifier, and the account email (fetched from the
 profile endpoint) is used as the default friendly name. If the email cannot
 be fetched, the UUID is used as the name and a rename hint is printed.
+.TP
+.B backup
+Import the credential currently in
+.B ~/.claude/.credentials.json
+into the ccm store. If the file is already managed by
+.B ccm
+(a symlink into
+.B ~/.ccm/
+on Unix, or a wrapper carrying a
+.B ccmSourceId
+marker on Windows), the command prints a warning and does nothing. Otherwise
+the OAuth tokens are copied into a new
+.IR <uuid> .credentials.json ,
+decorated with the account email as the friendly name and the subscription
+tier fetched from the profile endpoint. The imported credential is
+.B not
+activated; run
+.B ccm use
+afterwards to switch to it.
 .TP
 .BI "use " id-or-name
 Activate a credential for Claude Code. On Unix, points
@@ -158,6 +177,16 @@ Authenticate a new account (credential is named after the account email):
 .RS
 .nf
 $ ccm login
+.fi
+.RE
+.PP
+Import an existing unmanaged
+.B ~/.claude/.credentials.json
+into the ccm store:
+.PP
+.RS
+.nf
+$ ccm backup
 .fi
 .RE
 .PP
