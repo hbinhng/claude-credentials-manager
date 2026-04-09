@@ -1,54 +1,82 @@
-.TH CCM 1 "April 2026" "ccm" "User Commands"
+.TH CCM 1 "April 2026" "ccm 1.4.1" "User Commands"
 .SH NAME
 ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH SYNOPSIS
 .B ccm
 .I command
 .RI [ arguments ]
+.RI [ flags ]
 .SH DESCRIPTION
 .B ccm
 is a command-line tool for managing multiple Claude Code OAuth credentials.
 It allows you to authenticate multiple Claude accounts, switch between them,
-and manage their lifecycle (refresh, rename, remove).
+view usage quotas and subscription tiers, and manage their lifecycle
+(refresh, rename, remove).
 .PP
 Credentials are stored locally in
 .B ~/.ccm/
-as individual JSON files with permission 0600. When a credential is activated,
-.B ccm
-creates a symlink (or file copy on Windows) from
+as individual JSON files named
+.IR <uuid> .credentials.json
+with permission 0600. Each file holds the OAuth tokens, cached subscription
+tier, and timestamps for a single Claude account.
+.PP
+On Unix and macOS, activating a credential makes
 .B ~/.claude/.credentials.json
-to
-.BR ~/.claude/ccm.credentials.json ,
-allowing Claude Code to use the selected account.
+an absolute symlink pointing directly into the store at
+.BR ~/.ccm/ <uuid> .credentials.json ,
+so Claude Code always reads whatever
+.B ccm
+has written. On Windows, where symlinks are unreliable, a wrapper JSON file
+carrying a
+.B ccmSourceId
+marker is copied instead.
 .PP
 The original
 .B ~/.claude/.credentials.json
 is backed up to
 .B ~/.claude/bk.credentials.json
-on first activation and can be restored at any time.
+on first activation and can be restored at any time with
+.BR "ccm restore" .
 .SH COMMANDS
 .TP
 .B login
-Authenticate a new Claude account via OAuth (PKCE flow). Opens the browser
-for authorization; the user pastes the authorization code back into the terminal.
-A new credential is created with a UUID identifier.
+Authenticate a new Claude account via the OAuth Authorization Code flow with
+PKCE. The browser opens to Claude's authorize page; the user pastes the
+returned authorization code back into the terminal. A new credential is
+created with a UUID identifier, and the account email (fetched from the
+profile endpoint) is used as the default friendly name. If the email cannot
+be fetched, the UUID is used as the name and a rename hint is printed.
 .TP
 .BI "use " id-or-name
-Activate a credential for Claude Code. Writes the selected credential to
-.B ~/.claude/ccm.credentials.json
-and symlinks
+Activate a credential for Claude Code. On Unix, points
 .B ~/.claude/.credentials.json
-to it. If the token is expired, prompts to refresh before activation.
+at the stored credential via symlink; on Windows, copies the credential with
+a
+.B ccmSourceId
+marker. If the token is expired, prompts to refresh before activation.
 .TP
 .B status
-List all credentials in a table showing: ID (8-char prefix), name,
-status (valid/expired), expiry time, usage quota, and an active marker (*).
+List all credentials in a table with columns: ID (8-char prefix), NAME, TIER
+(e.g.
+.IR "Claude Max 20x" ),
+STATUS (valid/expiring soon/expired), EXPIRES (relative time), and an ACTIVE
+marker (*). For each non-expired credential, one line per quota window is
+printed underneath showing remaining percentage and reset time (e.g.
+.IR "5h: 75% (resets in 1h12m)" ).
+Usage data is fetched from all credentials concurrently.
 .TP
-.BI "refresh " id-or-name
-Refresh the OAuth token for a credential. If the credential is currently
-active, the active credential file is also updated.
+.BR "refresh " [ id-or-name ]
+Refresh the OAuth token for a credential. If
+.B \-a
+or
+.B \-\-all
+is given, refreshes every stored credential concurrently; otherwise an
+.I id-or-name
+argument is required. The cached subscription tier is re-fetched as part of
+the refresh. If the refreshed credential is currently active, the active
+credential file is also updated.
 .TP
-.BI "logout " id-or-name
+.BR "logout " id-or-name
 Remove a credential. If the credential is currently active, prompts for
 confirmation unless
 .B \-f
@@ -60,29 +88,44 @@ is specified.
 Assign a friendly name to a credential.
 .I new-name
 must be 1\(en32 characters consisting of alphanumeric characters, hyphens,
-or underscores. Names must be unique across all credentials.
+or underscores. Names must be unique across all credentials. (Credentials
+auto-named from a login email bypass this pattern; rename them to a shorter
+handle with this command.)
 .TP
 .B restore
 Undo
 .BR "ccm use" :
 remove the symlink (or managed copy) and restore the original
 .B ~/.claude/.credentials.json
-from backup.
+from
+.BR ~/.claude/bk.credentials.json .
+.TP
+.BI "completion " shell
+Generate a shell completion script for
+.IR bash ", " zsh ", " fish ", or " powershell .
+Credential
+.I id-or-name
+arguments are completed against the stored credentials.
 .SH CREDENTIAL RESOLUTION
 All commands accepting
 .I id-or-name
 resolve the argument in the following order:
 .TP 4
 1.
-Exact UUID match
+Exact UUID match.
 .TP 4
 2.
-Exact name match
+Exact name match.
 .TP 4
 3.
 UUID prefix match (minimum 4 characters). If the prefix is ambiguous
 (matches multiple credentials), an error is returned listing all matches.
 .SH OPTIONS
+.TP
+.BR \-a ", " \-\-all
+(refresh only) Refresh every stored credential. Runs concurrently; output per
+credential is buffered so results are printed in stable order after all
+refreshes complete.
 .TP
 .BR \-f ", " \-\-force
 (logout only) Skip confirmation when removing an active credential.
@@ -94,24 +137,23 @@ Show help for any command.
 .B ~/.ccm/
 Credential storage directory. Each credential is stored as
 .IR <uuid> .credentials.json
-with permission 0600.
+with permission 0600. Contains OAuth tokens, cached subscription tier, and
+timestamps.
 .TP
 .B ~/.claude/.credentials.json
-Claude Code credential file. Managed by
-.B ccm
-as a symlink (Unix) or copy (Windows) when a credential is active.
-.TP
-.B ~/.claude/ccm.credentials.json
-Active credential written by
-.BR ccm .
-The symlink target on Unix systems.
+Claude Code credential file. When a credential is active, this is a symlink
+(Unix) pointing directly at
+.BR ~/.ccm/ <uuid> .credentials.json ,
+or a managed copy (Windows) carrying a
+.B ccmSourceId
+marker.
 .TP
 .B ~/.claude/bk.credentials.json
-Backup of the original credential file, created on first
+Backup of the original credential file, created on the first
 .B ccm use
 invocation. Never overwritten if it already exists.
 .SH EXAMPLES
-Authenticate a new account:
+Authenticate a new account (credential is named after the account email):
 .PP
 .RS
 .nf
@@ -119,23 +161,7 @@ $ ccm login
 .fi
 .RE
 .PP
-Give the credential a friendly name:
-.PP
-.RS
-.nf
-$ ccm rename a1b2c3d4 work
-.fi
-.RE
-.PP
-Switch to the "work" credential:
-.PP
-.RS
-.nf
-$ ccm use work
-.fi
-.RE
-.PP
-View all credentials and their status:
+List all credentials with quota and tier:
 .PP
 .RS
 .nf
@@ -143,15 +169,31 @@ $ ccm status
 .fi
 .RE
 .PP
-Refresh an expired token:
+Switch to a specific account:
 .PP
 .RS
 .nf
-$ ccm refresh work
+$ ccm use work@example.com
 .fi
 .RE
 .PP
-Restore original credentials:
+Refresh every stored credential in parallel:
+.PP
+.RS
+.nf
+$ ccm refresh --all
+.fi
+.RE
+.PP
+Give a credential a shorter name:
+.PP
+.RS
+.nf
+$ ccm rename work@example.com work
+.fi
+.RE
+.PP
+Restore original Claude credentials:
 .PP
 .RS
 .nf
@@ -159,10 +201,19 @@ $ ccm restore
 .fi
 .RE
 .SH PLATFORM NOTES
-On Unix and macOS, credential switching uses symbolic links. On Windows,
-file copies are used instead, with a
+On Unix and macOS, credential activation uses an absolute symlink from
+.B ~/.claude/.credentials.json
+directly into
+.BR ~/.ccm/ .
+Saves to the store are visible to Claude Code without any further action. On
+Windows, a wrapper JSON file with a
 .B ccmSourceId
-marker in the JSON to track the active credential.
+marker is copied to
+.B ~/.claude/.credentials.json
+instead, and
+.B ccm
+must rewrite this copy (automatically, as part of refresh and rename) when
+the underlying credential changes.
 .SH EXIT STATUS
 .TP
 .B 0
