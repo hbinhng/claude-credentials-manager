@@ -134,3 +134,47 @@ func TestConfigureEmptyIsNotError(t *testing.T) {
 		}
 	}
 }
+
+// TestClientRoutesThroughProxy stands up an httptest.Server that
+// impersonates an HTTP proxy and verifies that a request issued
+// through httpx.Client() with CCM_PROXY set actually transits the
+// fake proxy.
+//
+// Technique: Go's net/http.Transport, when Proxy is set and the
+// target URL is plain http, sends the full absolute URL in the
+// request line. The fake proxy sees it as a normal handler request
+// whose r.Host is the ORIGINAL target host (api.anthropic.com), not
+// the proxy's. This is the simplest way to assert "traffic went
+// through the proxy" without implementing CONNECT tunneling.
+func TestClientRoutesThroughProxy(t *testing.T) {
+	var seenHost, seenPath string
+	proxy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenHost = r.Host
+		seenPath = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(proxy.Close)
+
+	t.Setenv("CCM_PROXY", proxy.URL)
+	if err := httpx.Configure(); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+
+	resp, err := httpx.Client().Get("http://api.anthropic.com/v1/messages")
+	if err != nil {
+		t.Fatalf("GET through proxy: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status = %d, want 200", resp.StatusCode)
+	}
+	if seenHost != "api.anthropic.com" {
+		t.Errorf("proxy saw Host=%q, want api.anthropic.com", seenHost)
+	}
+	if seenPath != "/v1/messages" {
+		t.Errorf("proxy saw Path=%q, want /v1/messages", seenPath)
+	}
+}
