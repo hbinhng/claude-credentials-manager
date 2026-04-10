@@ -17,6 +17,7 @@ import (
 func init() {
 	rootCmd.AddCommand(launchCmd)
 	launchCmd.Flags().String("via", "", "ticket emitted by `ccm share` on the host side (remote mode)")
+	launchCmd.PreRunE = requireOnline
 }
 
 var launchCmd = &cobra.Command{

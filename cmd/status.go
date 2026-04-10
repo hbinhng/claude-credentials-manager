@@ -15,6 +15,7 @@ import (
 
 func init() {
 	rootCmd.AddCommand(statusCmd)
+	statusCmd.PreRunE = requireOnline
 }
 
 var statusCmd = &cobra.Command{
