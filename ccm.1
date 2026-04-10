@@ -1,4 +1,4 @@
-.TH CCM 1 "April 2026" "ccm 1.6.2" "User Commands"
+.TH CCM 1 "April 2026" "ccm 1.6.3" "User Commands"
 .SH NAME
 ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH SYNOPSIS
@@ -198,6 +198,18 @@ Generate a shell completion script for
 Credential
 .I id-or-name
 arguments are completed against the stored credentials.
+.TP
+.B version
+Print the ccm version, the short git commit the binary was built from, and
+the build timestamp (UTC, ISO-8601). The same information is available via
+.BR "ccm \-\-version" .
+Release binaries built via
+.B "make dist"
+embed this metadata at link time; a binary produced by a plain
+.B "go build"
+reports
+.IR dev / unknown
+placeholders instead, which signals an untagged local build.
 .SH CREDENTIAL RESOLUTION
 All commands accepting
 .I id-or-name
@@ -224,6 +236,10 @@ refreshes complete.
 .TP
 .BR \-h ", " \-\-help
 Show help for any command.
+.TP
+.B \-\-version
+Print version, commit, and build date. Equivalent to
+.BR "ccm version" .
 .SH FILES
 .TP
 .B ~/.ccm/
