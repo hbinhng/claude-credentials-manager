@@ -139,25 +139,58 @@ is not already installed, a pinned version is downloaded to
 .B ~/.ccm/bin/
 on first use. The share session stays alive until Ctrl-C.
 .TP
-.BR "launch \-\-via " ticket " [\-\- " "claude args" ]
-Decode a share ticket emitted by
+.B "launch {" id-or-name " | \-\-via " ticket "} [\-\- " "claude args" ]
+Run Claude Code against a specific ccm credential without mutating
+.BR ~/.claude/.credentials.json .
+Two modes are supported.
+.RS
+.PP
+.BR "ccm launch " id-or-name
+\(em local mode. Start a loopback passthrough reverse proxy for the named
+credential, refresh it up front if expired or expiring soon, and exec
+.B claude
+with
+.B ANTHROPIC_BASE_URL
+pointing at the proxy. The child
+.B claude
+stays on its normal keychain-OAuth code path; the proxy strips its
+keychain
+.B Authorization
+header and injects the target credential's real OAuth bearer. This lets
+multiple
+.B claude
+sessions run against different ccm-managed credentials simultaneously
+without calling
+.BR "ccm use" .
+Requires
+.B ~/.claude/.credentials.json
+to exist (its bearer is overwritten on every forwarded request) \(em if
+you have never run
+.BR "ccm use" ,
+do that once first.
+.PP
+.BR "ccm launch \-\-via " ticket
+\(em remote mode. Decode a ticket emitted by
 .B "ccm share"
-and launch Claude Code against the remote proxy behind it. The ticket
-host and access token are propagated to Claude Code via the
+and launch Claude Code against the remote proxy behind it. The tunnel
+host and access token are propagated via
 .B ANTHROPIC_BASE_URL
 and
-.B ANTHROPIC_AUTH_TOKEN
-environment variables. Any arguments after
+.BR ANTHROPIC_AUTH_TOKEN .
+Does not require a ccm-managed credential on the local machine \(em
+the bearer comes from the ticket.
+.PP
+In both modes, any arguments after
 .B \-\-
 are passed to
 .B claude
 verbatim (e.g.
-.B "ccm launch --via <ticket> -- -p 'hi'"
-for a one-shot query). This command does not require a ccm-managed
-credential on the local machine \(em the bearer comes from the ticket \(em
-only
+.B "ccm launch <id> -- -p 'hi'"
+for a one-shot query) and
 .B claude
-on PATH.
+must be on
+.BR PATH .
+.RE
 .TP
 .BI "completion " shell
 Generate a shell completion script for
@@ -227,6 +260,15 @@ When set to
 .B ccm share
 logs each captured identity header and each forwarded upstream request
 (method, URL, and a redacted subset of headers) to standard error.
+.TP
+.B CCM_LAUNCH_DEBUG
+When set to
+.BR 1 ,
+the local passthrough proxy used by
+.B "ccm launch"
+.I id-or-name
+logs each forwarded upstream request (method, URL, and a redacted subset
+of headers) to standard error.
 .SH EXAMPLES
 Authenticate a new account (credential is named after the account email):
 .PP
@@ -283,6 +325,15 @@ Restore original Claude credentials:
 .RS
 .nf
 $ ccm restore
+.fi
+.RE
+.PP
+Run Claude Code against a specific credential without switching the
+active one (local passthrough proxy):
+.PP
+.RS
+.nf
+$ ccm launch work -- -p 'hi'
 .fi
 .RE
 .PP
