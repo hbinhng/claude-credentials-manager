@@ -13,7 +13,23 @@
 # anything else with a modern kernel.
 
 BINARY  := ccm
-LDFLAGS := -s -w
+
+# Version metadata baked into the binary via -ldflags -X. VERSION is read
+# from npm/package.json (the canonical version source — see CLAUDE.md), so
+# bumping the release version is a single-file edit. COMMIT is the short
+# git SHA; BUILD_DATE is the current UTC time in ISO-8601. A plain
+# `go build .` (bypassing this Makefile) leaves the defaults in
+# cmd/version.go at "dev"/"unknown", which signals an untagged local build.
+VERSION    := $(shell sed -n 's/.*"version": *"\([^"]*\)".*/\1/p' npm/package.json | head -1)
+COMMIT     := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)
+BUILD_DATE := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+
+VERSION_PKG := github.com/hbinhng/claude-credentials-manager/cmd
+LDFLAGS := -s -w \
+  -X $(VERSION_PKG).Version=$(VERSION) \
+  -X $(VERSION_PKG).Commit=$(COMMIT) \
+  -X $(VERSION_PKG).BuildDate=$(BUILD_DATE)
+
 GOFLAGS := -trimpath -ldflags="$(LDFLAGS)"
 
 export CGO_ENABLED := 0
