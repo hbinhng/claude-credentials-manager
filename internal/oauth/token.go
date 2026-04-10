@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 )
 
 // ProfileURL can be overridden in tests.
@@ -28,7 +30,7 @@ func FetchProfile(accessToken string) Profile {
 	req.Header.Set("anthropic-version", "2023-06-01")
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Transport: httpx.Transport(), Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return Profile{}
