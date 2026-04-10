@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
@@ -82,7 +83,7 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	p.rp = &httputil.ReverseProxy{
 		Director:     p.director,
 		ErrorHandler: p.onUpstreamError,
-		Transport:    http.DefaultTransport,
+		Transport:    httpx.Transport(),
 		// See proxy.go: -1 flushes every write immediately. There is
 		// no Cloudflare tunnel in front of the local proxy so the 100s
 		// limit does not apply, but immediate flush still matters for

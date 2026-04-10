@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
@@ -152,7 +153,7 @@ func NewProxy() (*Proxy, error) {
 		// Use a transport that handles HTTP/2 and streaming responses
 		// (SSE used by /v1/messages with stream=true). http.DefaultTransport
 		// is sufficient here; Go's client-side auto-negotiates h2 via ALPN.
-		Transport: http.DefaultTransport,
+		Transport: httpx.Transport(),
 		// FlushInterval = -1 flushes every write immediately. This matters
 		// because Cloudflare Quick Tunnels enforce a 100s "origin response"
 		// timeout — if no bytes (including response headers) reach the edge
