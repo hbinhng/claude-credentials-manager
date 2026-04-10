@@ -150,9 +150,11 @@ func NewProxy() (*Proxy, error) {
 	p.rp = &httputil.ReverseProxy{
 		Director:     p.director,
 		ErrorHandler: p.onUpstreamError,
-		// Use a transport that handles HTTP/2 and streaming responses
-		// (SSE used by /v1/messages with stream=true). http.DefaultTransport
-		// is sufficient here; Go's client-side auto-negotiates h2 via ALPN.
+		// Use the ccm-wide transport so CCM_PROXY routes the forwarded
+		// upstream traffic too. httpx.Transport() is a clone of
+		// http.DefaultTransport, so HTTP/2 auto-negotiation via ALPN and
+		// streaming responses (SSE used by /v1/messages with stream=true)
+		// keep working.
 		Transport: httpx.Transport(),
 		// FlushInterval = -1 flushes every write immediately. This matters
 		// because Cloudflare Quick Tunnels enforce a 100s "origin response"

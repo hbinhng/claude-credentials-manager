@@ -278,9 +278,8 @@ Optional userinfo
 .RI ( user:pass@host )
 is accepted and forwarded to the proxy via
 .BR Proxy-Authorization .
-A malformed value fails every online
-.B ccm
-command at startup with a parse error, before any network I/O.
+A malformed value fails every command listed below at startup with a
+parse error, before any network I/O.
 .IP
 Affects:
 .BR "ccm login" ,
@@ -291,7 +290,16 @@ and the reverse-proxy forwarding of
 .B "ccm share"
 and
 .BR "ccm launch" .
-Does
+.B "ccm use"
+is deliberately excluded: activation is a local file operation, and the
+opportunistic token refresh it performs on an expired credential runs
+against the direct network path regardless of
+.BR CCM_PROXY .
+If you need
+.B use
+to go through the proxy, run
+.B "ccm refresh"
+first in the same shell. Does
 .B not
 affect
 .BR cloudflared 's
