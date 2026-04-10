@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 )
 
 // UsageURL can be overridden in tests.
@@ -71,7 +73,7 @@ func FetchUsage(accessToken string) *UsageInfo {
 	req.Header.Set("anthropic-beta", "oauth-2025-04-20")
 	req.Header.Set("anthropic-version", "2023-06-01")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client := &http.Client{Transport: httpx.Transport(), Timeout: 10 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
 		return &UsageInfo{Error: err.Error()}

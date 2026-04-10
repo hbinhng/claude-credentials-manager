@@ -10,6 +10,9 @@ import (
 	"os/exec"
 	"runtime"
 	"strings"
+	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 )
 
 type TokenResponse struct {
@@ -84,7 +87,13 @@ func exchangeCode(code, state string, pkce *PKCEParams) (*TokenResponse, error) 
 	}
 	body, _ := json.Marshal(payload)
 
-	resp, err := http.Post(TokenURL, "application/json", bytes.NewReader(body))
+	req, err := http.NewRequest("POST", TokenURL, bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("build token request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	client := &http.Client{Transport: httpx.Transport(), Timeout: 60 * time.Second}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
