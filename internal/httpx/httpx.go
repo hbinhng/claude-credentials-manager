@@ -104,7 +104,7 @@ func build() (http.RoundTripper, error) {
 		return nil, fmt.Errorf("invalid %s %q: unsupported scheme %q (expected http, https, socks5, or socks5h)", envVar, raw, u.Scheme)
 	}
 
-	if u.Host == "" {
+	if u.Hostname() == "" {
 		return nil, fmt.Errorf("invalid %s %q: missing host", envVar, raw)
 	}
 
