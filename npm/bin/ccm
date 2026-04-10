@@ -1,3 +1,52 @@
-#!/bin/sh
-echo "ccm: binary not installed. Run: npm rebuild ccm-go" >&2
-exit 1
+#!/usr/bin/env node
+"use strict";
+
+// Thin shim that locates the platform-specific prebuilt binary shipped as an
+// optional dependency (e.g. ccm-go.linux-x64) and execs it with the current
+// argv. The sub-package layout and naming is kept in lock-step with this
+// file — see scripts/publish-npm.sh for how the sub-packages are built.
+
+const path = require("path");
+const { spawnSync } = require("child_process");
+
+const platformKey = `${process.platform}-${process.arch}`;
+const subPkg = `ccm-go.${platformKey}`;
+
+let pkgDir;
+try {
+  // Resolving the sub-package's package.json gives us its install directory
+  // regardless of whether npm placed it in a local or global node_modules.
+  pkgDir = path.dirname(require.resolve(`${subPkg}/package.json`));
+} catch (_err) {
+  const supported = [
+    "darwin-x64",
+    "darwin-arm64",
+    "linux-x64",
+    "linux-arm64",
+    "win32-x64",
+    "win32-arm64",
+  ];
+  process.stderr.write(
+    `ccm: no prebuilt binary found for ${platformKey}.\n` +
+      `The optional dependency '${subPkg}' was not installed.\n` +
+      `Supported platforms: ${supported.join(", ")}.\n` +
+      `If your platform is listed, try reinstalling:\n` +
+      `  npm install -g ccm-go\n` +
+      `Otherwise please file an issue at\n` +
+      `  https://github.com/hbinhng/claude-credentials-manager/issues\n`,
+  );
+  process.exit(1);
+}
+
+const binName = process.platform === "win32" ? "ccm.exe" : "ccm";
+const binPath = path.join(pkgDir, "bin", binName);
+
+const result = spawnSync(binPath, process.argv.slice(2), {
+  stdio: "inherit",
+  windowsHide: true,
+});
+if (result.error) {
+  process.stderr.write(`ccm: failed to exec ${binPath}: ${result.error.message}\n`);
+  process.exit(1);
+}
+process.exit(result.status ?? 1);
