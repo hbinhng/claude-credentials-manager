@@ -5,48 +5,53 @@
 // optional dependency (e.g. ccm-go.linux-x64) and execs it with the current
 // argv. The sub-package layout and naming is kept in lock-step with this
 // file — see scripts/publish-npm.sh for how the sub-packages are built.
+//
+// Written in ES5 (var, string concatenation, no destructuring/nullish
+// coalescing/template literals) so it runs on old Node versions without
+// triggering a parser error before the shim even gets a chance to print
+// its own diagnostic.
 
-const path = require("path");
-const { spawnSync } = require("child_process");
+var path = require("path");
+var spawnSync = require("child_process").spawnSync;
 
-const platformKey = `${process.platform}-${process.arch}`;
-const subPkg = `ccm-go.${platformKey}`;
+var platformKey = process.platform + "-" + process.arch;
+var subPkg = "ccm-go." + platformKey;
 
-let pkgDir;
+var pkgDir;
 try {
   // Resolving the sub-package's package.json gives us its install directory
   // regardless of whether npm placed it in a local or global node_modules.
-  pkgDir = path.dirname(require.resolve(`${subPkg}/package.json`));
+  pkgDir = path.dirname(require.resolve(subPkg + "/package.json"));
 } catch (_err) {
-  const supported = [
+  var supported = [
     "darwin-x64",
     "darwin-arm64",
     "linux-x64",
     "linux-arm64",
     "win32-x64",
-    "win32-arm64",
+    "win32-arm64"
   ];
   process.stderr.write(
-    `ccm: no prebuilt binary found for ${platformKey}.\n` +
-      `The optional dependency '${subPkg}' was not installed.\n` +
-      `Supported platforms: ${supported.join(", ")}.\n` +
-      `If your platform is listed, try reinstalling:\n` +
-      `  npm install -g ccm-go\n` +
-      `Otherwise please file an issue at\n` +
-      `  https://github.com/hbinhng/claude-credentials-manager/issues\n`,
+    "ccm: no prebuilt binary found for " + platformKey + ".\n" +
+    "The optional dependency '" + subPkg + "' was not installed.\n" +
+    "Supported platforms: " + supported.join(", ") + ".\n" +
+    "If your platform is listed, try reinstalling:\n" +
+    "  npm install -g ccm-go\n" +
+    "Otherwise please file an issue at\n" +
+    "  https://github.com/hbinhng/claude-credentials-manager/issues\n"
   );
   process.exit(1);
 }
 
-const binName = process.platform === "win32" ? "ccm.exe" : "ccm";
-const binPath = path.join(pkgDir, "bin", binName);
+var binName = process.platform === "win32" ? "ccm.exe" : "ccm";
+var binPath = path.join(pkgDir, "bin", binName);
 
-const result = spawnSync(binPath, process.argv.slice(2), {
+var result = spawnSync(binPath, process.argv.slice(2), {
   stdio: "inherit",
-  windowsHide: true,
+  windowsHide: true
 });
 if (result.error) {
-  process.stderr.write(`ccm: failed to exec ${binPath}: ${result.error.message}\n`);
+  process.stderr.write("ccm: failed to exec " + binPath + ": " + result.error.message + "\n");
   process.exit(1);
 }
-process.exit(result.status ?? 1);
+process.exit(result.status != null ? result.status : 1);
