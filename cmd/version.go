@@ -19,28 +19,32 @@ var (
 	BuildDate = "unknown"
 )
 
-// versionString is what Cobra prints for `ccm --version` and `ccm version`.
-// Rendered as three short lines so long commit SHAs and RFC3339 timestamps
-// don't wrap awkwardly in typical terminals.
+// versionString returns the multi-line "<semver>\ncommit: ...\nbuilt: ..."
+// payload that goes into rootCmd.Version. The leading "ccm version " prefix
+// is added by Cobra's default version template — see init() for why we do
+// not call SetVersionTemplate.
 func versionString() string {
-	return fmt.Sprintf("ccm %s\ncommit: %s\nbuilt:  %s", Version, Commit, BuildDate)
+	return fmt.Sprintf("%s\ncommit: %s\nbuilt:  %s", Version, Commit, BuildDate)
 }
 
 // versionCmd mirrors `ccm --version` as an explicit subcommand. Cobra
 // auto-wires the --version flag when rootCmd.Version is set, but does not
-// create a `version` subcommand — we add one so both forms work.
+// create a `version` subcommand — we add one so both forms work and produce
+// byte-identical output.
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print ccm version, commit, and build date",
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Println(versionString())
+		fmt.Println("ccm version " + versionString())
 	},
 }
 
 func init() {
 	rootCmd.Version = versionString()
-	// Strip Cobra's "{Name} version {Version}" wrapper — versionString()
-	// already starts with "ccm <version>".
-	rootCmd.SetVersionTemplate("{{.Version}}\n")
+	// NOTE: do NOT call rootCmd.SetVersionTemplate. Doing so flips Cobra
+	// onto a code path that pulls in ~2 MB of text/template machinery the
+	// linker would otherwise dead-code-eliminate. v1.6.3 shipped with that
+	// regression. Cobra's default version template ("{{.Name}} version
+	// {{.Version}}") already renders our multi-line Version field correctly.
 	rootCmd.AddCommand(versionCmd)
 }
