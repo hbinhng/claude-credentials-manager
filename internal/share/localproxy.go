@@ -47,6 +47,12 @@ type LocalProxy struct {
 	cred   *store.Credential
 
 	debug bool
+
+	// done is closed by Close() to signal the background token refresher
+	// started by Start() to exit. doneOnce guards the close so Close can
+	// be called more than once without panicking.
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 // NewLocalProxy builds a local passthrough proxy for the given
@@ -70,6 +76,7 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 		listener: ln,
 		upstream: upstream,
 		cred:     cred,
+		done:     make(chan struct{}),
 		debug:    os.Getenv("CCM_LAUNCH_DEBUG") == "1",
 	}
 	p.rp = &httputil.ReverseProxy{
@@ -99,19 +106,48 @@ func (p *LocalProxy) Addr() string {
 }
 
 // Start runs the HTTP server. It blocks until the server exits; run
-// it in its own goroutine.
+// it in its own goroutine. Start also kicks off a background token
+// refresher that exits when Close is called.
 func (p *LocalProxy) Start() error {
+	go p.refreshLoop()
 	if err := p.server.Serve(p.listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		return err
 	}
 	return nil
 }
 
-// Close gracefully stops the proxy.
+// Close gracefully stops the proxy and signals the background token
+// refresher started by Start to exit.
 func (p *LocalProxy) Close() error {
+	p.doneOnce.Do(func() { close(p.done) })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return p.server.Shutdown(ctx)
+}
+
+// refreshLoop is the background token refresher. Every
+// backgroundRefreshInterval it calls getFreshToken, which is a no-op
+// when the cached access token is still valid and triggers a full
+// OAuth refresh otherwise. Errors are logged but not fatal — the
+// next inbound request retries on its own code path and the child
+// claude stays up.
+func (p *LocalProxy) refreshLoop() {
+	ticker := time.NewTicker(backgroundRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			if _, err := p.getFreshToken(); err != nil {
+				fmt.Fprintf(errLog(), "ccm launch: background refresh check failed: %v\n", err)
+				continue
+			}
+			if p.debug {
+				fmt.Fprintf(errLog(), "ccm launch [debug]: background refresh check ok\n")
+			}
+		}
+	}
 }
 
 // handle forwards any inbound request to api.anthropic.com with a
