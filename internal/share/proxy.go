@@ -136,8 +136,18 @@ func NewProxy() (*Proxy, error) {
 		// (SSE used by /v1/messages with stream=true). http.DefaultTransport
 		// is sufficient here; Go's client-side auto-negotiates h2 via ALPN.
 		Transport: http.DefaultTransport,
-		// Flush every 100ms so SSE frames reach the client promptly.
-		FlushInterval: 100 * time.Millisecond,
+		// FlushInterval = -1 flushes every write immediately. This matters
+		// because Cloudflare Quick Tunnels enforce a 100s "origin response"
+		// timeout — if no bytes (including response headers) reach the edge
+		// within 100s of the request, the tunnel returns 524 to the remote
+		// client. The Go stdlib ReverseProxy's copyResponse arms an initial
+		// flush timer with this interval, so -1 pushes response headers to
+		// the wire the instant RoundTrip returns, without waiting for a
+		// body byte or a batching window. Every subsequent body write also
+		// flushes immediately, which is what we want for SSE anyway (Go
+		// auto-overrides to -1 for text/event-stream, but we just make it
+		// the uniform behavior for every response).
+		FlushInterval: -1,
 	}
 
 	mux := http.NewServeMux()
