@@ -63,6 +63,15 @@ const (
 	modeServing
 )
 
+// backgroundRefreshInterval is how often the serving-mode refresher wakes
+// up to check the credential's expiration and refresh if needed. Anthropic
+// OAuth tokens are long-lived (hours), so this cadence is generous — the
+// call is a no-op when the token is still valid. The point is to keep the
+// token warm during long idle periods so the first request after a quiet
+// stretch does not eat a full OAuth round-trip, and to close any window
+// where the token expires between requests.
+const backgroundRefreshInterval = 30 * time.Minute
+
 // Proxy is the HTTP reverse proxy that powers `ccm share`.
 //
 // It starts in CAPTURE mode: any inbound request records its identity
@@ -97,6 +106,13 @@ type Proxy struct {
 	// debug enables verbose per-request logging in the Director. Toggled
 	// via CCM_SHARE_DEBUG=1 at NewProxy time.
 	debug bool
+
+	// done is closed by Close() to signal background goroutines (currently
+	// only the serving-mode token refresher started by Transition) to
+	// exit. doneOnce guards the close so Close can be called more than
+	// once without panicking.
+	done     chan struct{}
+	doneOnce sync.Once
 }
 
 // ctxKey is used to thread per-request state from the outer handler into
@@ -127,6 +143,7 @@ func NewProxy() (*Proxy, error) {
 		upstream: upstream,
 		mode:     modeCapturing,
 		captureC: make(chan struct{}),
+		done:     make(chan struct{}),
 		debug:    os.Getenv("CCM_SHARE_DEBUG") == "1",
 	}
 	p.rp = &httputil.ReverseProxy{
@@ -180,8 +197,10 @@ func (p *Proxy) Start() error {
 	return nil
 }
 
-// Close gracefully stops the proxy.
+// Close gracefully stops the proxy and signals any background goroutines
+// started by Transition (the serving-mode token refresher) to exit.
 func (p *Proxy) Close() error {
+	p.doneOnce.Do(func() { close(p.done) })
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return p.server.Shutdown(ctx)
@@ -206,17 +225,48 @@ func (p *Proxy) Captured() http.Header {
 // cred is the ccm-managed credential whose OAuth access token will be
 // injected into forwarded requests.
 //
-// Returns an error if capture never happened.
+// Returns an error if capture never happened. On success, starts a
+// background goroutine that periodically refreshes the credential so it
+// does not die mid-session during long idle stretches. The goroutine
+// exits when Close is called.
 func (p *Proxy) Transition(accessToken string, cred *store.Credential) error {
 	p.modeMu.Lock()
-	defer p.modeMu.Unlock()
 	if p.captured == nil {
+		p.modeMu.Unlock()
 		return errors.New("cannot transition: capture never happened")
 	}
 	p.accessToken = accessToken
 	p.cred = cred
 	p.mode = modeServing
+	p.modeMu.Unlock()
+
+	go p.refreshLoop()
 	return nil
+}
+
+// refreshLoop is the serving-mode background token refresher. Every
+// backgroundRefreshInterval it calls getFreshToken, which is a no-op
+// when the cached access token is still valid and triggers a full
+// OAuth refresh otherwise. Errors are logged but not fatal — the
+// next inbound request will retry refresh on its own code path, and
+// the share session stays up.
+func (p *Proxy) refreshLoop() {
+	ticker := time.NewTicker(backgroundRefreshInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-p.done:
+			return
+		case <-ticker.C:
+			if _, err := p.getFreshToken(); err != nil {
+				fmt.Fprintf(errLog(), "ccm share: background refresh check failed: %v\n", err)
+				continue
+			}
+			if p.debug {
+				fmt.Fprintf(errLog(), "ccm share [debug]: background refresh check ok\n")
+			}
+		}
+	}
 }
 
 // handleHealth is a lightweight readiness endpoint reachable in both
