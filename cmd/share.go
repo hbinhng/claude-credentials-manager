@@ -17,6 +17,7 @@ import (
 func init() {
 	rootCmd.AddCommand(shareCmd)
 	shareCmd.Flags().String("prompt", share.DefaultCapturePrompt, "prompt passed to `claude -p` during identity capture")
+	shareCmd.PreRunE = requireOnline
 }
 
 var shareCmd = &cobra.Command{

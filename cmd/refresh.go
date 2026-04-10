@@ -18,6 +18,7 @@ var refreshAll bool
 func init() {
 	refreshCmd.Flags().BoolVarP(&refreshAll, "all", "a", false, "Refresh all credentials")
 	rootCmd.AddCommand(refreshCmd)
+	refreshCmd.PreRunE = requireOnline
 }
 
 var refreshCmd = &cobra.Command{
