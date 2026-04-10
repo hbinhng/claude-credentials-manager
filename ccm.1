@@ -270,6 +270,58 @@ if it was not already on
 .BR PATH .
 .SH ENVIRONMENT
 .TP
+.B CCM_PROXY
+Route all outbound ccm traffic through an HTTP(S) or SOCKS5 proxy. The
+value is a URL whose scheme must be one of
+.IR http ", " https ", " socks5 ", or " socks5h .
+Optional userinfo
+.RI ( user:pass@host )
+is accepted and forwarded to the proxy via
+.BR Proxy-Authorization .
+A malformed value fails every online
+.B ccm
+command at startup with a parse error, before any network I/O.
+.IP
+Affects:
+.BR "ccm login" ,
+.BR "ccm refresh" ,
+.BR "ccm status" ,
+.BR "ccm backup" ,
+and the reverse-proxy forwarding of
+.B "ccm share"
+and
+.BR "ccm launch" .
+Does
+.B not
+affect
+.BR cloudflared 's
+own control-plane connection or the one-shot
+.B cloudflared
+binary download performed on first
+.BR "ccm share" .
+To proxy
+.B cloudflared
+itself, set
+.B HTTPS_PROXY
+in the shell \(em
+.B cloudflared
+honors it natively.
+.IP
+Stdlib proxy environment variables
+.RB ( HTTP_PROXY ", " HTTPS_PROXY ", " ALL_PROXY ", " NO_PROXY )
+are
+.B not
+consulted; only
+.B CCM_PROXY
+is respected.
+.IP
+Example:
+.RS
+.nf
+$ CCM_PROXY=socks5://user:pass@proxy.example:1080 ccm share work
+.fi
+.RE
+.TP
 .B CCM_SHARE_DEBUG
 When set to
 .BR 1 ,
