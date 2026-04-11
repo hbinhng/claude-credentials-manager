@@ -165,7 +165,7 @@ func runLaunchRemote(rawTicket string, claudeArgs []string) error {
 
 	child := exec.Command(claudeBin, claudeArgs...)
 	child.Env = append(os.Environ(),
-		"ANTHROPIC_BASE_URL=https://"+ticket.Host,
+		"ANTHROPIC_BASE_URL="+ticket.Scheme+"://"+ticket.Host,
 		"ANTHROPIC_AUTH_TOKEN="+ticket.Token,
 	)
 	child.Stdin = os.Stdin
