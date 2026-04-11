@@ -126,12 +126,36 @@ const (
 
 const upstreamBase = "https://api.anthropic.com"
 
-// NewProxy builds a proxy listening on a random loopback port. The proxy
-// starts in CAPTURE mode; call Transition() once capture is complete.
-func NewProxy() (*Proxy, error) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+// ListenerBindAddr computes the host:port a `ccm share` listener should
+// bind to given the values of the `--bind-host` / `--bind-port` flags.
+//
+// An empty bindHost keeps the listener on loopback only (the default,
+// used when cloudflared fronts the proxy). Any non-empty bindHost — the
+// LAN hostname the operator expects the remote to connect to — means
+// "reachable from elsewhere", so the listener must bind 0.0.0.0 even
+// though the ticket carries the human-meaningful bindHost. bindPort 0
+// means "let the OS pick a random port".
+//
+// The bindHost value is NOT resolved or inserted into the listener
+// address because we don't want the OS to refuse to bind on a value the
+// user only means as "how the remote reaches me"; a wildcard bind is
+// always acceptable.
+func ListenerBindAddr(bindHost string, bindPort int) string {
+	host := "127.0.0.1"
+	if bindHost != "" {
+		host = "0.0.0.0"
+	}
+	return fmt.Sprintf("%s:%d", host, bindPort)
+}
+
+// NewProxy builds a proxy listening on bindAddr (host:port in the form
+// "127.0.0.1:0" for a random loopback port, or "0.0.0.0:8080" for a
+// pinned wildcard bind — see ListenerBindAddr). The proxy starts in
+// CAPTURE mode; call Transition() once capture is complete.
+func NewProxy(bindAddr string) (*Proxy, error) {
+	ln, err := net.Listen("tcp", bindAddr)
 	if err != nil {
-		return nil, fmt.Errorf("listen: %w", err)
+		return nil, fmt.Errorf("listen on %s: %w", bindAddr, err)
 	}
 	upstream, err := url.Parse(upstreamBase)
 	if err != nil {
@@ -181,9 +205,13 @@ func NewProxy() (*Proxy, error) {
 }
 
 // Addr returns the loopback URL the proxy is listening on,
-// e.g. "http://127.0.0.1:45123".
+// e.g. "http://127.0.0.1:45123". The host is pinned to 127.0.0.1 even when
+// the listener is bound to a wildcard address (0.0.0.0 / ::), because Addr
+// is used by LOCAL callers — the capture-mode `claude -p` child and the
+// cloudflared tunnel — both of which must dial a concrete loopback host.
+// A wildcard bind still accepts loopback connections, so this is safe.
 func (p *Proxy) Addr() string {
-	return "http://" + p.listener.Addr().String()
+	return fmt.Sprintf("http://127.0.0.1:%d", p.Port())
 }
 
 // Port returns the TCP port the proxy bound to.

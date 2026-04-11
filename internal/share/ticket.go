@@ -19,31 +19,40 @@ package share
 import (
 	"crypto/rand"
 	"encoding/base64"
-	"encoding/hex"
 	"fmt"
 	"net/url"
 	"strings"
 )
 
-// Ticket is the base64-encoded "https://<token>@<host>" string printed by
-// `ccm share` and consumed by the remote side.
+// Ticket is the base64-encoded "<scheme>://<token>@<host>" string printed
+// by `ccm share` and consumed by the remote side. Scheme is "https" for
+// the Cloudflare Quick Tunnel path and "http" for the `--bind-host` path
+// where there is no tunnel.
 type Ticket struct {
-	Token string // random opaque bearer that the remote side must present
-	Host  string // tunnel host, e.g. "foo-bar-baz.trycloudflare.com"
+	Scheme string // "https" (tunnel) or "http" (bind-host)
+	Token  string // random opaque bearer that the remote side must present
+	Host   string // host[:port] the remote side should connect to
 }
 
-// NewRandomToken returns a 32-byte cryptographically random hex string.
+// NewRandomToken returns a 16-byte cryptographically random value encoded
+// as unpadded base64url — 22 characters, 128 bits of entropy. The alphabet
+// is a strict subset of URL "unreserved" characters, so the token slots
+// into userinfo with zero percent-encoding.
 func NewRandomToken() (string, error) {
-	buf := make([]byte, 32)
+	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {
 		return "", fmt.Errorf("generate token: %w", err)
 	}
-	return hex.EncodeToString(buf), nil
+	return base64.RawURLEncoding.EncodeToString(buf), nil
 }
 
-// Encode returns the base64-encoded URL form: base64("https://<token>@<host>").
+// Encode returns the base64-encoded URL form:
+// base64("<scheme>://<token>@<host>"). The outer envelope stays on
+// base64.StdEncoding so older `ccm launch --via` clients (which do not
+// know about base64url) can still decode tickets produced by newer
+// `ccm share` hosts.
 func (t Ticket) Encode() string {
-	raw := fmt.Sprintf("https://%s@%s", t.Token, t.Host)
+	raw := fmt.Sprintf("%s://%s@%s", t.Scheme, t.Token, t.Host)
 	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
@@ -58,8 +67,8 @@ func DecodeTicket(s string) (Ticket, error) {
 	if err != nil {
 		return Ticket{}, fmt.Errorf("ticket does not decode to a URL: %w", err)
 	}
-	if u.Scheme != "https" {
-		return Ticket{}, fmt.Errorf("ticket scheme must be https (got %q)", u.Scheme)
+	if u.Scheme != "https" && u.Scheme != "http" {
+		return Ticket{}, fmt.Errorf("ticket scheme must be http or https (got %q)", u.Scheme)
 	}
 	if u.User == nil || u.User.Username() == "" {
 		return Ticket{}, fmt.Errorf("ticket is missing access token")
@@ -67,5 +76,5 @@ func DecodeTicket(s string) (Ticket, error) {
 	if u.Host == "" {
 		return Ticket{}, fmt.Errorf("ticket is missing host")
 	}
-	return Ticket{Token: u.User.Username(), Host: u.Host}, nil
+	return Ticket{Scheme: u.Scheme, Token: u.User.Username(), Host: u.Host}, nil
 }
