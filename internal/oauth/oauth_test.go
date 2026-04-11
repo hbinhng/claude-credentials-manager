@@ -694,8 +694,12 @@ func TestFetchUsage_FiveHourAndSevenDay(t *testing.T) {
 	if q5h.Used != 25.5 {
 		t.Errorf("quota[0].Used = %f, want 25.5", q5h.Used)
 	}
-	if q5h.Remaining != 74.5 {
-		t.Errorf("quota[0].Remaining = %f, want 74.5", q5h.Remaining)
+	// ResetsAt must be the raw upstream RFC3339 string, not a formatted
+	// relative string: consumers of FetchUsage (both the human table
+	// renderer and `ccm status -o json`) want to apply their own
+	// formatting, so the field is kept machine-readable at the source.
+	if q5h.ResetsAt != "2099-01-01T00:00:00Z" {
+		t.Errorf("quota[0].ResetsAt = %q, want raw RFC3339 %q", q5h.ResetsAt, "2099-01-01T00:00:00Z")
 	}
 
 	q7d := info.Quotas[1]
@@ -705,8 +709,8 @@ func TestFetchUsage_FiveHourAndSevenDay(t *testing.T) {
 	if q7d.Used != 10.0 {
 		t.Errorf("quota[1].Used = %f, want 10.0", q7d.Used)
 	}
-	if q7d.Remaining != 90.0 {
-		t.Errorf("quota[1].Remaining = %f, want 90.0", q7d.Remaining)
+	if q7d.ResetsAt != "2099-01-07T00:00:00Z" {
+		t.Errorf("quota[1].ResetsAt = %q, want raw RFC3339 %q", q7d.ResetsAt, "2099-01-07T00:00:00Z")
 	}
 }
 
@@ -790,6 +794,9 @@ func TestFetchUsage_EmptyResponse(t *testing.T) {
 }
 
 func TestFetchUsage_UtilizationOver100(t *testing.T) {
+	// Over-utilization (used > 100) flows through unchanged — FetchUsage
+	// no longer clamps or derives a "remaining" field. Consumers of Used
+	// are responsible for deciding how to display the over-limit case.
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, `{"five_hour": {"utilization": 110, "resets_at": "2099-01-01T00:00:00Z"}}`)
@@ -807,8 +814,8 @@ func TestFetchUsage_UtilizationOver100(t *testing.T) {
 	if len(info.Quotas) != 1 {
 		t.Fatalf("got %d quotas, want 1", len(info.Quotas))
 	}
-	if info.Quotas[0].Remaining != 0 {
-		t.Errorf("Remaining = %f, want 0 (clamped)", info.Quotas[0].Remaining)
+	if info.Quotas[0].Used != 110 {
+		t.Errorf("Used = %f, want 110 (passed through unchanged)", info.Quotas[0].Used)
 	}
 }
 
@@ -840,27 +847,27 @@ func TestFetchUsage_RequestHeaders(t *testing.T) {
 
 func TestFormatResetTime_FutureTime(t *testing.T) {
 	t.Parallel()
-	result := formatResetTime("2099-12-31T23:59:59Z")
+	result := FormatResetTime("2099-12-31T23:59:59Z")
 	if result == "" || result == "now" {
-		t.Errorf("formatResetTime(far future) = %q, want 'in Xh...'", result)
+		t.Errorf("FormatResetTime(far future) = %q, want 'in Xh...'", result)
 	}
 	if !strings.HasPrefix(result, "in ") {
-		t.Errorf("formatResetTime(far future) = %q, want prefix 'in '", result)
+		t.Errorf("FormatResetTime(far future) = %q, want prefix 'in '", result)
 	}
 }
 
 func TestFormatResetTime_PastTime(t *testing.T) {
 	t.Parallel()
-	result := formatResetTime("2000-01-01T00:00:00Z")
+	result := FormatResetTime("2000-01-01T00:00:00Z")
 	if result != "now" {
-		t.Errorf("formatResetTime(past) = %q, want %q", result, "now")
+		t.Errorf("FormatResetTime(past) = %q, want %q", result, "now")
 	}
 }
 
 func TestFormatResetTime_Empty(t *testing.T) {
 	t.Parallel()
-	if got := formatResetTime(""); got != "" {
-		t.Errorf("formatResetTime(\"\") = %q, want empty", got)
+	if got := FormatResetTime(""); got != "" {
+		t.Errorf("FormatResetTime(\"\") = %q, want empty", got)
 	}
 }
 

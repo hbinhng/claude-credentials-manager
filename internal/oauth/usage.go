@@ -52,10 +52,9 @@ func (r *UsageResponse) UnmarshalJSON(data []byte) error {
 }
 
 type Quota struct {
-	Name      string
-	Used      float64 // percentage used (0-100)
-	Remaining float64 // percentage remaining (0-100)
-	ResetsAt  string  // human-readable
+	Name     string
+	Used     float64 // percentage used (0-100; may exceed 100 if upstream reports over-utilization)
+	ResetsAt string  // raw RFC3339 upstream timestamp; call FormatResetTime to render
 }
 
 type UsageInfo struct {
@@ -93,47 +92,39 @@ func FetchUsage(accessToken string) *UsageInfo {
 	var quotas []Quota
 
 	if usage.FiveHour != nil && usage.FiveHour.Utilization != nil {
-		used := *usage.FiveHour.Utilization
 		quotas = append(quotas, Quota{
-			Name:      "5h",
-			Used:      used,
-			Remaining: max0(100 - used),
-			ResetsAt:  formatResetTime(usage.FiveHour.ResetsAt),
+			Name:     "5h",
+			Used:     *usage.FiveHour.Utilization,
+			ResetsAt: usage.FiveHour.ResetsAt,
 		})
 	}
 
 	if usage.SevenDay != nil && usage.SevenDay.Utilization != nil {
-		used := *usage.SevenDay.Utilization
 		quotas = append(quotas, Quota{
-			Name:      "7d",
-			Used:      used,
-			Remaining: max0(100 - used),
-			ResetsAt:  formatResetTime(usage.SevenDay.ResetsAt),
+			Name:     "7d",
+			Used:     *usage.SevenDay.Utilization,
+			ResetsAt: usage.SevenDay.ResetsAt,
 		})
 	}
 
 	for key, w := range usage.Extra {
 		model := key[10:] // strip "seven_day_"
-		used := *w.Utilization
 		quotas = append(quotas, Quota{
-			Name:      "7d/" + model,
-			Used:      used,
-			Remaining: max0(100 - used),
-			ResetsAt:  formatResetTime(w.ResetsAt),
+			Name:     "7d/" + model,
+			Used:     *w.Utilization,
+			ResetsAt: w.ResetsAt,
 		})
 	}
 
 	return &UsageInfo{Quotas: quotas}
 }
 
-func max0(v float64) float64 {
-	if v < 0 {
-		return 0
-	}
-	return v
-}
-
-func formatResetTime(s string) string {
+// FormatResetTime converts an RFC3339 quota reset timestamp into a short
+// human-readable relative string (e.g. "in 1h12m", "in 3d4h", "now").
+// Returns "" for an empty input, and the original string on parse
+// failure — upstream may change shape and we'd rather surface something
+// than swallow it.
+func FormatResetTime(s string) string {
 	if s == "" {
 		return ""
 	}
