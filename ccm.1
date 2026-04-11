@@ -138,6 +138,36 @@ on PATH for the capture step. If
 is not already installed, a pinned version is downloaded to
 .B ~/.ccm/bin/
 on first use. The share session stays alive until Ctrl-C.
+.RS
+.PP
+.BR \-\-bind\-host " " \fIhost\fR
+skips the Cloudflare Quick Tunnel entirely.
+.I host
+is placed verbatim into the ticket as the address the remote should
+dial (typical values:
+.BR 192.168.1.5 ,
+.BR my\-laptop.local ,
+.BR host.docker.internal ).
+The listener itself is bound to the TCP wildcard address so any host
+that can route to this machine can reach it, regardless of the string
+passed to
+.BR \-\-bind\-host ;
+the flag is metadata for the ticket, not an interface selector. The
+ticket carries an
+.B http://
+scheme \(em no TLS \(em so only use this on a trusted LAN or for
+container-on-same-host setups. Nothing is downloaded, and no
+.B cloudflared
+binary is fetched or checked for.
+.PP
+.BR \-\-bind\-port " " \fIport\fR
+pins the proxy listener to a specific TCP port instead of letting the
+OS pick. Works with or without
+.BR \-\-bind\-host :
+in the default tunnel mode it just pins the loopback port the tunnel
+forwards to; in bind-host mode it pins the LAN-reachable port the
+remote side connects to.
+.RE
 .TP
 .B "launch {" id-or-name " | \-\-via " ticket "} [\-\- " "claude args" ]
 Run Claude Code against a specific ccm credential without mutating
@@ -427,6 +457,20 @@ Ticket (give this to the remote side):
 
 # on the remote machine
 $ ccm launch --via <base64 ticket> -- -p 'hi'
+.fi
+.RE
+.PP
+Share a credential directly over the LAN (no tunnel) so a container on
+the same host can reach it without the cloudflared round-trip:
+.PP
+.RS
+.nf
+# on the host machine
+$ ccm share work --bind-host host.docker.internal --bind-port 8787
+
+# inside the container
+$ ccm launch --via <base64 ticket> -- -p 'hi' \\
+    --dangerously-skip-permissions
 .fi
 .RE
 .SH PLATFORM NOTES
