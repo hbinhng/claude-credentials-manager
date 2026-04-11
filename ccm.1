@@ -82,7 +82,89 @@ STATUS (valid/expiring soon/expired), EXPIRES (relative time), and an ACTIVE
 marker (*). For each non-expired credential, one line per quota window is
 printed underneath showing remaining percentage and reset time (e.g.
 .IR "5h: 75% (resets in 1h12m)" ).
-Usage data is fetched from all credentials concurrently.
+Usage data is fetched from all credentials concurrently by default; pass
+.B \-\-no\-quota
+to skip the fetch entirely (faster, offline-safe).
+.RS
+.PP
+.BR \-o ", " \-\-output " " \fItable\fR|\fIjson\fR
+selects the output format. The default is
+.BR table .
+With
+.BR "\-o json" ,
+the command emits a stable JSON envelope on stdout of the form
+.PP
+.RS
+.nf
+{
+  "version": 1,
+  "activeId": "<uuid>",
+  "credentials": [
+    {
+      "id": "<uuid>",
+      "name": "<friendly name>",
+      "tier": "Claude Max 20x",
+      "status": "valid",
+      "active": true,
+      "expiresAt": "2026-04-11T15:30:00Z",
+      "createdAt": "2025-01-15T10:30:00Z",
+      "lastRefreshedAt": "2026-04-10T12:00:00Z",
+      "quota": {
+        "fetched": true,
+        "windows": [
+          { "name": "5h", "used": 25,
+            "resetsAt": "2026-04-11T15:30:00Z" }
+        ]
+      }
+    }
+  ]
+}
+.fi
+.RE
+.PP
+Field contracts:
+.B status
+is one of
+.BR valid ", " expiring_soon ", " expired
+(snake_case, stable). A missing tier marshals to
+.BR null ,
+not an empty string.
+.B credentials
+is always an array, even when empty, so
+.B jq '.credentials[]'
+works unconditionally.
+.B quota.fetched
+is
+.B false
+when
+.B \-\-no\-quota
+was passed or when the credential is expired; otherwise it is
+.B true
+and either
+.B windows
+(on success) or
+.B error
+(on failure, e.g.
+.IR "HTTP 429: too many requests" )
+is populated. Each window reports
+.B used
+as a percentage (0\(en100, and occasionally higher when upstream reports
+over-utilization); consumers that want "remaining" can compute
+.BR "100 - used" .
+.B resetsAt
+is the raw upstream RFC3339 timestamp (the table renderer turns it into a
+relative string; JSON consumers get the unmodified value).
+.PP
+The envelope is emitted as minified JSON (no indentation, one trailing
+newline) to keep pipelines compact; pipe through
+.B jq
+for a human-readable view.
+.PP
+.B \-\-no\-quota
+and
+.B \-o
+are orthogonal: any combination is valid.
+.RE
 .TP
 .BR "refresh " [ id-or-name ]
 Refresh the OAuth token for a credential. If
@@ -264,6 +346,21 @@ refreshes complete.
 .BR \-f ", " \-\-force
 (logout only) Skip confirmation when removing an active credential.
 .TP
+.B \-\-no\-quota
+(status only) Skip the live quota API call. The
+.B quota.fetched
+field in JSON output is
+.B false
+and no per-window lines are printed in table mode. Faster and safe to run
+offline.
+.TP
+.BR \-o ", " \-\-output " " \fIformat\fR
+(status only) Output format. Must be
+.B table
+(default) or
+.BR json .
+Any other value is rejected with exit status 1.
+.TP
 .BR \-h ", " \-\-help
 Show help for any command.
 .TP
@@ -399,6 +496,16 @@ List all credentials with quota and tier:
 .RS
 .nf
 $ ccm status
+.fi
+.RE
+.PP
+List credentials without hitting the quota endpoint (offline-safe), or
+as JSON for scripting:
+.PP
+.RS
+.nf
+$ ccm status --no-quota
+$ ccm status -o json | jq '.credentials[] | select(.active)'
 .fi
 .RE
 .PP
