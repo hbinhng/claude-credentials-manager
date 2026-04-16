@@ -14,7 +14,7 @@ import (
 type credState struct {
 	mu    sync.Mutex
 	cred  *store.Credential
-	mtime time.Time
+	mtime time.Time // zero until Fresh() primes it from disk on first reload check
 }
 
 func newCredState(cred *store.Credential) *credState {
