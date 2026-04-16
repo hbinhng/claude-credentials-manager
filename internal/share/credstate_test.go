@@ -1,11 +1,16 @@
 package share
 
 import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -84,5 +89,70 @@ func TestCredStatePeerWriteReload(t *testing.T) {
 	}
 	if got != "access-new" {
 		t.Fatalf("got token %q, want %q", got, "access-new")
+	}
+}
+
+// stubTokenServer returns an httptest.Server that answers /v1/oauth/token
+// with a fixed token response and counts how many times it was hit.
+func stubTokenServer(t *testing.T, access, refresh string, expiresIn int64) (*httptest.Server, *atomic.Int32) {
+	t.Helper()
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  access,
+			"refresh_token": refresh,
+			"expires_in":    expiresIn,
+			"scope":         "user:inference user:profile",
+		})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &hits
+}
+
+// withTokenURL points oauth.TokenURL at srv.URL for the duration of the
+// test.
+func withTokenURL(t *testing.T, url string) {
+	t.Helper()
+	orig := oauth.TokenURL
+	oauth.TokenURL = url
+	t.Cleanup(func() { oauth.TokenURL = orig })
+}
+
+func TestCredStateRefreshOnExpiry(t *testing.T) {
+	setupFakeHome(t)
+	cred := makeCred(t, "33333333-3333-3333-3333-333333333333", "access-old")
+	// Force expired.
+	cred.ClaudeAiOauth.ExpiresAt = time.Now().Add(-1 * time.Second).UnixMilli()
+	if err := store.Save(cred); err != nil {
+		t.Fatalf("save expired: %v", err)
+	}
+
+	srv, hits := stubTokenServer(t, "access-new", "refresh-new", 3600)
+	withTokenURL(t, srv.URL)
+
+	s := newCredState(cred)
+	got, err := s.Fresh()
+	if err != nil {
+		t.Fatalf("Fresh: %v", err)
+	}
+	if got != "access-new" {
+		t.Fatalf("got token %q, want %q", got, "access-new")
+	}
+	if n := hits.Load(); n != 1 {
+		t.Fatalf("oauth.Refresh called %d times, want 1", n)
+	}
+
+	// File on disk should now have the new tokens.
+	reloaded, err := store.Load(cred.ID)
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if reloaded.ClaudeAiOauth.AccessToken != "access-new" {
+		t.Fatalf("disk access token %q, want %q", reloaded.ClaudeAiOauth.AccessToken, "access-new")
+	}
+	if reloaded.ClaudeAiOauth.RefreshToken != "refresh-new" {
+		t.Fatalf("disk refresh token %q, want %q", reloaded.ClaudeAiOauth.RefreshToken, "refresh-new")
 	}
 }

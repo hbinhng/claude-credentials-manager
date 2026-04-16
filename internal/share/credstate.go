@@ -3,9 +3,11 @@ package share
 import (
 	"fmt"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -26,14 +28,48 @@ func newCredState(cred *store.Credential) *credState {
 // Fresh returns the current access token. Cheap path: if the in-memory
 // credential is still valid and the on-disk file has not been written
 // by a peer since we last looked, return the in-memory access token.
-// Later tasks extend this with OAuth refresh.
+// If the token is expired or expiring soon, an OAuth refresh is performed.
 func (s *credState) Fresh() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.reloadIfPeerWrote()
 
+	if !s.cred.IsExpired() && !s.cred.IsExpiringSoon() {
+		return s.cred.ClaudeAiOauth.AccessToken, nil
+	}
+
+	if err := s.refreshLocked(); err != nil {
+		return "", err
+	}
 	return s.cred.ClaudeAiOauth.AccessToken, nil
+}
+
+// refreshLocked runs the OAuth refresh round-trip and persists the new
+// tokens. Caller must hold s.mu. In a later task this is wrapped in a
+// cross-process flock with a double-checked recheck.
+func (s *credState) refreshLocked() error {
+	tokens, err := oauth.Refresh(s.cred.ClaudeAiOauth.RefreshToken)
+	if err != nil {
+		return fmt.Errorf("refresh: %w", err)
+	}
+	s.cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
+	if tokens.RefreshToken != "" {
+		s.cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
+	}
+	s.cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
+	if scopes := strings.Fields(tokens.Scope); len(scopes) > 0 {
+		s.cred.ClaudeAiOauth.Scopes = scopes
+	}
+	s.cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := store.Save(s.cred); err != nil {
+		fmt.Fprintf(errLog(), "ccm: warning: failed to persist refreshed credential: %v\n", err)
+		return nil
+	}
+	if info, err := os.Stat(store.CredPath(s.cred.ID)); err == nil {
+		s.mtime = info.ModTime()
+	}
+	return nil
 }
 
 // reloadIfPeerWrote re-reads the credential from disk if the file's
