@@ -9,12 +9,10 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -44,8 +42,7 @@ type LocalProxy struct {
 	upstream *url.URL
 	rp       *httputil.ReverseProxy
 
-	credMu sync.Mutex
-	cred   *store.Credential
+	credState *credState
 
 	debug bool
 
@@ -76,7 +73,7 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	p := &LocalProxy{
 		listener: ln,
 		upstream: upstream,
-		cred:     cred,
+		credState: newCredState(cred),
 		done:     make(chan struct{}),
 		debug:    os.Getenv("CCM_LAUNCH_DEBUG") == "1",
 	}
@@ -203,34 +200,12 @@ func (p *LocalProxy) onUpstreamError(w http.ResponseWriter, _ *http.Request, err
 	writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm launch: upstream error: "+err.Error())
 }
 
-// getFreshToken returns the current access token, refreshing it first
-// if it is expired or expiring soon. Refresh is synchronized on
-// credMu. Mirrors Proxy.getFreshToken — the two proxies intentionally
-// do not share state, so duplicating this small helper is cheaper
-// than wiring up a shared abstraction.
+// getFreshToken returns the current access token. See credState.Fresh
+// for the full algorithm including peer-write reload and cross-process
+// flock during refresh.
 func (p *LocalProxy) getFreshToken() (string, error) {
-	p.credMu.Lock()
-	defer p.credMu.Unlock()
-	if p.cred == nil {
+	if p.credState == nil {
 		return "", errors.New("no credential")
 	}
-	if p.cred.IsExpired() || p.cred.IsExpiringSoon() {
-		tokens, err := oauth.Refresh(p.cred.ClaudeAiOauth.RefreshToken)
-		if err != nil {
-			return "", fmt.Errorf("refresh: %w", err)
-		}
-		p.cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
-		if tokens.RefreshToken != "" {
-			p.cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
-		}
-		p.cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
-		if scopes := strings.Fields(tokens.Scope); len(scopes) > 0 {
-			p.cred.ClaudeAiOauth.Scopes = scopes
-		}
-		p.cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := store.Save(p.cred); err != nil {
-			fmt.Fprintf(errLog(), "ccm launch: warning: failed to persist refreshed credential: %v\n", err)
-		}
-	}
-	return p.cred.ClaudeAiOauth.AccessToken, nil
+	return p.credState.Fresh()
 }
