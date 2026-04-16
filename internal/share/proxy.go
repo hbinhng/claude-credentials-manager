@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -100,9 +99,11 @@ type Proxy struct {
 	captured http.Header
 	captureC chan struct{} // closed once capture has happened
 
-	// Credential state (may be mutated when refreshing).
-	credMu sync.Mutex
-	cred   *store.Credential
+	// Credential state. Populated by Transition(); nil in CAPTURE mode.
+	// credState owns its own mutex and cross-process flock, so no
+	// additional Proxy-level synchronization is needed for credential
+	// access.
+	credState *credState
 
 	// debug enables verbose per-request logging in the Director. Toggled
 	// via CCM_SHARE_DEBUG=1 at NewProxy time.
@@ -267,7 +268,7 @@ func (p *Proxy) Transition(accessToken string, cred *store.Credential) error {
 		return errors.New("cannot transition: capture never happened")
 	}
 	p.accessToken = accessToken
-	p.cred = cred
+	p.credState = newCredState(cred)
 	p.mode = modeServing
 	p.modeMu.Unlock()
 
@@ -453,34 +454,14 @@ func (p *Proxy) onUpstreamError(w http.ResponseWriter, _ *http.Request, err erro
 	writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: upstream error: "+err.Error())
 }
 
-// getFreshToken returns the current access token, refreshing it first if
-// it is expired or expiring soon. Refresh is synchronized on credMu.
+// getFreshToken returns the current access token, reloading from disk
+// if a peer has written and refreshing via OAuth if expired. See
+// credState.Fresh for the full algorithm.
 func (p *Proxy) getFreshToken() (string, error) {
-	p.credMu.Lock()
-	defer p.credMu.Unlock()
-	if p.cred == nil {
+	if p.credState == nil {
 		return "", errors.New("no credential")
 	}
-	if p.cred.IsExpired() || p.cred.IsExpiringSoon() {
-		tokens, err := oauth.Refresh(p.cred.ClaudeAiOauth.RefreshToken)
-		if err != nil {
-			return "", fmt.Errorf("refresh: %w", err)
-		}
-		p.cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
-		if tokens.RefreshToken != "" {
-			p.cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
-		}
-		p.cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
-		if scopes := strings.Fields(tokens.Scope); len(scopes) > 0 {
-			p.cred.ClaudeAiOauth.Scopes = scopes
-		}
-		p.cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := store.Save(p.cred); err != nil {
-			// Non-fatal: we still have a valid in-memory token, but warn.
-			fmt.Fprintf(errLog(), "ccm share: warning: failed to persist refreshed credential: %v\n", err)
-		}
-	}
-	return p.cred.ClaudeAiOauth.AccessToken, nil
+	return p.credState.Fresh()
 }
 
 // writeAnthropicError emits a JSON body in Anthropic's error envelope
