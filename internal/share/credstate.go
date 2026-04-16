@@ -28,7 +28,10 @@ func newCredState(cred *store.Credential) *credState {
 // Fresh returns the current access token. Cheap path: if the in-memory
 // credential is still valid and the on-disk file has not been written
 // by a peer since we last looked, return the in-memory access token.
-// If the token is expired or expiring soon, an OAuth refresh is performed.
+// If the token is expired or expiring soon, an exclusive cross-process
+// flock is acquired before refreshing. After acquiring the lock a
+// double-check reload is performed — a peer may have already refreshed
+// while we were blocked, in which case we skip the OAuth call entirely.
 func (s *credState) Fresh() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -39,15 +42,25 @@ func (s *credState) Fresh() (string, error) {
 		return s.cred.ClaudeAiOauth.AccessToken, nil
 	}
 
-	if err := s.refreshLocked(); err != nil {
+	err := withLock(s.cred.ID, func() error {
+		// Double-check after acquiring the lock: a peer may have
+		// refreshed while we were blocked. If the reloaded credential
+		// is now fresh, skip our own OAuth call entirely.
+		s.reloadIfPeerWrote()
+		if !s.cred.IsExpired() && !s.cred.IsExpiringSoon() {
+			return nil
+		}
+		return s.refreshLocked()
+	})
+	if err != nil {
 		return "", err
 	}
 	return s.cred.ClaudeAiOauth.AccessToken, nil
 }
 
 // refreshLocked runs the OAuth refresh round-trip and persists the new
-// tokens. Caller must hold s.mu. In a later task this is wrapped in a
-// cross-process flock with a double-checked recheck.
+// tokens. Caller must hold s.mu and the cross-process flock (via
+// withLock).
 func (s *credState) refreshLocked() error {
 	tokens, err := oauth.Refresh(s.cred.ClaudeAiOauth.RefreshToken)
 	if err != nil {
