@@ -267,3 +267,43 @@ func TestCredStateDoubleCheckSkipsRedundantRefresh(t *testing.T) {
 		t.Fatalf("oauth.Refresh called %d times, want 0 (peer already refreshed)", n)
 	}
 }
+
+// TestCredStateReloadErrorFallsBack verifies that when the credential
+// file can no longer be read (permissions revoked mid-session, for
+// example), Fresh falls back to the in-memory copy rather than
+// failing the request.
+func TestCredStateReloadErrorFallsBack(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses file-mode permission checks")
+	}
+	setupFakeHome(t)
+	cred := makeCred(t, "66666666-6666-6666-6666-666666666666", "access-held")
+
+	s := newCredState(cred)
+	// Prime mtime.
+	if _, err := s.Fresh(); err != nil {
+		t.Fatalf("Fresh (prime): %v", err)
+	}
+
+	// Make the credential file unreadable, then bump its mtime so the
+	// stat check inside Fresh decides to reload. The reload (os.ReadFile
+	// inside store.Load) should fail, and Fresh should return the
+	// in-memory token anyway.
+	path := store.CredPath(cred.ID)
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0600) })
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	got, err := s.Fresh()
+	if err != nil {
+		t.Fatalf("Fresh: %v", err)
+	}
+	if got != "access-held" {
+		t.Fatalf("got token %q, want %q", got, "access-held")
+	}
+}
