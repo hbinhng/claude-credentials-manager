@@ -1,6 +1,8 @@
 package share
 
 import (
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -24,9 +26,35 @@ func newCredState(cred *store.Credential) *credState {
 // Fresh returns the current access token. Cheap path: if the in-memory
 // credential is still valid and the on-disk file has not been written
 // by a peer since we last looked, return the in-memory access token.
-// Later tasks extend this with peer reload and OAuth refresh.
+// Later tasks extend this with OAuth refresh.
 func (s *credState) Fresh() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	s.reloadIfPeerWrote()
+
 	return s.cred.ClaudeAiOauth.AccessToken, nil
+}
+
+// reloadIfPeerWrote re-reads the credential from disk if the file's
+// mtime has changed since the last observation. Errors are logged and
+// swallowed — the caller falls back to in-memory state, which matches
+// the existing non-fatal handling of store.Save failures elsewhere in
+// this package.
+func (s *credState) reloadIfPeerWrote() {
+	info, err := os.Stat(store.CredPath(s.cred.ID))
+	if err != nil {
+		fmt.Fprintf(errLog(), "ccm: stat credential file: %v\n", err)
+		return
+	}
+	if info.ModTime().Equal(s.mtime) {
+		return
+	}
+	reloaded, err := store.Load(s.cred.ID)
+	if err != nil {
+		fmt.Fprintf(errLog(), "ccm: reload credential from disk: %v\n", err)
+		return
+	}
+	s.cred = reloaded
+	s.mtime = info.ModTime()
 }

@@ -54,3 +54,35 @@ func TestCredStateCheapPath(t *testing.T) {
 		t.Fatalf("got token %q, want %q", got, "access-1")
 	}
 }
+
+func TestCredStatePeerWriteReload(t *testing.T) {
+	setupFakeHome(t)
+	cred := makeCred(t, "22222222-2222-2222-2222-222222222222", "access-old")
+
+	s := newCredState(cred)
+	// Prime mtime by calling Fresh once.
+	if _, err := s.Fresh(); err != nil {
+		t.Fatalf("Fresh (prime): %v", err)
+	}
+
+	// Simulate a peer rotating tokens: write a new credential with a
+	// different access token to the same path, then bump the file's
+	// mtime so our stat-based detection fires.
+	peer := *cred
+	peer.ClaudeAiOauth.AccessToken = "access-new"
+	if err := store.Save(&peer); err != nil {
+		t.Fatalf("peer store.Save: %v", err)
+	}
+	future := time.Now().Add(2 * time.Second)
+	if err := os.Chtimes(store.CredPath(cred.ID), future, future); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+
+	got, err := s.Fresh()
+	if err != nil {
+		t.Fatalf("Fresh (after peer): %v", err)
+	}
+	if got != "access-new" {
+		t.Fatalf("got token %q, want %q", got, "access-new")
+	}
+}
