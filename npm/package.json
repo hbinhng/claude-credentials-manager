@@ -1,6 +1,6 @@
 {
   "name": "ccm-go",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "description": "Claude Credentials Manager — manage multiple Claude OAuth sessions for Claude Code",
   "bin": {
     "ccm": "bin/ccm"
@@ -19,11 +19,11 @@
   "homepage": "https://github.com/hbinhng/claude-credentials-manager",
   "license": "MIT",
   "optionalDependencies": {
-    "ccm-go.darwin-x64": "1.9.1",
-    "ccm-go.darwin-arm64": "1.9.1",
-    "ccm-go.linux-x64": "1.9.1",
-    "ccm-go.linux-arm64": "1.9.1",
-    "ccm-go.win32-x64": "1.9.1",
-    "ccm-go.win32-arm64": "1.9.1"
+    "ccm-go.darwin-x64": "1.10.0",
+    "ccm-go.darwin-arm64": "1.10.0",
+    "ccm-go.linux-x64": "1.10.0",
+    "ccm-go.linux-arm64": "1.10.0",
+    "ccm-go.win32-x64": "1.10.0",
+    "ccm-go.win32-arm64": "1.10.0"
   }
 }
