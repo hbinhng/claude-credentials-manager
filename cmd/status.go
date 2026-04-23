@@ -95,20 +95,11 @@ var statusCmd = &cobra.Command{
 
 		activeID := claude.ActiveID()
 
-		usages := make([]*oauth.UsageInfo, len(creds))
+		var usages []*oauth.UsageInfo
 		if !noQuota {
-			var wg sync.WaitGroup
-			for i, c := range creds {
-				if c.IsExpired() {
-					continue
-				}
-				wg.Add(1)
-				go func(i int, token string) {
-					defer wg.Done()
-					usages[i] = oauth.FetchUsage(token)
-				}(i, c.ClaudeAiOauth.AccessToken)
-			}
-			wg.Wait()
+			usages = fetchUsagesParallel(creds)
+		} else {
+			usages = make([]*oauth.UsageInfo, len(creds))
 		}
 
 		report := buildStatusReport(creds, usages, activeID, noQuota)
@@ -118,6 +109,28 @@ var statusCmd = &cobra.Command{
 		}
 		return renderStatusTable(report)
 	},
+}
+
+// fetchUsagesParallel fetches quota usage for each non-expired
+// credential concurrently via oauth.FetchUsageFn. Returns a slice
+// aligned by index with creds; entries for expired credentials
+// are left nil. The seam lets tests and the upcoming ccm serve
+// web handler inject a fake FetchUsageFn without HTTP round-trips.
+func fetchUsagesParallel(creds []*store.Credential) []*oauth.UsageInfo {
+	usages := make([]*oauth.UsageInfo, len(creds))
+	var wg sync.WaitGroup
+	for i, c := range creds {
+		if c.IsExpired() {
+			continue
+		}
+		wg.Add(1)
+		go func(i int, token string) {
+			defer wg.Done()
+			usages[i] = oauth.FetchUsageFn(token)
+		}(i, c.ClaudeAiOauth.AccessToken)
+	}
+	wg.Wait()
+	return usages
 }
 
 // writeStatusJSON emits the StatusReport as minified JSON with a single
