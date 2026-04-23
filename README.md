@@ -156,6 +156,27 @@ Does not require any ccm-managed credential on the local machine — the bearer 
 
 In both modes, any arguments after `--` are passed to `claude` verbatim.
 
+### `ccm serve`
+
+Run a local HTTP dashboard that manages multiple concurrent `ccm share` sessions in-process. Useful when you want to hand out tickets to several teammates (or several containers on the same host) without keeping multiple `ccm share` terminals open.
+
+```bash
+# Loopback only; no auth — the default for a local dev box
+ccm serve
+
+# LAN-reachable; auto-generates an admin token and prints it once
+ccm serve --bind-host 0.0.0.0
+
+# Stable token from env + pinned port
+CCM_SERVE_TOKEN=<long-random-string> ccm serve --bind-host 0.0.0.0 --bind-port 8080
+```
+
+The dashboard is a single page — a vanilla-JS SPA, no framework — that polls a small JSON API (`GET /api/credentials`, `GET /api/credentials/:id`, `POST /api/credentials/:id`, `DELETE /api/credentials/:id`). Each credential row shows its tier and status, a **View usage** button that opens a live-quota dialog, and actions: Start tunnel, Start LAN, View ticket, or Stop. The ticket dialog offers three click-to-copy fields — endpoint, raw ticket, and the ready-to-paste `ccm launch --via '<ticket>' --` command.
+
+`--bind-host` on `ccm serve` is a **literal** bind address (unlike `ccm share --bind-host` which is ticket metadata). Empty / `127.0.0.1` / `::1` / `localhost` select loopback-only, which skips auth entirely. Any other value binds that address and activates the admin token.
+
+Only one `ccm serve` runs at a time (enforced via `~/.ccm/serve.pid` with stale-PID detection). Sessions live in-process and do not survive restart. The server speaks HTTP — put it behind a TLS fronting proxy if you're exposing it on an untrusted network.
+
 ### `ccm version`
 
 Print the ccm version, short git commit, and build timestamp. Same as `ccm --version`. Release binaries built via `make dist` embed this metadata at link time; plain `go build` reports `dev/unknown` placeholders.
@@ -173,6 +194,7 @@ All commands accepting `<id-or-name>` resolve the argument in order:
 - **`CCM_PROXY`** — route all outbound ccm traffic through an HTTP(S) or SOCKS5 proxy (e.g. `socks5://user:pass@proxy.example:1080`). Applies to `ccm login`, `ccm refresh`, `ccm status`, `ccm backup`, and the reverse-proxy forwarding of `ccm share` and `ccm launch`. `ccm use` is deliberately excluded — activation is local, and the opportunistic token refresh it does on expired credentials runs direct. The stdlib `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` variables are **not** consulted; only `CCM_PROXY` is respected. Does not affect `cloudflared`'s own connections — set `HTTPS_PROXY` in the shell for those.
 - **`CCM_SHARE_DEBUG=1`** — log captured identity headers and forwarded upstream requests in `ccm share` to stderr.
 - **`CCM_LAUNCH_DEBUG=1`** — log forwarded upstream requests in `ccm launch <id-or-name>` local mode to stderr.
+- **`CCM_SERVE_TOKEN`** — stable admin token for `ccm serve` on non-loopback binds (min 16 chars). When unset, `ccm serve` auto-generates a 22-char URL-safe token and prints it once at startup. Ignored on loopback binds.
 
 ## How it works
 
