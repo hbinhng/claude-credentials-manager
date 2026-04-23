@@ -56,6 +56,13 @@ func (t Ticket) Encode() string {
 	return base64.StdEncoding.EncodeToString([]byte(raw))
 }
 
+// EncodeTicket is a package-level convenience wrapper around Ticket.Encode.
+// It exists so session.go can call EncodeTicket(t) without a method receiver,
+// matching the call-site style used in the session orchestration.
+func EncodeTicket(t Ticket) string {
+	return t.Encode()
+}
+
 // DecodeTicket parses a ticket string produced by Encode.
 func DecodeTicket(s string) (Ticket, error) {
 	s = strings.TrimSpace(s)

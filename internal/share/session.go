@@ -1,6 +1,10 @@
 package share
 
 import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
@@ -42,14 +46,14 @@ type SessionStarter interface {
 //
 // Session is safe for concurrent use.
 type Session interface {
-	Ticket() string             // base64-encoded ticket envelope
+	Ticket() string        // base64-encoded ticket envelope
 	CredID() string
-	Mode() string               // "tunnel" | "lan"
+	Mode() string          // "tunnel" | "lan"
 	StartedAt() time.Time
-	Reach() string              // tunnel URL or "http://<bind-host>:<port>"
-	Stop() error                // idempotent
-	Done() <-chan struct{}      // closed once Stop finishes
-	Err() error                 // non-nil if the session failed after Start
+	Reach() string         // tunnel URL or "http://<bind-host>:<port>"
+	Stop() error           // idempotent
+	Done() <-chan struct{}  // closed once Stop finishes
+	Err() error            // non-nil if the session failed after Start
 }
 
 // defaultStarter is the production SessionStarter. StartSession is the
@@ -65,19 +69,172 @@ func StartSession(cred *store.Credential, opts Options) (Session, error) {
 	return DefaultStarter.StartSession(cred, opts)
 }
 
-// StartSession will be implemented in the next task — for now, return
-// an explicit not-implemented error so the build stays green and
-// compile-time consumers can start wiring against the type.
-func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Session, error) {
-	return nil, errNotImplementedYet
+// captureFn runs the one-shot `claude -p` capture phase against the
+// given proxy. Overridable in tests so the suite does not require
+// claude on PATH. Because this is a package-level var, tests that
+// override it must not run in parallel with other tests that also
+// touch captureFn — stash and restore the original in a defer.
+var captureFn = runCapture
+
+// startCloudflaredFn starts a Cloudflare Quick Tunnel in front of the
+// given loopback URL and blocks until WaitReady succeeds. Returns the
+// running tunnel, its public URL, and any startup error. Overridable
+// in tests so the suite does not require cloudflared on PATH. Same
+// parallel-safety caveat as captureFn — stash and restore.
+var startCloudflaredFn = startCloudflared
+
+type sessionImpl struct {
+	credID    string
+	mode      string
+	reach     string
+	ticket    string
+	startedAt time.Time
+
+	proxy    *Proxy
+	tunnel   *Tunnel
+	stopOnce sync.Once
+	done     chan struct{}
+
+	errMu sync.Mutex
+	err   error
 }
 
-// errNotImplementedYet is a sentinel that only exists during the
-// scaffolding commit. Task 3 removes this symbol entirely as part of
-// the real implementation.
-var errNotImplementedYet = sessionErr("share.StartSession: not implemented yet")
+func (s *sessionImpl) CredID() string        { return s.credID }
+func (s *sessionImpl) Mode() string          { return s.mode }
+func (s *sessionImpl) Reach() string         { return s.reach }
+func (s *sessionImpl) Ticket() string        { return s.ticket }
+func (s *sessionImpl) StartedAt() time.Time  { return s.startedAt }
+func (s *sessionImpl) Done() <-chan struct{}  { return s.done }
 
-// sessionErr is the private error type used by the session package.
-type sessionErr string
+func (s *sessionImpl) Err() error {
+	s.errMu.Lock()
+	defer s.errMu.Unlock()
+	return s.err
+}
 
-func (e sessionErr) Error() string { return string(e) }
+func (s *sessionImpl) setErr(err error) {
+	s.errMu.Lock()
+	s.err = err
+	s.errMu.Unlock()
+}
+
+func (s *sessionImpl) Stop() error {
+	var rerr error
+	s.stopOnce.Do(func() {
+		if s.tunnel != nil {
+			if err := s.tunnel.Close(); err != nil {
+				rerr = err
+			}
+		}
+		if s.proxy != nil {
+			if err := s.proxy.Close(); err != nil && rerr == nil {
+				rerr = err
+			}
+		}
+		close(s.done)
+	})
+	return rerr
+}
+
+func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Session, error) {
+	bindAddr := ListenerBindAddr(opts.BindHost, opts.BindPort)
+	proxy, err := NewProxy(bindAddr)
+	if err != nil {
+		return nil, fmt.Errorf("new proxy: %w", err)
+	}
+
+	proxyErrC := make(chan error, 1)
+	go func() { proxyErrC <- proxy.Start() }()
+
+	if err := captureFn(proxy); err != nil {
+		_ = proxy.Close()
+		return nil, fmt.Errorf("capture: %w", err)
+	}
+
+	accessToken, err := newAccessToken()
+	if err != nil {
+		_ = proxy.Close()
+		return nil, err
+	}
+	if err := proxy.Transition(accessToken, cred); err != nil {
+		_ = proxy.Close()
+		return nil, fmt.Errorf("transition: %w", err)
+	}
+
+	mode := "tunnel"
+	reach := ""
+	var tun *Tunnel
+	if opts.BindHost == "" {
+		ctx, cancel := context.WithCancel(context.Background())
+		t, publicURL, err := startCloudflaredFn(ctx, proxy.Addr())
+		if err != nil {
+			cancel()
+			_ = proxy.Close()
+			return nil, fmt.Errorf("cloudflared: %w", err)
+		}
+		tun = t
+		reach = publicURL
+		t.setShutdownHook(cancel)
+	} else {
+		mode = "lan"
+		reach = fmt.Sprintf("http://%s:%d", opts.BindHost, proxy.Port())
+	}
+
+	ticket := EncodeTicket(Ticket{
+		Scheme: schemeForMode(mode),
+		Host:   hostForMode(mode, opts, proxy, reach),
+		Token:  accessToken,
+	})
+
+	return &sessionImpl{
+		credID:    cred.ID,
+		mode:      mode,
+		reach:     reach,
+		ticket:    ticket,
+		startedAt: time.Now(),
+		proxy:     proxy,
+		tunnel:    tun,
+		done:      make(chan struct{}),
+	}, nil
+}
+
+func newAccessToken() (string, error) {
+	return NewRandomToken()
+}
+
+func schemeForMode(m string) string {
+	if m == "lan" {
+		return "http"
+	}
+	return "https"
+}
+
+func hostForMode(m string, opts Options, p *Proxy, reach string) string {
+	if m == "lan" {
+		return fmt.Sprintf("%s:%d", opts.BindHost, p.Port())
+	}
+	return strings.TrimPrefix(reach, "https://")
+}
+
+// runCapture spawns `claude -p` against the proxy in CAPTURE mode and
+// waits for the proxy to record identity headers. Delegates to the
+// package-level RunCapture with a background context and the default
+// capture prompt, matching the behaviour from cmd/share.go.
+func runCapture(p *Proxy) error {
+	return RunCapture(context.Background(), p, DefaultCapturePrompt)
+}
+
+// startCloudflared starts a Quick Tunnel in front of localURL and
+// blocks until WaitReady succeeds. Returns the running tunnel, its
+// public URL, and any startup error.
+func startCloudflared(ctx context.Context, localURL string) (*Tunnel, string, error) {
+	tun, err := StartTunnel(ctx, localURL)
+	if err != nil {
+		return nil, "", err
+	}
+	if err := tun.WaitReady(ctx, 60*time.Second); err != nil {
+		_ = tun.Close()
+		return nil, "", err
+	}
+	return tun, tun.PublicURL(), nil
+}
