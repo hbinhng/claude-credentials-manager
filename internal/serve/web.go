@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
@@ -109,6 +110,7 @@ func NewHandler(cfg ServerConfig) (http.Handler, error) {
 	mux.HandleFunc("GET /api/credentials/{id}", h.protected(h.apiGetCredential))
 	mux.HandleFunc("POST /api/credentials/{id}", h.protected(h.apiStartSession))
 	mux.HandleFunc("DELETE /api/credentials/{id}", h.protected(h.apiStopSession))
+	mux.HandleFunc("POST /api/credentials/{id}/refresh", h.protected(h.apiRefreshCredential))
 
 	// SPA shell — the catch-all. Any unmatched GET returns the app
 	// page so hard reloads of a client-only route still boot the
@@ -377,6 +379,39 @@ func (h *handler) apiStopSession(w http.ResponseWriter, r *http.Request) {
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
+
+// apiRefreshCredential runs an OAuth refresh round-trip for the
+// credential at :id. If the credential is currently live as a share
+// session, the session's own credState picks up the new tokens on
+// its next request (the store file was rewritten). The handler
+// returns the updated credential detail so the SPA can re-render
+// the row without a second GET.
+func (h *handler) apiRefreshCredential(w http.ResponseWriter, r *http.Request) {
+	credID := r.PathValue("id")
+	if _, err := storeLoadFn(credID); err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "unknown credential"})
+		return
+	}
+	cred, err := refreshCredentialFn(credID)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	sess, _ := h.cfg.Manager.Get(credID)
+	writeJSON(w, http.StatusOK, APICredentialDetail{
+		Version:    APIVersion,
+		ID:         cred.ID,
+		Name:       cred.Name,
+		Tier:       cred.Subscription.Tier,
+		CredStatus: strings.ReplaceAll(cred.Status(), " ", "_"),
+		Session:    toAPISession(sess),
+		Quota:      APIQuota{Fetched: false},
+	})
+}
+
+// refreshCredentialFn is the seam web tests override so HTTP
+// handler tests don't reach for real OAuth endpoints.
+var refreshCredentialFn = credflow.RefreshCredential
 
 // toAPICredential projects a store.Credential plus manager state
 // into the list-response shape.
