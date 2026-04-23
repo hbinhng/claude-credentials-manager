@@ -25,12 +25,18 @@ import (
 //   - 0 lets the OS pick a port.
 //   - non-zero pins the listener to that port.
 //
+// CapturePrompt is the prompt text forwarded to RunCapture during the
+// one-shot `claude -p` identity-capture phase. When empty, StartSession
+// falls back to DefaultCapturePrompt so callers that do not care about
+// the prompt value do not need to supply one.
+//
 // Debug mirrors CCM_SHARE_DEBUG=1 and enables the per-request director
 // logging that already lives in proxy.go.
 type Options struct {
-	BindHost string
-	BindPort int
-	Debug    bool
+	BindHost      string
+	BindPort      int
+	CapturePrompt string // if empty, runCapture falls back to DefaultCapturePrompt
+	Debug         bool
 }
 
 // SessionStarter abstracts StartSession for tests and for consumers
@@ -70,10 +76,11 @@ func StartSession(cred *store.Credential, opts Options) (Session, error) {
 }
 
 // captureFn runs the one-shot `claude -p` capture phase against the
-// given proxy. Overridable in tests so the suite does not require
-// claude on PATH. Because this is a package-level var, tests that
-// override it must not run in parallel with other tests that also
-// touch captureFn — stash and restore the original in a defer.
+// given proxy using the supplied prompt. Overridable in tests so the
+// suite does not require claude on PATH. Because this is a
+// package-level var, tests that override it must not run in parallel
+// with other tests that also touch captureFn — stash and restore the
+// original in a defer.
 var captureFn = runCapture
 
 // startCloudflaredFn starts a Cloudflare Quick Tunnel in front of the
@@ -144,7 +151,11 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 	proxyErrC := make(chan error, 1)
 	go func() { proxyErrC <- proxy.Start() }()
 
-	if err := captureFn(proxy); err != nil {
+	prompt := opts.CapturePrompt
+	if prompt == "" {
+		prompt = DefaultCapturePrompt
+	}
+	if err := captureFn(proxy, prompt); err != nil {
 		_ = proxy.Close()
 		return nil, fmt.Errorf("capture: %w", err)
 	}
@@ -220,15 +231,17 @@ func hostForMode(m string, opts Options, p *Proxy, reach string) string {
 
 // runCapture spawns `claude -p` against the proxy in CAPTURE mode and
 // waits for the proxy to record identity headers. Delegates to the
-// package-level RunCapture with a background context and the default
-// capture prompt, matching the behaviour from cmd/share.go.
+// package-level RunCapture with a background context and the caller-
+// supplied prompt.
 //
 // coverage: unreachable — always overridden by captureFn in tests.
 // Wraps a real subprocess spawn that requires `claude` on PATH; real
 // behaviour is exercised by manual smoke tests and by cmd/share at
 // runtime.
-func runCapture(p *Proxy) error {
-	return RunCapture(context.Background(), p, DefaultCapturePrompt)
+func runCapture(p *Proxy, prompt string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return RunCapture(ctx, p, prompt)
 }
 
 // startCloudflared starts a Cloudflare Quick Tunnel in front of

@@ -37,7 +37,7 @@ func fakeTunnel(onStop func()) *Tunnel {
 func TestStartSession_TunnelHappyPath(t *testing.T) {
 	origCapture := captureFn
 	defer func() { captureFn = origCapture }()
-	captureFn = func(p *Proxy) error {
+	captureFn = func(p *Proxy, _ string) error {
 		p.markCaptured(captureHeadersForTest())
 		return nil
 	}
@@ -100,7 +100,7 @@ func TestStartSession_TunnelHappyPath(t *testing.T) {
 func TestStartSession_LANBindMode(t *testing.T) {
 	origCapture := captureFn
 	defer func() { captureFn = origCapture }()
-	captureFn = func(p *Proxy) error {
+	captureFn = func(p *Proxy, _ string) error {
 		p.markCaptured(captureHeadersForTest())
 		return nil
 	}
@@ -144,7 +144,7 @@ func TestStartSession_LANBindMode(t *testing.T) {
 func TestStartSession_CaptureFailure(t *testing.T) {
 	origCapture := captureFn
 	defer func() { captureFn = origCapture }()
-	captureFn = func(_ *Proxy) error {
+	captureFn = func(_ *Proxy, _ string) error {
 		return errors.New("capture boom")
 	}
 
@@ -171,7 +171,7 @@ func TestStartSession_CaptureFailure(t *testing.T) {
 func TestStartSession_CloudflaredFailure(t *testing.T) {
 	origCapture := captureFn
 	defer func() { captureFn = origCapture }()
-	captureFn = func(p *Proxy) error {
+	captureFn = func(p *Proxy, _ string) error {
 		p.markCaptured(captureHeadersForTest())
 		return nil
 	}
@@ -213,5 +213,61 @@ func TestStartSession_BindPortConflict(t *testing.T) {
 			_ = sess.Stop()
 		}
 		t.Fatalf("StartSession succeeded against a held port")
+	}
+}
+
+func TestStartSession_ThreadsCapturePrompt(t *testing.T) {
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	got := ""
+	captureFn = func(p *Proxy, prompt string) error {
+		got = prompt
+		p.markCaptured(captureHeadersForTest())
+		return nil
+	}
+
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		return fakeTunnel(nil), "https://example.trycloudflare.com", nil
+	}
+
+	cred := fakeCred("prompt-0000-0000-0000-0000-000000000001", "tok")
+	sess, err := StartSession(cred, Options{CapturePrompt: "my custom prompt"})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer sess.Stop()
+
+	if got != "my custom prompt" {
+		t.Errorf("captureFn got prompt=%q, want %q", got, "my custom prompt")
+	}
+}
+
+func TestStartSession_CapturePromptDefaults(t *testing.T) {
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	got := ""
+	captureFn = func(p *Proxy, prompt string) error {
+		got = prompt
+		p.markCaptured(captureHeadersForTest())
+		return nil
+	}
+
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		return fakeTunnel(nil), "https://example.trycloudflare.com", nil
+	}
+
+	cred := fakeCred("prompt-default-0000-0000-0000-000000000002", "tok")
+	sess, err := StartSession(cred, Options{})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer sess.Stop()
+
+	if got != DefaultCapturePrompt {
+		t.Errorf("captureFn got prompt=%q, want DefaultCapturePrompt %q", got, DefaultCapturePrompt)
 	}
 }
