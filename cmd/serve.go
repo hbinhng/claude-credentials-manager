@@ -48,7 +48,6 @@ down cleanly before exiting.`,
 }
 
 func runServe(cmd *cobra.Command, _ []string) error {
-	// coverage: integration
 	bindHost, _ := cmd.Flags().GetString("bind-host")
 	bindPortStr, _ := cmd.Flags().GetString("bind-port")
 	bindPort, err := strconv.Atoi(bindPortStr)
@@ -69,7 +68,7 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer removePIDFile(pidPath)
 
 	mgr := serve.NewManager(share.DefaultStarter, os.Stderr)
-	handler, err := serve.NewHandler(serve.ServerConfig{
+	handler, err := serveNewHandlerFn(serve.ServerConfig{
 		Manager:  mgr,
 		Token:    token,
 		Loopback: loopback,
@@ -96,6 +95,13 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	select {
 	case <-sigCh:
 	case err := <-errCh:
+		// coverage: integration — this branch only fires when
+		// srv.Serve returns before a signal arrives, which in practice
+		// means the listener was closed externally or failed mid-flight.
+		// The healthy "received SIGTERM" path is covered by the
+		// IntegrationLoopback test; forcing this branch from a unit
+		// test requires stubbing srv.Serve, which would defeat the
+		// purpose of the integration coverage.
 		if !errors.Is(err, http.ErrServerClosed) {
 			return err
 		}
@@ -107,6 +113,11 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	srvErr := srv.Shutdown(ctx)
 	return errors.Join(mgrErr, srvErr)
 }
+
+// serveNewHandlerFn is the seam tests override to inject an error
+// from the handler-construction step. Production points at
+// serve.NewHandler.
+var serveNewHandlerFn = serve.NewHandler
 
 // isLoopbackHost returns true when the --bind-host value resolves to
 // loopback-only (and thus auth can be bypassed).

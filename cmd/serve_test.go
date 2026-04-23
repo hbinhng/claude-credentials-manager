@@ -2,12 +2,23 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/serve"
+	"github.com/spf13/cobra"
 )
+
+// errUnitTestHandlerBoom is the sentinel tests use to pin the handler-
+// error branch inside runServe.
+var errUnitTestHandlerBoom = errors.New("unit-test: handler boom")
 
 func TestResolveToken_LoopbackReturnsEmpty(t *testing.T) {
 	t.Setenv("CCM_SERVE_TOKEN", "abcdefghijklmnop")
@@ -119,6 +130,16 @@ func TestWritePIDFile_StaleOverwritten(t *testing.T) {
 	_ = removePIDFile(path)
 }
 
+func TestWritePIDFile_MkdirFails(t *testing.T) {
+	// Pointing the PID file under a path whose parent cannot be a
+	// directory (a char device sits there) exercises the MkdirAll
+	// error branch.
+	badPath := "/dev/null/serve.pid"
+	if err := writePIDFile(badPath); err == nil {
+		t.Fatalf("writePIDFile(%q) succeeded; want mkdir error", badPath)
+	}
+}
+
 func TestWritePIDFile_IgnoresGarbageContent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -185,4 +206,88 @@ func captureStdout(t *testing.T, fn func()) string {
 	fn()
 	_ = w.Close()
 	return <-done
+}
+
+// TestRunServe_PIDFileError exercises the writePIDFile error branch
+// inside runServe. /dev/null/serve.pid has no writable parent.
+func TestRunServe_PIDFileError(t *testing.T) {
+	origUserHomeDir := os.Getenv("HOME")
+	t.Setenv("HOME", "/dev/null")
+	t.Cleanup(func() { _ = os.Setenv("HOME", origUserHomeDir) })
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("bind-host", "127.0.0.1", "")
+	cmd.Flags().String("bind-port", "7878", "")
+
+	if err := runServe(cmd, nil); err == nil {
+		t.Fatalf("runServe succeeded; want pid file error")
+	}
+}
+
+// TestRunServe_NewHandlerError exercises the handler-construction
+// error branch via the serveNewHandlerFn seam.
+func TestRunServe_NewHandlerError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	orig := serveNewHandlerFn
+	serveNewHandlerFn = func(serve.ServerConfig) (http.Handler, error) {
+		return nil, errUnitTestHandlerBoom
+	}
+	t.Cleanup(func() { serveNewHandlerFn = orig })
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("bind-host", "127.0.0.1", "")
+	cmd.Flags().String("bind-port", "7878", "")
+
+	err := runServe(cmd, nil)
+	if err != errUnitTestHandlerBoom {
+		t.Fatalf("err=%v, want handler-boom sentinel", err)
+	}
+}
+
+// TestRunServe_BadBindPort verifies the flag-validation error path.
+func TestRunServe_BadBindPort(t *testing.T) {
+	cmd := &cobra.Command{}
+	cmd.Flags().String("bind-host", "", "")
+	cmd.Flags().String("bind-port", "not-a-number", "")
+
+	if err := runServe(cmd, nil); err == nil || !strings.Contains(err.Error(), "invalid --bind-port") {
+		t.Errorf("err=%v, want 'invalid --bind-port'", err)
+	}
+}
+
+// TestRunServe_ResolveTokenError covers the CCM_SERVE_TOKEN-too-short
+// error path by hitting it via the full RunE entry point.
+func TestRunServe_ResolveTokenError(t *testing.T) {
+	t.Setenv("CCM_SERVE_TOKEN", "short")
+	cmd := &cobra.Command{}
+	cmd.Flags().String("bind-host", "0.0.0.0", "")
+	cmd.Flags().String("bind-port", "7878", "")
+
+	if err := runServe(cmd, nil); err == nil || !strings.Contains(err.Error(), "at least 16") {
+		t.Errorf("err=%v, want token-length error", err)
+	}
+}
+
+// TestRunServe_ListenError exercises the net.Listen error branch by
+// holding the requested port.
+func TestRunServe_ListenError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve: %v", err)
+	}
+	defer held.Close()
+	port := held.Addr().(*net.TCPAddr).Port
+
+	cmd := &cobra.Command{}
+	cmd.Flags().String("bind-host", "127.0.0.1", "")
+	cmd.Flags().String("bind-port", strconv.Itoa(port), "")
+
+	if err := runServe(cmd, nil); err == nil || !strings.Contains(err.Error(), "listen") {
+		t.Errorf("err=%v, want listen error", err)
+	}
 }
