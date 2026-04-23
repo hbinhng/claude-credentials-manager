@@ -96,5 +96,49 @@ func TestStartSession_TunnelHappyPath(t *testing.T) {
 	}
 }
 
+func TestStartSession_LANBindMode(t *testing.T) {
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	captureFn = func(p *Proxy) error {
+		p.markCaptured(captureHeadersForTest())
+		return nil
+	}
+
+	// LAN mode must not start cloudflared; fail the test if called.
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		t.Fatalf("cloudflared must not be started in LAN mode")
+		return nil, "", nil
+	}
+
+	cred := fakeCred("lan-cred-0000-0000-0000-000000000001", "tok-lan")
+
+	sess, err := StartSession(cred, Options{BindHost: "host.docker.internal"})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer sess.Stop()
+
+	if sess.Mode() != "lan" {
+		t.Errorf("Mode=%q, want lan", sess.Mode())
+	}
+	if !strings.HasPrefix(sess.Reach(), "http://host.docker.internal:") {
+		t.Errorf("Reach=%q, want http://host.docker.internal:<port>", sess.Reach())
+	}
+
+	// Decode the ticket and verify the envelope carries the LAN dial target.
+	tk, err := DecodeTicket(sess.Ticket())
+	if err != nil {
+		t.Fatalf("DecodeTicket: %v", err)
+	}
+	if tk.Scheme != "http" {
+		t.Errorf("ticket.Scheme=%q, want http", tk.Scheme)
+	}
+	if !strings.HasPrefix(tk.Host, "host.docker.internal:") {
+		t.Errorf("ticket.Host=%q, want host.docker.internal:<port>", tk.Host)
+	}
+}
+
 // avoid unused-import errors for errors package until tasks 4-5 add failure tests
 var _ = errors.New
