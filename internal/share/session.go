@@ -94,9 +94,6 @@ type sessionImpl struct {
 	tunnel   *Tunnel
 	stopOnce sync.Once
 	done     chan struct{}
-
-	errMu sync.Mutex
-	err   error
 }
 
 func (s *sessionImpl) CredID() string        { return s.credID }
@@ -106,28 +103,29 @@ func (s *sessionImpl) Ticket() string        { return s.ticket }
 func (s *sessionImpl) StartedAt() time.Time  { return s.startedAt }
 func (s *sessionImpl) Done() <-chan struct{}  { return s.done }
 
-func (s *sessionImpl) Err() error {
-	s.errMu.Lock()
-	defer s.errMu.Unlock()
-	return s.err
-}
-
-func (s *sessionImpl) setErr(err error) {
-	s.errMu.Lock()
-	s.err = err
-	s.errMu.Unlock()
-}
+// Err always returns nil in the current implementation — StartSession
+// fails synchronously and there is no post-start failure-monitoring
+// goroutine yet. The method exists to satisfy the Session interface
+// and to leave the door open for future failure propagation without
+// a signature change.
+func (s *sessionImpl) Err() error { return nil }
 
 func (s *sessionImpl) Stop() error {
 	var rerr error
 	s.stopOnce.Do(func() {
 		if s.tunnel != nil {
 			if err := s.tunnel.Close(); err != nil {
+				// coverage: unreachable — NewTunnelForTest always returns nil
+				// from Close; the real cloudflared path is not exercised in
+				// unit tests. Error surface kept for completeness.
 				rerr = err
 			}
 		}
 		if s.proxy != nil {
 			if err := s.proxy.Close(); err != nil && rerr == nil {
+				// coverage: unreachable — server.Shutdown on a just-started
+				// test proxy always returns nil within the 5s deadline.
+				// Propagated for completeness.
 				rerr = err
 			}
 		}
@@ -154,10 +152,14 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 	accessToken, err := newAccessToken()
 	if err != nil {
 		_ = proxy.Close()
+		// coverage: unreachable — crypto/rand only errors on a kernel RNG
+		// failure, which is not exercisable in tests.
 		return nil, err
 	}
 	if err := proxy.Transition(accessToken, cred); err != nil {
 		_ = proxy.Close()
+		// coverage: unreachable — Transition errors only when capture has
+		// not run; StartSession always runs capture first via captureFn.
 		return nil, fmt.Errorf("transition: %w", err)
 	}
 
@@ -220,13 +222,21 @@ func hostForMode(m string, opts Options, p *Proxy, reach string) string {
 // waits for the proxy to record identity headers. Delegates to the
 // package-level RunCapture with a background context and the default
 // capture prompt, matching the behaviour from cmd/share.go.
+//
+// coverage: unreachable — always overridden by captureFn in tests.
+// Wraps a real subprocess spawn that requires `claude` on PATH; real
+// behaviour is exercised by manual smoke tests and by cmd/share at
+// runtime.
 func runCapture(p *Proxy) error {
 	return RunCapture(context.Background(), p, DefaultCapturePrompt)
 }
 
-// startCloudflared starts a Quick Tunnel in front of localURL and
-// blocks until WaitReady succeeds. Returns the running tunnel, its
-// public URL, and any startup error.
+// startCloudflared starts a Cloudflare Quick Tunnel in front of
+// localURL and blocks until WaitReady succeeds.
+//
+// coverage: unreachable — always overridden by startCloudflaredFn in
+// tests. Wraps real subprocess + network I/O; real behaviour is
+// exercised by manual smoke tests and by cmd/share at runtime.
 func startCloudflared(ctx context.Context, localURL string) (*Tunnel, string, error) {
 	tun, err := StartTunnel(ctx, localURL)
 	if err != nil {
