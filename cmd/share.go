@@ -1,14 +1,11 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -57,127 +54,54 @@ The share session stays alive until you press Ctrl-C.`,
 			return err
 		}
 
-		// Refresh up front if the token is close to expiring so the
-		// share session doesn't go stale 30 seconds in.
-		if cred.IsExpired() || cred.IsExpiringSoon() {
-			fmt.Println("Credential is expired or expiring soon — refreshing...")
-			tokens, err := oauth.Refresh(cred.ClaudeAiOauth.RefreshToken)
-			if err != nil {
-				return fmt.Errorf("refresh: %w", err)
-			}
-			cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
-			if tokens.RefreshToken != "" {
-				cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
-			}
-			cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
-			cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-			if err := store.Save(cred); err != nil {
-				return fmt.Errorf("save refreshed credential: %w", err)
-			}
+		opts := share.Options{
+			BindHost:      bindHost,
+			BindPort:      bindPort,
+			CapturePrompt: prompt,
+			Debug:         os.Getenv("CCM_SHARE_DEBUG") == "1",
 		}
-
-		ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer cancel()
-
-		proxy, err := share.NewProxy(share.ListenerBindAddr(bindHost, bindPort))
-		if err != nil {
-			return fmt.Errorf("start proxy: %w", err)
-		}
-		defer proxy.Close()
-
-		proxyErrC := make(chan error, 1)
-		go func() { proxyErrC <- proxy.Start() }()
-
-		// Step 1: capture identity headers from the local claude install.
-		fmt.Println("Capturing Claude Code identity headers (this may take a few seconds)...")
-		if err := share.RunCapture(ctx, proxy, prompt); err != nil {
-			return fmt.Errorf("capture: %w", err)
-		}
-
-		// Step 2: mint access token, transition proxy into serving.
-		accessToken, err := share.NewRandomToken()
+		sess, err := share.StartSession(cred, opts)
 		if err != nil {
 			return err
 		}
-		if err := proxy.Transition(accessToken, cred); err != nil {
-			return fmt.Errorf("transition proxy: %w", err)
+		defer sess.Stop()
+
+		displayName := cred.Name
+		if displayName == "" {
+			displayName = cred.ID[:8]
 		}
 
-		// Step 3: stand up the reach path. With --bind-host the proxy is
-		// already reachable on the LAN via 0.0.0.0:<proxy.Port()>, so we
-		// skip the Cloudflare tunnel entirely (no cloudflared download,
-		// no 100s edge latency budget). Without --bind-host we fall back
-		// to a Quick Tunnel.
-		var ticket share.Ticket
-		var reachDesc string
-		if bindHost != "" {
-			ticket = share.Ticket{
-				Scheme: "http",
-				Token:  accessToken,
-				Host:   fmt.Sprintf("%s:%d", bindHost, proxy.Port()),
-			}
-			reachDesc = fmt.Sprintf("http://%s (LAN)", ticket.Host)
-		} else {
-			fmt.Println("Starting Cloudflare Quick Tunnel...")
-			tunnel, err := share.StartTunnel(ctx, proxy.Addr())
-			if err != nil {
-				return fmt.Errorf("start tunnel: %w", err)
-			}
-			defer tunnel.Close()
-
-			// Cloudflare prints the tunnel URL before the edge has the
-			// route. Poll healthz until the URL actually resolves so
-			// the "live" banner is not a lie.
-			fmt.Println("Waiting for tunnel to become reachable...")
-			if err := tunnel.WaitReady(ctx, 60*time.Second); err != nil {
-				return fmt.Errorf("tunnel readiness: %w", err)
-			}
-			ticket = share.Ticket{
-				Scheme: "https",
-				Token:  accessToken,
-				Host:   trimScheme(tunnel.URL),
-			}
-			reachDesc = tunnel.URL
-		}
-
-		// Step 4: print the ticket.
 		fmt.Println()
-		fmt.Printf("Share session for %s (%s) is live.\n", cred.Name, cred.ID[:8])
-		if bindHost != "" {
-			fmt.Printf("  reach:   %s\n", reachDesc)
+		fmt.Printf("Share session for %s (%s) is live.\n", displayName, cred.ID[:8])
+		if sess.Mode() == "lan" {
+			fmt.Printf("  reach:   %s (LAN)\n", sess.Reach())
 			fmt.Println("  WARNING: listener is LAN-reachable — anyone who can route")
 			fmt.Println("           to this machine AND has the ticket can use this")
 			fmt.Println("           credential.")
 		} else {
-			fmt.Printf("  tunnel:  %s\n", reachDesc)
+			fmt.Printf("  tunnel:  %s\n", sess.Reach())
 		}
 		fmt.Println()
 		fmt.Println("Ticket (give this to the remote side):")
 		fmt.Println()
-		fmt.Printf("  %s\n", ticket.Encode())
+		fmt.Printf("  %s\n", sess.Ticket())
 		fmt.Println()
 		fmt.Println("On the remote machine, run:")
-		fmt.Printf("  ccm launch --via %s\n", ticket.Encode())
+		fmt.Printf("  ccm launch --via %s\n", sess.Ticket())
 		fmt.Println()
 		fmt.Println("Press Ctrl-C to stop the share session.")
 
+		sigC := make(chan os.Signal, 1)
+		signal.Notify(sigC, os.Interrupt, syscall.SIGTERM)
+		defer signal.Stop(sigC)
+
 		select {
-		case <-ctx.Done():
+		case <-sigC:
 			fmt.Println()
 			fmt.Println("Stopping share session...")
 			return nil
-		case err := <-proxyErrC:
-			return fmt.Errorf("proxy exited: %w", err)
+		case <-sess.Done():
+			return sess.Err()
 		}
 	},
-}
-
-// trimScheme strips "https://" from the front of a URL so the host is
-// usable in the ticket's user-info form.
-func trimScheme(u string) string {
-	const pfx = "https://"
-	if len(u) >= len(pfx) && u[:len(pfx)] == pfx {
-		return u[len(pfx):]
-	}
-	return u
 }
