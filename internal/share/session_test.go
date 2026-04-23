@@ -3,6 +3,7 @@ package share
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -140,5 +141,77 @@ func TestStartSession_LANBindMode(t *testing.T) {
 	}
 }
 
-// avoid unused-import errors for errors package until tasks 4-5 add failure tests
-var _ = errors.New
+func TestStartSession_CaptureFailure(t *testing.T) {
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	captureFn = func(_ *Proxy) error {
+		return errors.New("capture boom")
+	}
+
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		t.Fatalf("cloudflared must not run when capture fails")
+		return nil, "", nil
+	}
+
+	cred := fakeCred("fail-0000-0000-0000-0000-000000000001", "tok")
+	sess, err := StartSession(cred, Options{})
+	if err == nil {
+		if sess != nil {
+			_ = sess.Stop()
+		}
+		t.Fatalf("StartSession succeeded; want capture error")
+	}
+	if !strings.Contains(err.Error(), "capture") {
+		t.Errorf("err=%v, want to contain 'capture'", err)
+	}
+}
+
+func TestStartSession_CloudflaredFailure(t *testing.T) {
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	captureFn = func(p *Proxy) error {
+		p.markCaptured(captureHeadersForTest())
+		return nil
+	}
+
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		return nil, "", errors.New("cloudflared boom")
+	}
+
+	cred := fakeCred("fail-0000-0000-0000-0000-000000000002", "tok")
+	sess, err := StartSession(cred, Options{})
+	if err == nil {
+		if sess != nil {
+			_ = sess.Stop()
+		}
+		t.Fatalf("StartSession succeeded; want cloudflared error")
+	}
+	if !strings.Contains(err.Error(), "cloudflared") {
+		t.Errorf("err=%v, want to contain 'cloudflared'", err)
+	}
+}
+
+func TestStartSession_BindPortConflict(t *testing.T) {
+	// Grab a port and hold it so the second NewProxy must fail.
+	held, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("held listener: %v", err)
+	}
+	defer held.Close()
+	port := held.Addr().(*net.TCPAddr).Port
+
+	// No captureFn override needed: NewProxy fails before capture is reached.
+
+	cred := fakeCred("bind-fail-0000-0000-0000-000000000003", "tok")
+	sess, err := StartSession(cred, Options{BindHost: "127.0.0.1", BindPort: port})
+	if err == nil {
+		if sess != nil {
+			_ = sess.Stop()
+		}
+		t.Fatalf("StartSession succeeded against a held port")
+	}
+}
