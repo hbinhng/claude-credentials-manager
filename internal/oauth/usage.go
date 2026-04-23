@@ -62,6 +62,14 @@ type UsageInfo struct {
 	Error  string // non-empty if fetch failed
 }
 
+// FetchUsageFn is the function the rest of ccm calls to fetch quota
+// usage. By default it points at FetchUsage; tests may override it to
+// inject a canned response without spinning up an httptest server.
+// This is a deliberately small consumer-side seam — the HTTP-level
+// UsageURL override stays available for end-to-end tests in this
+// package.
+var FetchUsageFn = FetchUsage
+
 // FetchUsage calls the Claude OAuth usage endpoint and returns quota info.
 func FetchUsage(accessToken string) *UsageInfo {
 	req, err := http.NewRequest("GET", UsageURL, nil)

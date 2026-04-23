@@ -3,7 +3,9 @@ package cmd
 import (
 	"bytes"
 	"encoding/json"
+	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -251,5 +253,51 @@ func TestBuildStatusReport_EnvelopeJSONShape(t *testing.T) {
 	}
 	if !strings.Contains(s, `"credentials":[]`) {
 		t.Errorf("envelope = %s, want credentials:[] (not null)", s)
+	}
+}
+
+func TestFetchUsagesParallel_UsesFetchUsageFnSeam(t *testing.T) {
+	orig := oauth.FetchUsageFn
+	defer func() { oauth.FetchUsageFn = orig }()
+
+	tokens := make([]string, 0, 2)
+	var mu sync.Mutex
+	oauth.FetchUsageFn = func(token string) *oauth.UsageInfo {
+		mu.Lock()
+		tokens = append(tokens, token)
+		mu.Unlock()
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10, ResetsAt: "2099-01-01T00:00:00Z"}}}
+	}
+
+	valid := fakeCred("1111aaaa-0000-0000-0000-000000000001", "valid", "Claude Pro", 3600*1000)
+	valid.ClaudeAiOauth.AccessToken = "tok-valid"
+	expired := fakeCred("2222bbbb-0000-0000-0000-000000000002", "old", "Claude Pro", -3600*1000)
+	expired.ClaudeAiOauth.AccessToken = "tok-expired"
+	another := fakeCred("3333cccc-0000-0000-0000-000000000003", "other", "Claude Pro", 3600*1000)
+	another.ClaudeAiOauth.AccessToken = "tok-other"
+
+	usages := fetchUsagesParallel([]*store.Credential{valid, expired, another})
+
+	if len(usages) != 3 {
+		t.Fatalf("len(usages) = %d, want 3", len(usages))
+	}
+	if usages[0] == nil || len(usages[0].Quotas) != 1 {
+		t.Errorf("usages[0] not populated from seam: %+v", usages[0])
+	}
+	if usages[1] != nil {
+		t.Errorf("usages[1] should be nil for expired credential, got %+v", usages[1])
+	}
+	if usages[2] == nil || len(usages[2].Quotas) != 1 {
+		t.Errorf("usages[2] not populated from seam: %+v", usages[2])
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(tokens) != 2 {
+		t.Errorf("seam called %d times, want 2 (expired skipped)", len(tokens))
+	}
+	sort.Strings(tokens)
+	if tokens[0] != "tok-other" || tokens[1] != "tok-valid" {
+		t.Errorf("seam tokens = %v, want [tok-other tok-valid]", tokens)
 	}
 }
