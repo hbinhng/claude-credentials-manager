@@ -1,0 +1,23 @@
+# Keep the Docker build context small and reproducible. The Makefile
+# reads npm/package.json for VERSION and `git rev-parse` for COMMIT,
+# so those are deliberately NOT excluded.
+
+# Build outputs
+/ccm
+/ccm.exe
+/dist/
+
+# Brainstorming specs and writing-plans output (kept untracked per
+# project convention)
+/docs/
+
+# Stray files at the repo root that sometimes land here but aren't
+# part of the Go build
+/package.json
+/package-lock.json
+/node_modules/
+
+# Local editor / OS cruft
+.DS_Store
+*.swp
+*.swo
