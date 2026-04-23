@@ -30,6 +30,15 @@ type Tunnel struct {
 	waitOnce sync.Once
 	waitErr  error
 	done     chan struct{}
+
+	// testCloseHook is called by Close() instead of the real subprocess
+	// kill path when non-nil. Used only by NewTunnelForTest.
+	testCloseHook func()
+
+	// shutdownHook is called at the end of the real Close() path when
+	// non-nil. Used by the session to attach a context-cancel func so
+	// tunnel teardown propagates cancellation.
+	shutdownHook func()
 }
 
 // StartTunnel launches `cloudflared tunnel --url http://127.0.0.1:<port>`,
@@ -155,7 +164,17 @@ func (t *Tunnel) WaitReady(ctx context.Context, timeout time.Duration) error {
 
 // Close sends SIGTERM to cloudflared and waits for it to exit.
 func (t *Tunnel) Close() error {
-	if t == nil || t.cmd == nil || t.cmd.Process == nil {
+	if t == nil {
+		return nil
+	}
+	// Test-only shortcut: if a testCloseHook is set, use it instead of
+	// the real subprocess kill. This lets tests verify Stop() behaviour
+	// without spawning cloudflared.
+	if t.testCloseHook != nil {
+		t.testCloseHook()
+		return nil
+	}
+	if t.cmd == nil || t.cmd.Process == nil {
 		return nil
 	}
 	t.waitOnce.Do(func() {
@@ -166,6 +185,34 @@ func (t *Tunnel) Close() error {
 			_ = t.cmd.Process.Kill()
 			<-t.done
 		}
+		if t.shutdownHook != nil {
+			t.shutdownHook()
+		}
 	})
 	return t.waitErr
+}
+
+// PublicURL returns the https://… Cloudflare Quick Tunnel address.
+// It is the same value as the URL field; the accessor exists so
+// session.go can call it without referring to the struct field directly.
+func (t *Tunnel) PublicURL() string {
+	return t.URL
+}
+
+// NewTunnelForTest returns a Tunnel that does not spawn a cloudflared
+// subprocess. Its Close() invokes onClose (if non-nil) and returns
+// nil. Use only in tests.
+//
+// Close() is NOT idempotent at the Tunnel level — calling it twice
+// runs onClose twice. Callers that need idempotency (e.g. sessionImpl)
+// wrap Close in sync.Once themselves.
+func NewTunnelForTest(onClose func()) *Tunnel {
+	return &Tunnel{testCloseHook: onClose}
+}
+
+// setShutdownHook attaches fn to the tunnel so that it is called when
+// the real cloudflared process exits (at the end of Close()). Used by
+// the session to propagate cancellation when the tunnel dies.
+func (t *Tunnel) setShutdownHook(fn func()) {
+	t.shutdownHook = fn
 }

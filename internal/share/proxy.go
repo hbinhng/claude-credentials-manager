@@ -479,6 +479,22 @@ func writeAnthropicError(w http.ResponseWriter, status int, kind, message string
 	_ = json.NewEncoder(w).Encode(payload)
 }
 
+// markCaptured stores the captured identity headers and closes the
+// capture-done channel. Idempotent: a second call is a no-op (the
+// closed channel select handles it). Used by session.go's test seam
+// to drive capture without spawning `claude -p`.
+func (p *Proxy) markCaptured(h http.Header) {
+	p.modeMu.Lock()
+	first := p.captured == nil
+	if first {
+		p.captured = h.Clone()
+	}
+	p.modeMu.Unlock()
+	if first {
+		close(p.captureC)
+	}
+}
+
 // errLog returns a writer for diagnostic log output. Abstracted so tests
 // can redirect it if needed.
 var errLog = func() io.Writer { return os.Stderr }
