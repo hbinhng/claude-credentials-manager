@@ -1,4 +1,4 @@
-.TH CCM 1 "April 2026" "ccm 1.9.1" "User Commands"
+.TH CCM 1 "April 2026" "ccm 1.10.0" "User Commands"
 .SH NAME
 ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH SYNOPSIS
@@ -304,6 +304,71 @@ must be on
 .BR PATH .
 .RE
 .TP
+.B "serve [\-\-bind-host " \fIaddr\fR "] [\-\-bind-port " \fIport\fR "]"
+Run a local HTTP dashboard for managing
+.B "ccm share"
+sessions. The server holds multiple concurrent share sessions
+in-process, one per credential, each equivalent to a standalone
+.B "ccm share"
+invocation.
+.RS
+.PP
+Without flags the dashboard binds
+.B 127.0.0.1:7878
+and requires no authentication \(em loopback is the trust boundary.
+Any non-loopback
+.B \-\-bind-host
+value binds that address literally (e.g.
+.BR 0.0.0.0 ,
+.BR 192.168.1.5 ,
+.BR :: )
+and activates an admin token:
+.B CCM_SERVE_TOKEN
+is used if set (minimum 16 characters), otherwise a 22-character
+URL-safe random token is generated and printed once on stderr at
+startup. The token is accepted via
+.BR "Authorization: Bearer " \fItok\fR ,
+a
+.B ccm_serve_token
+cookie, or a
+.BI ?token= tok
+query parameter (the startup banner prints a ready-to-click URL
+containing the token).
+.PP
+.B \-\-bind-port
+pins the listening port (default
+.BR 7878 ).
+.PP
+The dashboard is a single-page application (vanilla JS, no
+framework) that polls a small JSON API:
+.BR "GET /api/credentials" " lists every credential in the store"
+with a live-session projection;
+.BR "GET /api/credentials/<id>" " includes a live quota fetch so the"
+View Usage dialog can render it on demand;
+.BR "POST /api/credentials/<id>" " starts a session (body"
+.BR \fB{"mode":"tunnel"}\fR " or"
+.BR \fB{"mode":"lan","bindHost":"<host>","bindPort":<port>}\fR ");"
+.BR "DELETE /api/credentials/<id>" " stops one."
+The UI shows one row per credential with Name, Tier, Status,
+Session state, a View Usage button (opens a dialog), and per-row
+actions: Start tunnel, Start LAN, View ticket, or Stop. The share
+session orchestration is shared with the CLI \(em starting a
+session from the dashboard behaves exactly like running
+.B "ccm share"
+for that credential.
+.PP
+The server speaks plain HTTP; put it behind a TLS fronting proxy
+on a hostile network. Managed share sessions live in-process only
+and do not survive restart. Ctrl-C tears every managed session
+down cleanly before exiting.
+.PP
+Only one
+.B "ccm serve"
+runs at a time, enforced via
+.B ~/.ccm/serve.pid
+with stale-PID detection.
+.RE
+.TP
 .BI "completion " shell
 Generate a shell completion script for
 .IR bash ", " zsh ", " fish ", or " powershell .
@@ -360,6 +425,24 @@ offline.
 (default) or
 .BR json .
 Any other value is rejected with exit status 1.
+.TP
+.BR \-\-bind-host " " \fIaddr\fR
+(share and serve) Usage differs by command. For
+.BR "ccm share" ,
+presence is metadata \(em the value is the host the remote side
+should dial, and the listener wildcards regardless of the string.
+For
+.BR "ccm serve" ,
+the value is the literal listener address: empty / 127.0.0.1 / ::1
+/ localhost select loopback-only (no auth); any other value binds
+that address with mandatory admin token auth.
+.TP
+.BR \-\-bind-port " " \fIport\fR
+(share and serve) TCP port to bind. Defaults: OS-chosen for
+.BR "ccm share" ;
+.B 7878
+for
+.BR "ccm serve" .
 .TP
 .BR \-h ", " \-\-help
 Show help for any command.
@@ -472,6 +555,14 @@ the local passthrough proxy used by
 .I id-or-name
 logs each forwarded upstream request (method, URL, and a redacted subset
 of headers) to standard error.
+.TP
+.B CCM_SERVE_TOKEN
+Stable admin token for
+.BR "ccm serve" .
+Minimum 16 characters. Used verbatim if set on a non-loopback bind;
+otherwise a random 22-character URL-safe token is generated and
+printed once at startup. Ignored on loopback binds (no auth required
+there).
 .SH EXAMPLES
 Authenticate a new account (credential is named after the account email):
 .PP
@@ -578,6 +669,21 @@ $ ccm share work --bind-host host.docker.internal --bind-port 8787
 # inside the container
 $ ccm launch --via <base64 ticket> -- -p 'hi' \\
     --dangerously-skip-permissions
+.fi
+.RE
+.PP
+Run the local web dashboard and expose it to the LAN with a stable
+token from the environment:
+.PP
+.RS
+.nf
+$ CCM_SERVE_TOKEN=<long-random-string> \\
+    ccm serve --bind-host 0.0.0.0
+ccm serve 1.10.0 is live.
+  url:    http://0.0.0.0:7878
+  token:  <long-random-string>
+  open:   http://0.0.0.0:7878/?token=<long-random-string>
+Press Ctrl-C to stop (tears down all managed sessions).
 .fi
 .RE
 .SH PLATFORM NOTES
