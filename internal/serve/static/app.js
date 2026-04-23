@@ -96,19 +96,20 @@
   }
 
   function actionButtonsHTML(c) {
+    var buttons;
     if (c.session) {
-      return (
+      buttons =
         '<button class="btn sm" data-action="ticket" data-id="' + attr(c.id) + '">View ticket</button>' +
-        '<button class="btn sm destructive" data-action="stop" data-id="' + attr(c.id) + '">Stop</button>'
-      );
+        '<button class="btn sm destructive" data-action="stop" data-id="' + attr(c.id) + '">Stop</button>';
+    } else if (c.credStatus === "expired") {
+      buttons =
+        '<button class="btn sm" data-action="refresh" data-id="' + attr(c.id) + '">Refresh</button>';
+    } else {
+      buttons =
+        '<button class="btn sm primary" data-action="start-tunnel" data-id="' + attr(c.id) + '">Start tunnel</button>' +
+        '<button class="btn sm" data-action="start-lan" data-id="' + attr(c.id) + '">Start LAN</button>';
     }
-    if (c.credStatus === "expired") {
-      return '<span class="muted">can\'t share expired</span>';
-    }
-    return (
-      '<button class="btn sm primary" data-action="start-tunnel" data-id="' + attr(c.id) + '">Start tunnel</button>' +
-      '<button class="btn sm" data-action="start-lan" data-id="' + attr(c.id) + '">Start LAN</button>'
-    );
+    return '<span class="actions-group">' + buttons + '</span>';
   }
 
   function bindRowActions(creds) {
@@ -127,6 +128,7 @@
             case "start-tunnel":  return startSession(cred, { mode: "tunnel" });
             case "start-lan":     return openStartLANDialog(cred);
             case "stop":          return stopSession(cred);
+            case "refresh":       return refreshCredential(cred, btn);
           }
         });
       })(nodes[i]);
@@ -186,6 +188,28 @@
       })
       .catch(function (err) {
         toast("Could not start", err.message || "unknown error", "destructive");
+      });
+  }
+
+  function refreshCredential(cred, btn) {
+    // Disable the button for the duration of the round-trip — OAuth
+    // refresh is a network call and the user shouldn't be able to
+    // queue five.
+    if (btn) {
+      btn.disabled = true;
+      btn.textContent = "Refreshing…";
+    }
+    postJSON("/api/credentials/" + encodeURIComponent(cred.id) + "/refresh", null)
+      .then(function () {
+        toast("Refreshed", "Tokens for " + (cred.name || cred.id) + " renewed.", "success");
+        pollOnce();
+      })
+      .catch(function (err) {
+        toast("Refresh failed", err.message || "unknown error", "destructive");
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "Refresh";
+        }
       });
   }
 

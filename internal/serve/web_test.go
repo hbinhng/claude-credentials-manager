@@ -855,6 +855,83 @@ func TestAPIStopSession_Unknown(t *testing.T) {
 	}
 }
 
+// ---- POST /api/credentials/{id}/refresh --------------------------
+
+// stubRefresh swaps the refreshCredentialFn seam. Restore via the
+// returned closure.
+func stubRefresh(fn func(string) (*store.Credential, error)) func() {
+	orig := refreshCredentialFn
+	refreshCredentialFn = fn
+	return func() { refreshCredentialFn = orig }
+}
+
+func TestAPIRefreshCredential_HappyPath(t *testing.T) {
+	cred := fakeCredModel("r-1", "refreshable", "Claude Pro")
+	defer stubStore(t, []*store.Credential{cred}, nil)()
+	defer stubRefresh(func(id string) (*store.Credential, error) {
+		if id != "r-1" {
+			t.Errorf("refresh got id=%q, want r-1", id)
+		}
+		// Simulate the post-refresh state.
+		out := fakeCredModel(id, "refreshable", "Claude Max 20x")
+		out.ClaudeAiOauth.AccessToken = "refreshed-token"
+		return out, nil
+	})()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/credentials/r-1/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, want 200", resp.StatusCode)
+	}
+	var d APICredentialDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if d.Tier != "Claude Max 20x" {
+		t.Errorf("Tier=%q, want Claude Max 20x (refreshed profile)", d.Tier)
+	}
+}
+
+func TestAPIRefreshCredential_Unknown(t *testing.T) {
+	defer stubStore(t, nil, nil)()
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/credentials/nope/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", resp.StatusCode)
+	}
+}
+
+func TestAPIRefreshCredential_RefreshError(t *testing.T) {
+	cred := fakeCredModel("r-fail", "revoked", "Claude Pro")
+	defer stubStore(t, []*store.Credential{cred}, nil)()
+	defer stubRefresh(func(string) (*store.Credential, error) {
+		return nil, errors.New("refresh token expired or revoked. Re-authenticate with `ccm login`")
+	})()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/credentials/r-fail/refresh", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", resp.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if !strings.Contains(body["error"], "Re-authenticate") {
+		t.Errorf("error=%q, want friendly re-authenticate message", body["error"])
+	}
+}
+
 // ---- parseTemplatesFrom error branches ---------------------------
 
 func TestParseTemplatesFrom_LoginMissing(t *testing.T) {

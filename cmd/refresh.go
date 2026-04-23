@@ -3,12 +3,11 @@ package cmd
 import (
 	"bytes"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -39,14 +38,21 @@ var refreshCmd = &cobra.Command{
 	},
 }
 
+// Seams so tests can exercise the refreshCredential active-credential
+// branches without needing a real ~/.claude/.credentials.json setup.
+var (
+	claudeIsActiveFn    = claude.IsActive
+	claudeWriteActiveFn = claude.WriteActive
+)
+
 func refreshCredential(identity string) error {
 	cred, err := doRefreshCredential(identity, fmt.Printf)
 	if err != nil {
 		return err
 	}
 
-	if claude.IsActive(cred.ID) {
-		if err := claude.WriteActive(cred); err != nil {
+	if claudeIsActiveFn(cred.ID) {
+		if err := claudeWriteActiveFn(cred); err != nil {
 			fmt.Printf("Warning: could not update active credential: %v\n", err)
 		} else {
 			fmt.Println("Active credential updated.")
@@ -56,42 +62,23 @@ func refreshCredential(identity string) error {
 	return nil
 }
 
+// refreshCredentialFn is the seam tests override to skip real OAuth
+// calls. Production points at credflow.RefreshCredential.
+var refreshCredentialFn = credflow.RefreshCredential
+
 func doRefreshCredential(identity string, printf func(string, ...any) (int, error)) (*store.Credential, error) {
-	cred, err := store.Resolve(identity)
+	// Resolve fuzzy inputs (prefixes, names) here so the shared
+	// credflow.RefreshCredential helper can stay ID-only.
+	resolved, err := store.Resolve(identity)
 	if err != nil {
 		return nil, err
 	}
+	oldExpiry := time.UnixMilli(resolved.ClaudeAiOauth.ExpiresAt)
+	printf("Refreshing %s (%s)...\n", resolved.Name, resolved.ID[:8])
 
-	oldExpiry := time.UnixMilli(cred.ClaudeAiOauth.ExpiresAt)
-	printf("Refreshing %s (%s)...\n", cred.Name, cred.ID[:8])
-
-	tokens, err := oauth.Refresh(cred.ClaudeAiOauth.RefreshToken)
+	cred, err := refreshCredentialFn(resolved.ID)
 	if err != nil {
-		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "403") {
-			return nil, fmt.Errorf("refresh token expired or revoked. Re-authenticate with `ccm login`")
-		}
 		return nil, err
-	}
-
-	scopes := strings.Fields(tokens.Scope)
-	if len(scopes) == 0 {
-		scopes = cred.ClaudeAiOauth.Scopes
-	}
-
-	cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
-	if tokens.RefreshToken != "" {
-		cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
-	}
-	cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
-	cred.ClaudeAiOauth.Scopes = scopes
-	cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-
-	if profile := oauth.FetchProfile(cred.ClaudeAiOauth.AccessToken); profile.Tier != "" {
-		cred.Subscription.Tier = profile.Tier
-	}
-
-	if err := store.Save(cred); err != nil {
-		return nil, fmt.Errorf("save credentials: %w", err)
 	}
 
 	newExpiry := time.UnixMilli(cred.ClaudeAiOauth.ExpiresAt)
@@ -99,7 +86,6 @@ func doRefreshCredential(identity string, printf func(string, ...any) (int, erro
 		oldExpiry.Local().Format("15:04:05"),
 		newExpiry.Local().Format("15:04:05"),
 	)
-
 	return cred, nil
 }
 
