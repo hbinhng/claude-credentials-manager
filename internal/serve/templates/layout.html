@@ -1,0 +1,13 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} · ccm serve</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>{{template "body" .}}</main>
+</body>
+</html>
+{{end}}
