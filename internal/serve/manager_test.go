@@ -65,12 +65,21 @@ func (f *fakeSession) Stop() error {
 type fakeStarter struct {
 	mu         sync.Mutex
 	started    []*fakeSession
+	received   []fakeStartCall // opts per call, in order
 	errOnStart error
 }
 
-func (s *fakeStarter) StartSession(cred *store.Credential, _ share.Options) (share.Session, error) {
+// fakeStartCall records each StartSession invocation so tests can
+// assert on the options the manager forwarded.
+type fakeStartCall struct {
+	credID string
+	opts   share.Options
+}
+
+func (s *fakeStarter) StartSession(cred *store.Credential, opts share.Options) (share.Session, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.received = append(s.received, fakeStartCall{credID: cred.ID, opts: opts})
 	if s.errOnStart != nil {
 		return nil, s.errOnStart
 	}

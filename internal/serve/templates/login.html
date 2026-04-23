@@ -1,0 +1,10 @@
+{{define "body"}}
+<section class="login">
+  <h2>Admin token required</h2>
+  <form method="post" action="/login">
+    <label class="field-label" for="login-token">Token</label>
+    <input id="login-token" type="password" name="token" autofocus required autocomplete="off">
+    <button type="submit" class="btn primary" style="margin-top: 1rem;">Sign in</button>
+  </form>
+</section>
+{{end}}
