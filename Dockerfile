@@ -42,17 +42,62 @@ COPY . .
 RUN mkdir -p /out && make && cp ccm /out/ccm
 
 # ---------- runtime -----------------------------------------------
-# node:22-alpine gives us the Claude Code CLI (distributed via npm)
-# alongside ccm in the same image, so a shell inside the container
-# can run `claude` against whichever credential ccm has activated.
-# ca-certificates is preinstalled in the node image, which covers
-# the TLS calls ccm makes to the Anthropic OAuth endpoints.
-FROM node:22-alpine
+# node:22-slim gives us the Claude Code CLI (distributed via npm)
+# alongside ccm in the same image. The slim variant is debian-based
+# and intentionally strips some system packages — we reinstate
+# ca-certificates explicitly so Go's TLS can verify api.anthropic.com
+# (OAuth refresh) and cloudflared's control plane.
+#
+# TARGETARCH is provided by the builder (Docker sets it automatically
+# to the current platform's architecture, e.g. amd64 / arm64) so a
+# bare `docker build` on either arch works without extra flags. For
+# cross-arch builds use BuildKit / docker buildx with --platform.
+FROM node:22-slim
 
-RUN npm install -g @anthropic-ai/claude-code \
-    && npm cache clean --force
+ARG TARGETARCH=amd64
+# Pin cloudflared to the same version ccm's EnsureCloudflared would
+# have downloaded. Keeping them in lockstep means the on-PATH binary
+# found at runtime is the one the Go side expects; bumping either
+# side should bump the other.
+ARG CLOUDFLARED_VERSION=2026.3.0
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    # Baking cloudflared into the image avoids a first-run network
+    # fetch from github.com (which also sidesteps the "unknown
+    # authority" TLS failures seen in some container environments
+    # where the cert store was not yet warmed up). ccm's
+    # EnsureCloudflared() resolves `cloudflared` on PATH before any
+    # download attempt, so this binary is picked up directly.
+    curl -fsSL --retry 3 --retry-delay 5 --retry-connrefused \
+        -o /usr/local/bin/cloudflared \
+        "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-${TARGETARCH}"; \
+    chmod 0755 /usr/local/bin/cloudflared; \
+    /usr/local/bin/cloudflared --version; \
+    apt-get purge -y --auto-remove curl; \
+    rm -rf /var/lib/apt/lists/*; \
+    npm install -g @anthropic-ai/claude-code; \
+    npm cache clean --force
 
 COPY --from=builder /out/ccm /usr/local/bin/ccm
+
+# Dummy ~/.claude/.credentials.json so Claude Code can boot during
+# `ccm share`'s capture step. The capture proxy records only the
+# identity headers (User-Agent, X-Stainless-*, Anthropic-Version,
+# Anthropic-Beta) — the Authorization header is NOT in the allowlist,
+# so the bearer value here is ignored in flight. The value just has
+# to exist so `claude -p` clears its own "have credentials" startup
+# check and fires one request at the proxy. A far-future expiresAt
+# prevents claude from trying to refresh a bogus refresh token.
+#
+# Real share traffic goes through the SERVING proxy, which reads the
+# actual bearer from the ccm store at ~/.ccm/<uuid>.credentials.json
+# and injects it into every forwarded request. This file is only the
+# bootstrap for the capture subprocess.
+RUN mkdir -p /root/.claude \
+    && printf '%s' '{"claudeAiOauth":{"accessToken":"sk-ant-oat-capture-stub","refreshToken":"sk-ant-ort-capture-stub","expiresAt":9999999999999,"scopes":["user:inference"]}}' > /root/.claude/.credentials.json \
+    && chmod 0600 /root/.claude/.credentials.json
 
 # ccm reads and writes ~/.ccm/<uuid>.credentials.json plus the PID
 # file at ~/.ccm/serve.pid. HOME=/root for this image, so bind-mount
