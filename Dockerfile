@@ -42,15 +42,15 @@ COPY . .
 RUN mkdir -p /out && make && cp ccm /out/ccm
 
 # ---------- runtime -----------------------------------------------
-# distroless/static has no shell and no package manager — only libc-
-# less userspace plus ca-certificates (needed for the TLS calls ccm
-# makes to the Anthropic OAuth endpoints). We deliberately use the
-# root-capable variant (not :nonroot) because the expected run-time
-# pattern is `docker run -v ~/.ccm:/root/.ccm ...` and matching UIDs
-# across host and container gets awkward without root; callers who
-# need non-root can `docker run --user 65532:65532 -e HOME=...` and
-# bind-mount a pre-chowned store.
-FROM gcr.io/distroless/static-debian12
+# node:22-alpine gives us the Claude Code CLI (distributed via npm)
+# alongside ccm in the same image, so a shell inside the container
+# can run `claude` against whichever credential ccm has activated.
+# ca-certificates is preinstalled in the node image, which covers
+# the TLS calls ccm makes to the Anthropic OAuth endpoints.
+FROM node:22-alpine
+
+RUN npm install -g @anthropic-ai/claude-code \
+    && npm cache clean --force
 
 COPY --from=builder /out/ccm /usr/local/bin/ccm
 
