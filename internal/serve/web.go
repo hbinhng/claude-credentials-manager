@@ -18,6 +18,14 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
+// loginBeginFn and loginCompleteFn are the package-level seams the
+// /api/login/{start,finish} handlers go through. Tests swap them to
+// avoid real OAuth round-trips. Production points at credflow.
+var (
+	loginBeginFn    = credflow.BeginLogin
+	loginCompleteFn = credflow.CompleteLogin
+)
+
 //go:embed templates/*.html
 var templatesFS embed.FS
 
@@ -87,7 +95,10 @@ func staticSub() fs.FS {
 	return sub
 }
 
-// NewHandler returns the fully wired http.Handler.
+// NewHandler returns the fully wired http.Handler. The returned value
+// also satisfies io.Closer; callers should type-assert and Close it
+// during shutdown so the in-memory login-handshake sweeper goroutine
+// exits cleanly.
 func NewHandler(cfg ServerConfig) (http.Handler, error) {
 	if cfg.Manager == nil {
 		return nil, errors.New("ServerConfig.Manager is required")
@@ -96,7 +107,7 @@ func NewHandler(cfg ServerConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &handler{cfg: cfg, pages: tpls}
+	h := &handler{cfg: cfg, pages: tpls, handshakes: newHandshakeStore()}
 
 	mux := http.NewServeMux()
 	// Public endpoints: health probe + login form.
@@ -112,18 +123,40 @@ func NewHandler(cfg ServerConfig) (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/credentials/{id}", h.protected(h.apiStopSession))
 	mux.HandleFunc("POST /api/credentials/{id}/refresh", h.protected(h.apiRefreshCredential))
 
+	// Authenticated OAuth-add-credential flow. Distinct from /login
+	// (the dashboard token form) — these endpoints drive the in-app
+	// "+" button that runs the same PKCE flow `ccm login` does on
+	// the CLI.
+	mux.HandleFunc("POST /api/login/start", h.protected(h.apiLoginStart))
+	mux.HandleFunc("POST /api/login/finish", h.protected(h.apiLoginFinish))
+
 	// SPA shell — the catch-all. Any unmatched GET returns the app
 	// page so hard reloads of a client-only route still boot the
 	// SPA; the SPA itself is a single screen so there are no client
 	// routes yet, but the shape stays if/when they appear.
 	mux.HandleFunc("GET /", h.protected(h.appShell))
 
-	return mux, nil
+	h.mux = mux
+	return h, nil
 }
 
 type handler struct {
-	cfg   ServerConfig
-	pages *pages
+	cfg        ServerConfig
+	pages      *pages
+	handshakes *handshakeStore
+	mux        *http.ServeMux
+}
+
+// ServeHTTP delegates to the routing mux assembled in NewHandler.
+func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.mux.ServeHTTP(w, r)
+}
+
+// Close stops the in-memory handshake-sweeper goroutine. Safe to call
+// twice. cmd/serve.go invokes it after http.Server.Shutdown.
+func (h *handler) Close() error {
+	h.handshakes.Close()
+	return nil
 }
 
 // templateData is the minimal context passed to the layout + body
@@ -412,6 +445,91 @@ func (h *handler) apiRefreshCredential(w http.ResponseWriter, r *http.Request) {
 // refreshCredentialFn is the seam web tests override so HTTP
 // handler tests don't reach for real OAuth endpoints.
 var refreshCredentialFn = credflow.RefreshCredential
+
+// APILoginStartResponse is the body of POST /api/login/start. The
+// SPA opens AuthorizeURL in a new tab and stashes HandshakeID for
+// the subsequent /api/login/finish call.
+type APILoginStartResponse struct {
+	Version      int    `json:"version"`
+	HandshakeID  string `json:"handshakeId"`
+	AuthorizeURL string `json:"authorizeUrl"`
+}
+
+// APILoginFinishRequest is the body of POST /api/login/finish.
+type APILoginFinishRequest struct {
+	HandshakeID string `json:"handshakeId"`
+	Code        string `json:"code"`
+}
+
+// APILoginFinishResponse is the body of POST /api/login/finish on
+// success. It carries the freshly saved credential in the same shape
+// the list endpoint returns so the SPA can render the row without a
+// follow-up GET.
+type APILoginFinishResponse struct {
+	Version    int           `json:"version"`
+	Credential APICredential `json:"credential"`
+}
+
+// apiLoginStart kicks off an OAuth login handshake. The PKCE pair is
+// generated server-side and stashed in the in-memory handshake store;
+// the response gives the SPA both the URL the user must visit and the
+// opaque ID it'll send back to /finish.
+func (h *handler) apiLoginStart(w http.ResponseWriter, _ *http.Request) {
+	hs, err := loginBeginFn()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "begin login: " + err.Error()})
+		return
+	}
+	h.handshakes.Put(hs)
+	writeJSON(w, http.StatusOK, APILoginStartResponse{
+		Version:      APIVersion,
+		HandshakeID:  hs.ID,
+		AuthorizeURL: hs.AuthorizeURL,
+	})
+}
+
+// apiLoginFinish exchanges the paste-code for an OAuth token pair
+// and persists the credential. The handshake is consumed on success
+// (and on save-failure, since the upstream code is single-use). On a
+// pure exchange failure the handshake is retained so the user can
+// fix a typo and retry without restarting.
+func (h *handler) apiLoginFinish(w http.ResponseWriter, r *http.Request) {
+	var body APILoginFinishRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json: " + err.Error()})
+		return
+	}
+	code := strings.TrimSpace(body.Code)
+	if code == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "code is required"})
+		return
+	}
+	hs, ok := h.handshakes.Peek(body.HandshakeID)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "login session expired — start over"})
+		return
+	}
+	cred, err := loginCompleteFn(hs, code)
+	if err != nil {
+		// "save credentials" wraps the post-exchange persist failure;
+		// once the OAuth code has been spent upstream the handshake
+		// is useless, so drop it and force the user to begin again.
+		// Anything else (network blip, exchange rejection) leaves the
+		// PKCE pair valid for a typo retry.
+		if strings.Contains(err.Error(), "save credentials") {
+			h.handshakes.Delete(body.HandshakeID)
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	h.handshakes.Delete(body.HandshakeID)
+	writeJSON(w, http.StatusCreated, APILoginFinishResponse{
+		Version:    APIVersion,
+		Credential: toAPICredential(cred, h.cfg.Manager),
+	})
+}
 
 // toAPICredential projects a store.Credential plus manager state
 // into the list-response shape.

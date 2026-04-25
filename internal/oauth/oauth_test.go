@@ -179,7 +179,7 @@ func TestGeneratePKCE_VerifierLength(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// flow.go — buildAuthorizeURL tests
+// flow.go — BuildAuthorizeURL tests
 // ---------------------------------------------------------------------------
 
 func TestBuildAuthorizeURL(t *testing.T) {
@@ -191,7 +191,7 @@ func TestBuildAuthorizeURL(t *testing.T) {
 		State:         "test-state",
 	}
 
-	raw := buildAuthorizeURL(pkce)
+	raw := BuildAuthorizeURL(pkce)
 
 	parsed, err := parseURL(raw)
 	if err != nil {
@@ -230,7 +230,7 @@ func TestBuildAuthorizeURL_UsesFixedRedirectURI(t *testing.T) {
 		State:         "s",
 	}
 
-	raw := buildAuthorizeURL(pkce)
+	raw := BuildAuthorizeURL(pkce)
 	parsed, err := parseURL(raw)
 	if err != nil {
 		t.Fatalf("failed to parse URL: %v", err)
@@ -243,7 +243,7 @@ func TestBuildAuthorizeURL_UsesFixedRedirectURI(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// flow.go — exchangeCode tests
+// flow.go — ExchangeCode tests
 // ---------------------------------------------------------------------------
 
 func TestExchangeCode_CodeWithoutFragment(t *testing.T) {
@@ -270,9 +270,9 @@ func TestExchangeCode_CodeWithoutFragment(t *testing.T) {
 		State:         "my-state",
 	}
 
-	tok, err := exchangeCode("plain-code", "original-state", pkce)
+	tok, err := ExchangeCode("plain-code", "original-state", pkce)
 	if err != nil {
-		t.Fatalf("exchangeCode() error: %v", err)
+		t.Fatalf("ExchangeCode() error: %v", err)
 	}
 
 	if receivedBody["code"] != "plain-code" {
@@ -326,9 +326,9 @@ func TestExchangeCode_CodeWithFragment(t *testing.T) {
 		State:         "s",
 	}
 
-	_, err := exchangeCode("the-code#fragment-state", "original-state", pkce)
+	_, err := ExchangeCode("the-code#fragment-state", "original-state", pkce)
 	if err != nil {
-		t.Fatalf("exchangeCode() error: %v", err)
+		t.Fatalf("ExchangeCode() error: %v", err)
 	}
 
 	if receivedBody["code"] != "the-code" {
@@ -355,9 +355,9 @@ func TestExchangeCode_ContentTypeAndMethod(t *testing.T) {
 	defer func() { TokenURL = origURL }()
 
 	pkce := &PKCEParams{CodeVerifier: "v", CodeChallenge: "c", State: "s"}
-	_, err := exchangeCode("code", "state", pkce)
+	_, err := ExchangeCode("code", "state", pkce)
 	if err != nil {
-		t.Fatalf("exchangeCode() error: %v", err)
+		t.Fatalf("ExchangeCode() error: %v", err)
 	}
 
 	if contentType != "application/json" {
@@ -380,7 +380,7 @@ func TestExchangeCode_ServerError(t *testing.T) {
 	defer func() { TokenURL = origURL }()
 
 	pkce := &PKCEParams{CodeVerifier: "v", CodeChallenge: "c", State: "s"}
-	_, err := exchangeCode("code", "state", pkce)
+	_, err := ExchangeCode("code", "state", pkce)
 	if err == nil {
 		t.Fatal("expected error for non-200 response, got nil")
 	}
@@ -407,129 +407,13 @@ func TestExchangeCode_UsesFixedRedirectURI(t *testing.T) {
 	defer func() { TokenURL = origURL }()
 
 	pkce := &PKCEParams{CodeVerifier: "v", CodeChallenge: "c", State: "s"}
-	_, err := exchangeCode("code", "state", pkce)
+	_, err := ExchangeCode("code", "state", pkce)
 	if err != nil {
-		t.Fatalf("exchangeCode() error: %v", err)
+		t.Fatalf("ExchangeCode() error: %v", err)
 	}
 
 	if receivedBody["redirect_uri"] != RedirectURI {
 		t.Errorf("redirect_uri = %q, want fixed %q", receivedBody["redirect_uri"], RedirectURI)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// flow.go — Login tests (copy-code flow)
-// ---------------------------------------------------------------------------
-
-func TestLogin_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(TokenResponse{
-			AccessToken:  "access-tok",
-			RefreshToken: "refresh-tok",
-			ExpiresIn:    7200,
-			Scope:        "user:inference user:profile",
-		})
-	}))
-	defer srv.Close()
-
-	origURL := TokenURL
-	TokenURL = srv.URL
-	defer func() { TokenURL = origURL }()
-
-	tok, err := Login(func() (string, error) {
-		return "my-auth-code\n", nil
-	})
-	if err != nil {
-		t.Fatalf("Login() error: %v", err)
-	}
-	if tok.AccessToken != "access-tok" {
-		t.Errorf("AccessToken = %q, want %q", tok.AccessToken, "access-tok")
-	}
-	if tok.RefreshToken != "refresh-tok" {
-		t.Errorf("RefreshToken = %q, want %q", tok.RefreshToken, "refresh-tok")
-	}
-	if tok.ExpiresIn != 7200 {
-		t.Errorf("ExpiresIn = %d, want 7200", tok.ExpiresIn)
-	}
-}
-
-func TestLogin_EmptyCode(t *testing.T) {
-	_, err := Login(func() (string, error) {
-		return "  \n", nil
-	})
-	if err == nil {
-		t.Fatal("expected error for empty code, got nil")
-	}
-	if !strings.Contains(err.Error(), "no code") {
-		t.Errorf("error = %v, want to contain 'no code'", err)
-	}
-}
-
-func TestLogin_ReadError(t *testing.T) {
-	_, err := Login(func() (string, error) {
-		return "", fmt.Errorf("stdin closed")
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !strings.Contains(err.Error(), "read code") {
-		t.Errorf("error = %v, want to contain 'read code'", err)
-	}
-}
-
-func TestLogin_CodeWithFragment(t *testing.T) {
-	var receivedBody map[string]string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(TokenResponse{AccessToken: "t", ExpiresIn: 60})
-	}))
-	defer srv.Close()
-
-	origURL := TokenURL
-	TokenURL = srv.URL
-	defer func() { TokenURL = origURL }()
-
-	_, err := Login(func() (string, error) {
-		return "the-code#some-state\n", nil
-	})
-	if err != nil {
-		t.Fatalf("Login() error: %v", err)
-	}
-
-	if receivedBody["code"] != "the-code" {
-		t.Errorf("code = %q, want %q", receivedBody["code"], "the-code")
-	}
-	if receivedBody["state"] != "some-state" {
-		t.Errorf("state = %q, want %q (fragment after #)", receivedBody["state"], "some-state")
-	}
-}
-
-func TestLogin_TrimsWhitespace(t *testing.T) {
-	var receivedBody map[string]string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		json.Unmarshal(body, &receivedBody)
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(TokenResponse{AccessToken: "t", ExpiresIn: 60})
-	}))
-	defer srv.Close()
-
-	origURL := TokenURL
-	TokenURL = srv.URL
-	defer func() { TokenURL = origURL }()
-
-	_, err := Login(func() (string, error) {
-		return "  my-code  \n", nil
-	})
-	if err != nil {
-		t.Fatalf("Login() error: %v", err)
-	}
-
-	if receivedBody["code"] != "my-code" {
-		t.Errorf("code = %q, want trimmed %q", receivedBody["code"], "my-code")
 	}
 }
 
@@ -887,7 +771,7 @@ func (p *parsedURL) query(key string) string {
 }
 
 // parseURL is a minimal URL parser that avoids net/url so we test the raw
-// string output of buildAuthorizeURL without double-encoding surprises.
+// string output of BuildAuthorizeURL without double-encoding surprises.
 func parseURL(raw string) (*parsedURL, error) {
 	// Split scheme
 	schemeSep := strings.Index(raw, "://")

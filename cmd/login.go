@@ -5,11 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
-	"github.com/google/uuid"
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
-	"github.com/hbinhng/claude-credentials-manager/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/spf13/cobra"
 )
 
@@ -22,49 +19,35 @@ var loginCmd = &cobra.Command{
 	Use:   "login",
 	Short: "Authenticate a new Claude account via OAuth",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reader := bufio.NewReader(os.Stdin)
-		tokens, err := oauth.Login(func() (string, error) {
-			return reader.ReadString('\n')
-		})
+		hs, err := credflow.BeginLogin()
 		if err != nil {
 			return err
 		}
 
-		id := uuid.New().String()
-		now := time.Now().UTC().Format(time.RFC3339)
+		fmt.Println("\nOpen this URL in your browser to authenticate:")
+		fmt.Printf("\n  %s\n\n", hs.AuthorizeURL)
+		tryOpenBrowserFn(hs.AuthorizeURL)
 
-		scopes := strings.Fields(tokens.Scope)
-		if len(scopes) == 0 {
-			scopes = oauth.Scopes
+		fmt.Print("Paste the code here: ")
+		reader := bufio.NewReader(os.Stdin)
+		raw, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read code: %w", err)
+		}
+		code := strings.TrimSpace(raw)
+		if code == "" {
+			return fmt.Errorf("no code provided")
 		}
 
-		profile := oauth.FetchProfile(tokens.AccessToken)
-		name := profile.Email
-		if name == "" {
-			name = id
+		fmt.Println("Exchanging code for tokens...")
+		cred, err := credflow.CompleteLogin(hs, code)
+		if err != nil {
+			return err
 		}
 
-		cred := &store.Credential{
-			ID:   id,
-			Name: name,
-			ClaudeAiOauth: store.OAuthTokens{
-				AccessToken:  tokens.AccessToken,
-				RefreshToken: tokens.RefreshToken,
-				ExpiresAt:    time.Now().UnixMilli() + tokens.ExpiresIn*1000,
-				Scopes:       scopes,
-			},
-			Subscription:    store.Subscription{Tier: profile.Tier},
-			CreatedAt:       now,
-			LastRefreshedAt: now,
-		}
-
-		if err := store.Save(cred); err != nil {
-			return fmt.Errorf("save credentials: %w", err)
-		}
-
-		fmt.Printf("\nLogged in as %s\n", name)
-		if name == id {
-			fmt.Printf("Use `ccm rename %s <name>` to set a friendly name.\n", id[:8])
+		fmt.Printf("\nLogged in as %s\n", cred.Name)
+		if cred.Name == cred.ID {
+			fmt.Printf("Use `ccm rename %s <name>` to set a friendly name.\n", cred.ID[:8])
 		}
 		return nil
 	},

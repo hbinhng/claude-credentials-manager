@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -111,7 +112,14 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	defer cancel()
 	mgrErr := mgr.Shutdown(ctx)
 	srvErr := srv.Shutdown(ctx)
-	return errors.Join(mgrErr, srvErr)
+	// The serve handler also owns the in-memory login-handshake
+	// sweeper goroutine; type-assert so the test seam (which returns
+	// a bare http.Handler) doesn't need to grow a Closer.
+	var handlerErr error
+	if c, ok := handler.(io.Closer); ok {
+		handlerErr = c.Close()
+	}
+	return errors.Join(mgrErr, srvErr, handlerErr)
 }
 
 // serveNewHandlerFn is the seam tests override to inject an error

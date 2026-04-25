@@ -101,6 +101,14 @@ a { color: var(--foreground); }
   font-weight: 600;
 }
 
+/* Inline-flex row that hosts the Sessions title and the round (+)
+   button at the same baseline. */
+.title-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .card-description {
   margin: 0.125rem 0 0;
   font-size: 0.8125rem;
@@ -129,6 +137,8 @@ thead th {
   border-bottom: 1px solid var(--border);
   background: transparent;
 }
+
+thead th.actions { text-align: right; }
 
 tbody td {
   padding: 0.875rem 1.25rem;
@@ -231,6 +241,15 @@ td.tier { color: var(--muted-foreground); }
 .btn.ghost:hover { background: var(--accent); }
 
 .btn.sm { padding: 0.25rem 0.5rem; font-size: 0.75rem; }
+
+/* Square icon-only button rendered as a perfect circle. Used for the
+   "+ add credential" affordance next to the Sessions title. */
+.btn.icon {
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border-radius: 9999px;
+}
 
 .btn svg { width: 14px; height: 14px; }
 
