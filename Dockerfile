@@ -109,4 +109,14 @@ EXPOSE 7878
 # you want when publishing a port. Any non-loopback bind triggers
 # mandatory token auth: set CCM_SERVE_TOKEN to a stable value, or
 # let ccm auto-generate one and read it from `docker logs`.
-ENTRYPOINT ["/usr/local/bin/ccm", "serve", "--bind-host", "0.0.0.0"]
+#
+# `rm -f serve.pid` before exec handles a persistent /root/.ccm
+# volume: ccm's stale-PID guard (cmd/serve.go writePIDFile) refuses
+# to start when the recorded PID is still alive. Inside a container,
+# ccm runs as PID 1, so a hard crash leaves "1" in serve.pid; on the
+# next boot PID 1 in the fresh namespace is also alive (it's the new
+# init), and ccm aborts with "already running (pid 1)". The
+# container is the single-writer by construction, so clearing the
+# file unconditionally is safe. `exec` keeps ccm at PID 1 so
+# `docker stop` delivers SIGTERM straight to it.
+ENTRYPOINT ["/bin/sh", "-c", "rm -f /root/.ccm/serve.pid && exec /usr/local/bin/ccm serve --bind-host 0.0.0.0 \"$@\"", "--"]
