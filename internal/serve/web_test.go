@@ -13,6 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
@@ -961,6 +962,285 @@ func TestNewHandler_ParseError(t *testing.T) {
 	parseTemplatesFunc = func() (*pages, error) { return nil, errors.New("parse boom") }
 	if _, err := NewHandler(ServerConfig{Manager: NewManager(&fakeStarter{}, nil)}); err == nil {
 		t.Fatalf("NewHandler succeeded; want parse error")
+	}
+}
+
+// ---- POST /api/login/{start,finish} ------------------------------
+
+// stubLoginFns swaps the loginBeginFn / loginCompleteFn seams so the
+// handler tests don't reach for real OAuth endpoints. Either arg may
+// be nil to leave that seam at its default.
+func stubLoginFns(
+	begin func() (*credflow.Handshake, error),
+	complete func(*credflow.Handshake, string) (*store.Credential, error),
+) func() {
+	origBegin, origComplete := loginBeginFn, loginCompleteFn
+	if begin != nil {
+		loginBeginFn = begin
+	}
+	if complete != nil {
+		loginCompleteFn = complete
+	}
+	return func() {
+		loginBeginFn = origBegin
+		loginCompleteFn = origComplete
+	}
+}
+
+// extractHandshakes returns the in-memory store wired into a running
+// test server's handler. Tests use it to assert that a handshake is
+// (or is not) present after a request.
+func extractHandshakes(t *testing.T, srv *httptest.Server) *handshakeStore {
+	t.Helper()
+	h, ok := srv.Config.Handler.(*handler)
+	if !ok {
+		t.Fatalf("server handler is %T, want *serve.handler", srv.Config.Handler)
+	}
+	return h.handshakes
+}
+
+func TestAPILoginStart_HappyPath(t *testing.T) {
+	defer stubLoginFns(
+		func() (*credflow.Handshake, error) {
+			return &credflow.Handshake{ID: "hs-1", AuthorizeURL: "https://example.invalid/auth?x=1"}, nil
+		},
+		nil,
+	)()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/login/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, want 200", resp.StatusCode)
+	}
+	var body APILoginStartResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.HandshakeID != "hs-1" {
+		t.Errorf("HandshakeID=%q, want hs-1", body.HandshakeID)
+	}
+	if body.AuthorizeURL != "https://example.invalid/auth?x=1" {
+		t.Errorf("AuthorizeURL=%q", body.AuthorizeURL)
+	}
+	if body.Version != APIVersion {
+		t.Errorf("Version=%d, want %d", body.Version, APIVersion)
+	}
+	hs := extractHandshakes(t, srv)
+	if _, ok := hs.Peek("hs-1"); !ok {
+		t.Errorf("handshake not stored after /start")
+	}
+}
+
+func TestAPILoginStart_BeginError(t *testing.T) {
+	defer stubLoginFns(
+		func() (*credflow.Handshake, error) { return nil, errors.New("rng down") },
+		nil,
+	)()
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/login/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", resp.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if !strings.Contains(body["error"], "begin login") {
+		t.Errorf("error=%q, want 'begin login' wrap", body["error"])
+	}
+}
+
+func TestAPILoginFinish_HappyPath(t *testing.T) {
+	defer stubLoginFns(
+		func() (*credflow.Handshake, error) {
+			return &credflow.Handshake{ID: "hs-2", AuthorizeURL: "u"}, nil
+		},
+		func(h *credflow.Handshake, code string) (*store.Credential, error) {
+			if h.ID != "hs-2" {
+				t.Errorf("complete got handshake id=%q, want hs-2", h.ID)
+			}
+			if code != "the-code" {
+				t.Errorf("complete got code=%q, want the-code", code)
+			}
+			return fakeCredModel("new-id", "alice@example.com", "Claude Pro"), nil
+		},
+	)()
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+
+	// Drive /start to seed the store.
+	startResp, err := http.Post(srv.URL+"/api/login/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /start: %v", err)
+	}
+	startResp.Body.Close()
+
+	body, _ := json.Marshal(APILoginFinishRequest{HandshakeID: "hs-2", Code: " the-code "})
+	resp, err := http.Post(srv.URL+"/api/login/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /finish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status=%d, want 201", resp.StatusCode)
+	}
+	var got APILoginFinishResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Credential.ID != "new-id" {
+		t.Errorf("Credential.ID=%q", got.Credential.ID)
+	}
+	if got.Credential.Name != "alice@example.com" {
+		t.Errorf("Credential.Name=%q", got.Credential.Name)
+	}
+	if _, ok := extractHandshakes(t, srv).Peek("hs-2"); ok {
+		t.Errorf("handshake not deleted after success")
+	}
+}
+
+func TestAPILoginFinish_UnknownHandshake(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	body, _ := json.Marshal(APILoginFinishRequest{HandshakeID: "ghost", Code: "x"})
+	resp, err := http.Post(srv.URL+"/api/login/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", resp.StatusCode)
+	}
+	var b map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&b)
+	if !strings.Contains(b["error"], "expired") {
+		t.Errorf("error=%q, want to contain 'expired'", b["error"])
+	}
+}
+
+func TestAPILoginFinish_BadJSON(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/login/finish", "application/json", strings.NewReader("not-json"))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPILoginFinish_EmptyCode(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	body, _ := json.Marshal(APILoginFinishRequest{HandshakeID: "x", Code: "   "})
+	resp, err := http.Post(srv.URL+"/api/login/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPILoginFinish_ExchangeError_RetainsHandshake(t *testing.T) {
+	defer stubLoginFns(
+		func() (*credflow.Handshake, error) {
+			return &credflow.Handshake{ID: "hs-x", AuthorizeURL: "u"}, nil
+		},
+		func(*credflow.Handshake, string) (*store.Credential, error) {
+			return nil, errors.New("token exchange failed (HTTP 400): bad code")
+		},
+	)()
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+
+	startResp, err := http.Post(srv.URL+"/api/login/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /start: %v", err)
+	}
+	startResp.Body.Close()
+
+	body, _ := json.Marshal(APILoginFinishRequest{HandshakeID: "hs-x", Code: "wrong"})
+	resp, err := http.Post(srv.URL+"/api/login/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /finish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", resp.StatusCode)
+	}
+	if _, ok := extractHandshakes(t, srv).Peek("hs-x"); !ok {
+		t.Errorf("handshake was deleted on exchange error; want retained for retry")
+	}
+}
+
+func TestAPILoginFinish_SaveError_DeletesHandshake(t *testing.T) {
+	defer stubLoginFns(
+		func() (*credflow.Handshake, error) {
+			return &credflow.Handshake{ID: "hs-s", AuthorizeURL: "u"}, nil
+		},
+		func(*credflow.Handshake, string) (*store.Credential, error) {
+			return nil, errors.New("save credentials: disk full")
+		},
+	)()
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+
+	startResp, err := http.Post(srv.URL+"/api/login/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /start: %v", err)
+	}
+	startResp.Body.Close()
+
+	body, _ := json.Marshal(APILoginFinishRequest{HandshakeID: "hs-s", Code: "x"})
+	resp, err := http.Post(srv.URL+"/api/login/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /finish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", resp.StatusCode)
+	}
+	if _, ok := extractHandshakes(t, srv).Peek("hs-s"); ok {
+		t.Errorf("handshake not deleted after save error")
+	}
+}
+
+func TestAPILoginEndpoints_ProtectedByToken(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{
+		Manager: NewManager(&fakeStarter{}, nil),
+		Token:   "the-secret-1234567890",
+	})
+
+	for _, path := range []string{"/api/login/start", "/api/login/finish"} {
+		client := redirectBlocker()
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader("{}"))
+		req.Header.Set("Accept", "application/json")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("POST %s: %v", path, err)
+		}
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("%s status=%d, want 401", path, resp.StatusCode)
+		}
+		resp.Body.Close()
+	}
+}
+
+func TestNewHandler_Close(t *testing.T) {
+	h, err := NewHandler(ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	if err != nil {
+		t.Fatalf("NewHandler: %v", err)
+	}
+	closer, ok := h.(io.Closer)
+	if !ok {
+		t.Fatalf("handler does not implement io.Closer")
+	}
+	if err := closer.Close(); err != nil {
+		t.Errorf("Close: %v", err)
 	}
 }
 

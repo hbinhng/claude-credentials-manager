@@ -15,6 +15,7 @@
   // extra HTTP round-trip for icons.
   var ICON_COPY = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>';
   var ICON_CHECK = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>';
+  var ICON_PLUS = '<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
 
   /* ---- rendering --------------------------------------------------- */
 
@@ -27,7 +28,10 @@
       '<div class="card">',
       '  <div class="card-header">',
       '    <div>',
-      '      <h2 class="card-title">Sessions</h2>',
+      '      <div class="title-row">',
+      '        <h2 class="card-title">Sessions</h2>',
+      '        <button class="btn icon" id="add-credential-btn" type="button" aria-label="Add credential" title="Add credential">' + ICON_PLUS + '</button>',
+      '      </div>',
       '      <p class="card-description">Manage shared credential sessions. Auto-refreshes every 3 s.</p>',
       '    </div>',
       '    <div class="card-toolbar">',
@@ -39,13 +43,16 @@
       '<div id="toast-root"></div>',
       '<div id="reconnect">reconnecting…</div>',
     ].join("\n");
+    document
+      .getElementById("add-credential-btn")
+      .addEventListener("click", openLoginDialog);
   }
 
   function renderTable(creds) {
     var mount = document.getElementById("table-mount");
     if (!creds || creds.length === 0) {
       mount.innerHTML =
-        '<div class="empty">No credentials in the local store.<br>Run <code>ccm login</code> to add one.</div>';
+        '<div class="empty">No credentials in the local store. Click + to add one.</div>';
       return;
     }
     var rows = creds.map(rowHTML).join("");
@@ -261,6 +268,123 @@
       startSession(cred, body);
     });
     setTimeout(function () { dlg.querySelector("#lan-host").focus(); }, 0);
+  }
+
+  /* ---- add-credential dialog -------------------------------------- */
+
+  // openLoginDialog drives the two-step OAuth-add-credential flow:
+  // step 1 calls /api/login/start to mint a server-side PKCE handshake;
+  // step 2 swaps the dialog body to show the authorize URL + paste field
+  // and posts to /api/login/finish on submit.
+  function openLoginDialog() {
+    var dlg = dialog({
+      title: "Add Claude credential",
+      description: "Generating login URL…",
+      body: '<p class="muted">Contacting Claude…</p>',
+      footer: [{ label: "Cancel", ghost: true, action: "close" }],
+    });
+    dlg.addEventListener("close", function () { dlg.remove(); });
+
+    postJSON("/api/login/start", null)
+      .then(function (resp) { renderLoginStep2(dlg, resp); })
+      .catch(function (err) { renderLoginError(dlg, err); });
+  }
+
+  // renderLoginStep2 swaps the dialog body to the authorize-URL +
+  // paste-code form once the handshake is in hand.
+  function renderLoginStep2(dlg, start) {
+    var bodyEl = dlg.querySelector(".dialog-body");
+    bodyEl.innerHTML =
+      fieldBlock("Authorize URL", start.authorizeUrl, "auth-url") +
+      '<div>' +
+      '  <a class="btn primary" id="login-open-link" href="' + attr(start.authorizeUrl) + '" target="_blank" rel="noopener noreferrer">Open authorize page ↗</a>' +
+      '</div>' +
+      '<label class="field-label" for="login-code">Paste code</label>' +
+      '<input class="input" id="login-code" autocomplete="off" spellcheck="false">' +
+      '<div id="login-error" class="quota-error" style="display:none"></div>';
+
+    var copyFields = bodyEl.querySelectorAll(".copy-field");
+    for (var i = 0; i < copyFields.length; i++) { bindCopyField(copyFields[i]); }
+
+    var footer = dlg.querySelector(".dialog-footer");
+    footer.innerHTML =
+      '<button class="btn ghost" type="button" data-dialog-action="close">Cancel</button>' +
+      '<button class="btn primary" type="button" id="login-submit">Submit</button>';
+    footer.querySelector('[data-dialog-action="close"]')
+      .addEventListener("click", function () { dlg.close(); });
+
+    var input = bodyEl.querySelector("#login-code");
+    var errBox = bodyEl.querySelector("#login-error");
+    var submit = footer.querySelector("#login-submit");
+    var openLink = bodyEl.querySelector("#login-open-link");
+
+    openLink.addEventListener("click", function () {
+      setTimeout(function () { input.focus(); }, 0);
+    });
+
+    function go() {
+      var code = input.value.trim();
+      if (!code) {
+        toast("Code required", "Paste the code from the authorize page first.", "destructive");
+        input.focus();
+        return;
+      }
+      submit.disabled = true;
+      input.disabled = true;
+      errBox.style.display = "none";
+      errBox.textContent = "";
+      postJSON("/api/login/finish", { handshakeId: start.handshakeId, code: code })
+        .then(function (resp) {
+          dlg.close();
+          var name = (resp && resp.credential && (resp.credential.name || resp.credential.id)) || "new credential";
+          toast("Logged in", "Logged in as " + name + ".", "success");
+          pollOnce();
+        })
+        .catch(function (err) {
+          var msg = err && err.message ? err.message : "unknown error";
+          errBox.textContent = msg;
+          errBox.style.display = "";
+          if (/expired|start over/i.test(msg)) {
+            // Handshake is gone; force the user back to the (+) button.
+            submit.disabled = true;
+            input.disabled = true;
+          } else {
+            submit.disabled = false;
+            input.disabled = false;
+            input.focus();
+          }
+        });
+    }
+    submit.addEventListener("click", go);
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") { ev.preventDefault(); go(); }
+    });
+
+    setTimeout(function () { input.focus(); }, 0);
+  }
+
+  // renderLoginError replaces the step-1 body with an error block and
+  // a Retry button that re-fires /api/login/start in place.
+  function renderLoginError(dlg, err) {
+    var bodyEl = dlg.querySelector(".dialog-body");
+    var msg = err && err.message ? err.message : "unknown error";
+    bodyEl.innerHTML = '<div class="quota-error">' + escapeHTML(msg) + '</div>';
+
+    var footer = dlg.querySelector(".dialog-footer");
+    footer.innerHTML =
+      '<button class="btn ghost" type="button" data-dialog-action="close">Close</button>' +
+      '<button class="btn primary" type="button" id="login-retry">Retry</button>';
+    footer.querySelector('[data-dialog-action="close"]')
+      .addEventListener("click", function () { dlg.close(); });
+    footer.querySelector("#login-retry").addEventListener("click", function () {
+      bodyEl.innerHTML = '<p class="muted">Contacting Claude…</p>';
+      footer.innerHTML = '<button class="btn ghost" type="button" data-dialog-action="close">Cancel</button>';
+      footer.querySelector('[data-dialog-action="close"]')
+        .addEventListener("click", function () { dlg.close(); });
+      postJSON("/api/login/start", null)
+        .then(function (resp) { renderLoginStep2(dlg, resp); })
+        .catch(function (e) { renderLoginError(dlg, e); });
+    });
   }
 
   /* ---- usage dialog ------------------------------------------------ */
