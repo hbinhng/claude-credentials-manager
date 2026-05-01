@@ -95,13 +95,24 @@ func WriteActive(cred *store.Credential) error {
 
 // Restore removes ~/.claude/.credentials.json and restores
 // ~/.claude/bk.credentials.json if it exists. Also clears active.json.
+//
+// When ccm owns the file (active.json present) but the file itself is
+// missing — e.g. Claude rewrote it concurrently, or the user deleted it
+// manually — Restore tolerates the missing target and just clears
+// active.json. This avoids confusing "restore failed: file does not
+// exist" warnings during `ccm logout` of an active credential whose
+// file was already gone.
 func Restore() error {
 	target := credentialsPath()
-	if _, err := os.Lstat(target); err != nil {
-		return fmt.Errorf("~/.claude/.credentials.json does not exist")
+	targetExists := false
+	if _, err := os.Lstat(target); err == nil {
+		targetExists = true
 	}
 
 	if !IsManaged() {
+		if !targetExists {
+			return fmt.Errorf("~/.claude/.credentials.json does not exist")
+		}
 		fmt.Println("~/.claude/.credentials.json is not managed by ccm.")
 		return nil
 	}
@@ -111,7 +122,7 @@ func Restore() error {
 			return fmt.Errorf("restore backup: %w", err)
 		}
 		fmt.Println("Original credentials restored from backup.")
-	} else {
+	} else if targetExists {
 		if err := os.Remove(target); err != nil {
 			return fmt.Errorf("remove credentials: %w", err)
 		}
