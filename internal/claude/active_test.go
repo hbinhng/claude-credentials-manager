@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 func TestActive_MissingFile(t *testing.T) {
@@ -97,5 +99,42 @@ func TestSetActive_AtomicAndModeSecure(t *testing.T) {
 	tmp := activePath() + ".tmp"
 	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
 		t.Errorf("leftover %s after SetActive", filepath.Base(tmp))
+	}
+}
+
+func TestSetActive_EnsureDirFails(t *testing.T) {
+	tmpHome := t.TempDir()
+	oldHome := os.Getenv("HOME")
+	oldUserProfile := os.Getenv("USERPROFILE")
+	os.Setenv("HOME", tmpHome)
+	os.Setenv("USERPROFILE", tmpHome)
+	defer func() {
+		os.Setenv("HOME", oldHome)
+		os.Setenv("USERPROFILE", oldUserProfile)
+	}()
+
+	// Make the home dir itself unwritable so MkdirAll(.ccm) fails.
+	if err := os.Chmod(tmpHome, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(tmpHome, 0700)
+
+	if err := SetActive("x"); err == nil {
+		t.Fatal("SetActive: nil err, want EnsureDir failure")
+	}
+}
+
+func TestSetActive_WriteFileFails(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// ~/.ccm exists but is unwritable — WriteFile of tmp fails.
+	if err := os.Chmod(store.Dir(), 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(store.Dir(), 0700)
+
+	if err := SetActive("y"); err == nil {
+		t.Fatal("SetActive: nil err, want write failure")
 	}
 }

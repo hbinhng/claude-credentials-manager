@@ -231,3 +231,126 @@ func TestMigrate_State1a_StoreCredMissing(t *testing.T) {
 		t.Errorf("credentialsPath disappeared after ghost-branch migrate: %v", err)
 	}
 }
+
+// detectLegacyState: state 1b — ccm.credentials.json exists but is unreadable.
+func TestDetectLegacyState_1b_UnreadableCCMFile(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	ccmPath := filepath.Join(dir, "ccm.credentials.json")
+	if err := os.WriteFile(ccmPath, []byte(`{"ccmSourceId":"x"}`), 0000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("ccm.credentials.json", credentialsPath()); err != nil {
+		t.Skip("symlink unsupported")
+	}
+
+	if got := detectLegacyState(); got != "" {
+		t.Errorf("detectLegacyState() = %q, want \"\" when ccm file is unreadable", got)
+	}
+}
+
+// detectLegacyState: state 1b — ccm.credentials.json exists but has no ccmSourceId.
+func TestDetectLegacyState_1b_NoCCMSourceID(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	ccmPath := filepath.Join(dir, "ccm.credentials.json")
+	if err := os.WriteFile(ccmPath, []byte(`{"claudeAiOauth":{}}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("ccm.credentials.json", credentialsPath()); err != nil {
+		t.Skip("symlink unsupported")
+	}
+
+	if got := detectLegacyState(); got != "" {
+		t.Errorf("detectLegacyState() = %q, want \"\" when ccmSourceId is absent", got)
+	}
+}
+
+// detectLegacyState: state 2 — regular file is unreadable.
+func TestDetectLegacyState_State2_UnreadableFile(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	path := filepath.Join(dir, ".credentials.json")
+	if err := os.WriteFile(path, []byte(`{"ccmSourceId":"x"}`), 0000); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := detectLegacyState(); got != "" {
+		t.Errorf("detectLegacyState() = %q, want \"\" when file is unreadable", got)
+	}
+}
+
+// cleanupLegacyArtifacts: os.Remove fails with a non-NotExist error.
+func TestCleanupLegacyArtifacts_RemoveFails(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	ccmPath := filepath.Join(dir, "ccm.credentials.json")
+	if err := os.WriteFile(ccmPath, []byte(`{}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Make dir unwritable so Remove fails.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+
+	if err := cleanupLegacyArtifacts(); err == nil {
+		t.Fatal("cleanupLegacyArtifacts: nil err, want remove failure")
+	}
+}
+
+// migrate: WriteFile of the tmp credential file fails (claudeDir unwritable).
+func TestMigrate_WriteFileFails(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("wrfail")
+	saveCred(t, cred)
+	if err := os.Symlink(store.CredPath(cred.ID), credentialsPath()); err != nil {
+		t.Skip("symlink unsupported")
+	}
+
+	// Make claudeDir unwritable so the tmp write fails.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+
+	migrate() // must not panic; error is swallowed
+
+	// Active should not be set since we returned early.
+	if _, ok := Active(); ok {
+		t.Error("active.json should not be set when tmp write fails during migrate")
+	}
+}
+
+// migrate: Rename of tmp to target fails (replace the tmp file with
+// an unremovable entry so os.Rename fails — achieved by making it a dir).
+func TestMigrate_RenameFails(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("rnfail")
+	saveCred(t, cred)
+	if err := os.Symlink(store.CredPath(cred.ID), credentialsPath()); err != nil {
+		t.Skip("symlink unsupported")
+	}
+
+	// Plant a directory where the .tmp file would land so Rename fails.
+	tmpPath := credentialsPath() + ".tmp"
+	if err := os.MkdirAll(tmpPath, 0700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpPath)
+
+	migrate() // must not panic; error is swallowed
+
+	// Active should not be set since we returned early.
+	if _, ok := Active(); ok {
+		t.Error("active.json should not be set when tmp rename fails during migrate")
+	}
+}
