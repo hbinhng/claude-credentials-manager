@@ -8,7 +8,7 @@ import (
 
 func TestSyncSkipFor_TrueForExempted(t *testing.T) {
 	mkCmd := func(name string) *cobra.Command { return &cobra.Command{Use: name} }
-	for _, name := range []string{"completion", "version", "help", "__complete"} {
+	for _, name := range []string{"completion", "version", "help", "__complete", "__completeNoDesc"} {
 		if !syncSkipFor(mkCmd(name)) {
 			t.Errorf("syncSkipFor(%q) = false, want true", name)
 		}
