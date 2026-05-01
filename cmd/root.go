@@ -19,12 +19,19 @@ var rootCmd = &cobra.Command{
 }
 
 // syncSkipFor reports whether a command should bypass the auto-sync hook.
-// Exempt commands are read-only or shell-completion plumbing where the
-// extra I/O would be wasted (or worse, slow shell tab-completion).
+// Exempt commands are read-only or shell plumbing where the extra I/O
+// would be wasted: shell tab-completion latency, or shell-init bootstrap
+// like `source <(ccm completion bash)` which would otherwise run sync
+// during every new terminal.
+//
+// Walks parents so `ccm completion bash` (cmd.Name() == "bash") still
+// matches the "completion" entry via its parent.
 func syncSkipFor(cmd *cobra.Command) bool {
-	switch cmd.Name() {
-	case "completion", "version", "help", "__complete", "__completeNoDesc":
-		return true
+	for c := cmd; c != nil; c = c.Parent() {
+		switch c.Name() {
+		case "completion", "version", "help", "__complete", "__completeNoDesc":
+			return true
+		}
 	}
 	return false
 }
