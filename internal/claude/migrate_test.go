@@ -196,16 +196,38 @@ func TestMigrate_NoCredentialsFile(t *testing.T) {
 }
 
 func TestMigrate_State1a_StoreCredMissing(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
+	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
+	// Plant a legacy artifact alongside the ghost symlink so we can
+	// also verify cleanupLegacyArtifacts() ran in this branch.
+	legacy := filepath.Join(dir, "ccm.credentials.json")
+	if err := os.WriteFile(legacy, []byte(`{"ccmSourceId":"unrelated"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Symlink points to a store cred that doesn't exist on disk.
 	if err := os.Symlink(store.CredPath("ghost"), credentialsPath()); err != nil {
 		t.Skip("symlink unsupported")
 	}
 
 	migrate()
 
+	// Spec contract: SetActive(id) MUST be called even when store.Load fails,
+	// so future ccm commands know an id existed.
+	id, ok := Active()
+	if !ok || id != "ghost" {
+		t.Errorf("Active() = (%q, %v), want (\"ghost\", true) per spec — SetActive must run even when store.Load fails", id, ok)
+	}
+
+	// Spec contract: cleanupLegacyArtifacts() MUST also run.
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Error("legacy ccm.credentials.json still present; cleanupLegacyArtifacts not called in ghost branch")
+	}
+
+	// Sanity: the ghost-branch path skips the file rewrite, so the
+	// symlink should still be present (we don't have data to write).
 	if _, err := os.Lstat(credentialsPath()); err != nil {
-		t.Errorf("credentialsPath disappeared after migrate of broken symlink: %v", err)
+		t.Errorf("credentialsPath disappeared after ghost-branch migrate: %v", err)
 	}
 }

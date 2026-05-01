@@ -39,8 +39,12 @@ func migrate() {
 	if err != nil {
 		return
 	}
-	_ = os.Remove(credentialsPath())
-	if err := os.WriteFile(credentialsPath(), data, 0600); err != nil {
+	tmp := credentialsPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return
+	}
+	if err := os.Rename(tmp, credentialsPath()); err != nil {
+		_ = os.Remove(tmp)
 		return
 	}
 	_ = SetActive(id)
