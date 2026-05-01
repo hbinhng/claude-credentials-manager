@@ -378,6 +378,29 @@ func TestRestore_ManagedNoBackup(t *testing.T) {
 	}
 }
 
+// Active sidecar exists but the credentials file was already removed
+// (e.g. Claude rewrote it concurrently or the user deleted it manually).
+// Restore must tolerate the missing file and still clear active.json
+// instead of returning a confusing "file does not exist" error.
+func TestRestore_ManagedTargetMissing_TolerateAndClear(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+	cred := makeCred("ghost")
+	saveCred(t, cred)
+	if err := Use(cred); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, ".credentials.json")); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(); err != nil {
+		t.Errorf("Restore: %v, want nil (missing target should be tolerated when managed)", err)
+	}
+	if _, ok := Active(); ok {
+		t.Error("active.json should be cleared even when target was missing")
+	}
+}
+
 // --- Fix 2: interaction test ---
 
 func TestUse_SwitchThenRestore_RestoresOriginal(t *testing.T) {
