@@ -377,3 +377,220 @@ func TestRestore_ManagedNoBackup(t *testing.T) {
 		t.Error("active.json should be cleared")
 	}
 }
+
+// --- Fix 2: interaction test ---
+
+func TestUse_SwitchThenRestore_RestoresOriginal(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Plant a pre-existing original.
+	original := []byte(`{"original": true}`)
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), original, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := makeCred("alpha")
+	b := makeCred("beta")
+	saveCred(t, a)
+	saveCred(t, b)
+
+	// First Use creates the backup; subsequent Use must NOT overwrite it.
+	if err := Use(a); err != nil {
+		t.Fatal(err)
+	}
+	if err := Use(b); err != nil {
+		t.Fatal(err)
+	}
+	if err := Restore(); err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(dir, ".credentials.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Errorf("restored content = %q, want pre-existing original %q", got, original)
+	}
+	if _, ok := Active(); ok {
+		t.Error("active.json should be cleared after Restore")
+	}
+}
+
+// --- Fix 3: coverage gap tests ---
+
+func TestCredentialsPath(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	got := CredentialsPath()
+	want := filepath.Join(os.Getenv("HOME"), ".claude", ".credentials.json")
+	if got != want {
+		t.Errorf("CredentialsPath() = %q, want %q", got, want)
+	}
+}
+
+func TestUse_WriteFails_ReturnsWrappedError(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Make ~/.claude/ unwritable so writeClaudeCredentials fails on rename
+	// (the tmp file write into the dir will fail).
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+
+	cred := makeCred("writefail")
+	saveCred(t, cred)
+	err := Use(cred)
+	if err == nil {
+		t.Fatal("Use: nil err, want write failure")
+	}
+	if !strings.Contains(err.Error(), "write credentials") {
+		t.Errorf("err = %v, want wrapped 'write credentials' error", err)
+	}
+}
+
+func TestUse_SetActiveFails_ReturnsWrappedError(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Make ~/.ccm/ unwritable so SetActive fails inside Use after the
+	// claude file write succeeds.
+	if err := os.Chmod(store.Dir(), 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(store.Dir(), 0700)
+
+	cred := makeCred("setactivefail")
+	err := Use(cred)
+	if err == nil {
+		t.Fatal("Use: nil err, want SetActive failure")
+	}
+	if !strings.Contains(err.Error(), "set active") {
+		t.Errorf("err = %v, want wrapped 'set active' error", err)
+	}
+}
+
+func TestRestore_RemoveFailsWithoutBackup(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("rmfail")
+	saveCred(t, cred)
+	if err := Use(cred); err != nil {
+		t.Fatal(err)
+	}
+	// Make the dir unwritable so os.Remove(target) fails.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+
+	err := Restore()
+	if err == nil {
+		t.Fatal("Restore: nil err, want remove failure")
+	}
+	if !strings.Contains(err.Error(), "remove credentials") {
+		t.Errorf("err = %v, want wrapped 'remove credentials' error", err)
+	}
+}
+
+func TestRestore_RenameBackupFails(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("renfail")
+	saveCred(t, cred)
+	if err := Use(cred); err != nil {
+		t.Fatal(err)
+	}
+	// Plant a backup so we hit the rename branch.
+	bk := filepath.Join(dir, "bk.credentials.json")
+	if err := os.WriteFile(bk, []byte(`{"orig":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Make the dir unwritable so os.Rename(backup, target) fails.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+
+	err := Restore()
+	if err == nil {
+		t.Fatal("Restore: nil err, want rename failure")
+	}
+	if !strings.Contains(err.Error(), "restore backup") {
+		t.Errorf("err = %v, want wrapped 'restore backup' error", err)
+	}
+}
+
+func TestRestore_ClearActiveFails(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("clearfail")
+	saveCred(t, cred)
+	if err := Use(cred); err != nil {
+		t.Fatal(err)
+	}
+	// Lock ~/.ccm/ AFTER Use has written active.json so ClearActive fails.
+	if err := os.Chmod(store.Dir(), 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(store.Dir(), 0700)
+
+	err := Restore()
+	if err == nil {
+		t.Fatal("Restore: nil err, want ClearActive failure")
+	}
+	if !strings.Contains(err.Error(), "clear active") {
+		t.Errorf("err = %v, want wrapped 'clear active' error", err)
+	}
+}
+
+func TestWriteClaudeCredentials_RenameFails(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Plant a non-empty directory at the target path so os.Rename(tmp, target) fails.
+	target := filepath.Join(dir, ".credentials.json")
+	if err := os.MkdirAll(filepath.Join(target, "subdir"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(target)
+
+	cred := makeCred("renwr")
+	err := writeClaudeCredentials(cred)
+	if err == nil {
+		t.Fatal("writeClaudeCredentials: nil err, want rename failure")
+	}
+}
+
+func TestUse_BackupRenameFails(t *testing.T) {
+	dir, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Plant an existing .credentials.json to trigger the backup path.
+	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(`{"orig":true}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// Make the claudeDir unwritable so os.Rename(target, backupPath) fails.
+	// Rename requires write permission on the containing directory.
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chmod(dir, 0700)
+
+	cred := makeCred("bkrnfail")
+	saveCred(t, cred)
+	err := Use(cred)
+	if err == nil {
+		t.Fatal("Use: nil err, want backup rename failure")
+	}
+	if !strings.Contains(err.Error(), "backup original credentials") {
+		t.Errorf("err = %v, want wrapped 'backup original credentials' error", err)
+	}
+}

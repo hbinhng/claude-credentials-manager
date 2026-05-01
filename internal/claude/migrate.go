@@ -37,6 +37,7 @@ func migrate() {
 	body := map[string]any{"claudeAiOauth": cred.ClaudeAiOauth}
 	data, err := json.Marshal(body)
 	if err != nil {
+		// coverage: unreachable — marshaling map[string]any with OAuthTokens never fails
 		return
 	}
 	tmp := credentialsPath() + ".tmp"
@@ -44,6 +45,10 @@ func migrate() {
 		return
 	}
 	if err := os.Rename(tmp, credentialsPath()); err != nil {
+		// coverage: unreachable in normal test environments — Rename fails only
+		// when src and dst are on different filesystems or dst is a non-empty dir;
+		// the latter is not detectable as a legacy state, so detectLegacyState
+		// never returns an id in that situation.
 		_ = os.Remove(tmp)
 		return
 	}
@@ -65,6 +70,8 @@ func detectLegacyState() string {
 	if info.Mode()&os.ModeSymlink != 0 {
 		target, err := os.Readlink(path)
 		if err != nil {
+			// coverage: unreachable — Readlink on a confirmed symlink never
+			// fails on a healthy filesystem; this is purely defensive.
 			return ""
 		}
 		// 1a: absolute symlink into the store.

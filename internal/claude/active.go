@@ -42,6 +42,7 @@ func SetActive(id string) error {
 	}
 	data, err := json.Marshal(activeFile{ID: id})
 	if err != nil {
+		// coverage: unreachable — marshaling a struct{string} never fails
 		return err
 	}
 	tmp := activePath() + ".tmp"

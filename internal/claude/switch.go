@@ -106,16 +106,15 @@ func Restore() error {
 		return nil
 	}
 
-	if err := os.Remove(target); err != nil {
-		return fmt.Errorf("remove credentials: %w", err)
-	}
-
 	if _, err := os.Stat(backupPath()); err == nil {
 		if err := os.Rename(backupPath(), target); err != nil {
 			return fmt.Errorf("restore backup: %w", err)
 		}
 		fmt.Println("Original credentials restored from backup.")
 	} else {
+		if err := os.Remove(target); err != nil {
+			return fmt.Errorf("remove credentials: %w", err)
+		}
 		fmt.Println("No backup found. ~/.claude/.credentials.json removed.")
 	}
 
@@ -131,6 +130,7 @@ func writeClaudeCredentials(cred *store.Credential) error {
 	body := map[string]any{"claudeAiOauth": cred.ClaudeAiOauth}
 	data, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
+		// coverage: unreachable — marshaling map[string]any with OAuthTokens never fails
 		return err
 	}
 	tmp := credentialsPath() + ".tmp"
