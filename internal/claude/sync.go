@@ -49,7 +49,3 @@ func Sync() (bool, error) {
 	}
 	return true, nil
 }
-
-// migrate is a stub that Task 3 fills in. Until then, Sync's contract
-// is unaffected because all current tests provide active.json directly.
-func migrate() {}
