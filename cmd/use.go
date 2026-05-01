@@ -17,8 +17,9 @@ import (
 var useSyncFn = claude.Sync
 
 // preSync runs the lazy claude→store sync before activation switches
-// the active credential, so tokens claude already pushed into the
-// outgoing cred are captured before we overwrite the active marker.
+// the active credential. Defense-in-depth: the root PersistentPreRunE
+// already syncs, but this second call closes the narrow window between
+// PreRunE and RunE in case Claude rewrites the file mid-command.
 func preSync() {
 	if _, err := useSyncFn(); err != nil {
 		fmt.Fprintf(os.Stderr, "ccm: pre-sync skipped: %v\n", err)
