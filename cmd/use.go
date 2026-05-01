@@ -13,6 +13,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// useSyncFn is the seam tests override; production points at claude.Sync.
+var useSyncFn = claude.Sync
+
+// preSync runs the lazy claude→store sync before activation switches
+// the active credential, so tokens claude already pushed into the
+// outgoing cred are captured before we overwrite the active marker.
+func preSync() {
+	if _, err := useSyncFn(); err != nil {
+		fmt.Fprintf(os.Stderr, "ccm: pre-sync skipped: %v\n", err)
+	}
+}
+
 func init() {
 	rootCmd.AddCommand(useCmd)
 }
@@ -24,6 +36,13 @@ var useCmd = &cobra.Command{
 	ValidArgsFunction: completeCredential,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cred, err := store.Resolve(args[0])
+		if err != nil {
+			return err
+		}
+
+		preSync()
+		// Re-resolve in case sync changed the active cred's tokens.
+		cred, err = store.Resolve(args[0])
 		if err != nil {
 			return err
 		}
