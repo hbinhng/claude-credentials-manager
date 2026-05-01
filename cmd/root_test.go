@@ -65,6 +65,20 @@ func TestRootPersistentPreRunE_SwallowsSyncError(t *testing.T) {
 	}
 }
 
+// Regression: `ccm completion bash` (and zsh/fish/powershell) should
+// also skip — those are children of "completion" so cmd.Name() returns
+// the shell name, not "completion". syncSkipFor must walk parents.
+func TestSyncSkipFor_TrueForCompletionChildren(t *testing.T) {
+	parent := &cobra.Command{Use: "completion"}
+	for _, shell := range []string{"bash", "zsh", "fish", "powershell"} {
+		child := &cobra.Command{Use: shell}
+		parent.AddCommand(child)
+		if !syncSkipFor(child) {
+			t.Errorf("syncSkipFor(completion %s) = false, want true (parent walk)", shell)
+		}
+	}
+}
+
 type testErr struct{ s string }
 
 func (e *testErr) Error() string { return e.s }
