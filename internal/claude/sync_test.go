@@ -231,8 +231,6 @@ func TestSync_StoreWriteFailure(t *testing.T) {
 }
 
 func TestSync_RunsMigrateFirst(t *testing.T) {
-	t.Skip("requires migrate() — implemented in Task 3")
-
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
