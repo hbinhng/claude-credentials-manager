@@ -18,7 +18,7 @@ func TestKeychainBackend_Windows_AllOpsReturnUnsupported(t *testing.T) {
 	if err := b.Remove(); !errors.Is(err, errUnsupported) {
 		t.Errorf("Remove err = %v, want errUnsupported", err)
 	}
-	if keychainProbe() {
-		t.Error("keychainProbe = true on Windows stub, want false")
+	if keychainHasClaudeEntry() {
+		t.Error("keychainHasClaudeEntry = true on Windows stub, want false")
 	}
 }

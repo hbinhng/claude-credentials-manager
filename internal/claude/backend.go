@@ -1,6 +1,9 @@
 package claude
 
-import "sync"
+import (
+	"runtime"
+	"sync"
+)
 
 // backend is the storage adapter used by Active/Use/Sync/Restore. Both
 // the file backend (~/.claude/.credentials.json) and the keychain
@@ -16,14 +19,38 @@ type backend interface {
 	Remove() error
 }
 
-// probeBackend returns keychainBackend when the OS keystore is reachable,
-// fileBackend otherwise. Pulled out of currentBackend so tests can call
-// it directly without relying on the cache.
+// probeBackend picks the backend ccm should use for this process. The
+// rule is "match wherever Claude Code currently keeps its credentials":
+//
+//  1. Claude wrote to the keychain → keychain.
+//  2. Claude wrote ~/.claude/.credentials.json → file.
+//  3. Neither → platform default (macOS → keychain, Linux/Windows → file)
+//     because Claude has rolled out keychain on macOS but not yet on
+//     Linux or Windows. When a fresh user installs ccm before Claude
+//     has logged in anywhere, this default determines where ccm's first
+//     write lands; ccm will follow Claude when Claude later writes too.
+//
+// Pulled out of currentBackend so tests can call it directly without
+// relying on the cache.
 func probeBackend() backend {
-	if keychainProbe() {
+	if keychainHasClaudeEntry() {
+		return keychainBackend{}
+	}
+	if fileBackendHasEntry() {
+		return fileBackend{}
+	}
+	if runtime.GOOS == "darwin" {
 		return keychainBackend{}
 	}
 	return fileBackend{}
+}
+
+// fileBackendHasEntry reports whether ~/.claude/.credentials.json
+// currently exists with content. Used by probeBackend to detect the
+// "Claude is on file" rollout state.
+func fileBackendHasEntry() bool {
+	_, ok, _ := (fileBackend{}).Read()
+	return ok
 }
 
 // defaultCurrentBackend returns the cached probe result, running the

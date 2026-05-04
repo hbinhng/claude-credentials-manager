@@ -12,17 +12,8 @@ var errUnsupported = errors.New("keychain backend not supported on this platform
 
 // keychainBackend talks to the OS keystore via go-keyring. The Claude
 // service and account constants are platform-specific (see
-// backend_keychain_*.go). Probing uses a separate sentinel service so
-// the probe tests transport health, not the presence of a real Claude
-// entry — otherwise an unverified/wrong account string would make the
-// probe pass with ErrNotFound and Read calls would silently return
-// "no entry" forever.
+// backend_keychain_*.go).
 type keychainBackend struct{}
-
-const (
-	probeService = "ccm-keychain-probe"
-	probeAccount = "probe"
-)
 
 func (keychainBackend) Read() ([]byte, bool, error) {
 	if keychainService == "" || keychainAccount == "" {
@@ -58,25 +49,15 @@ func (keychainBackend) Remove() error {
 	return nil
 }
 
-// keychainProbe checks whether the OS keystore is reachable by
-// attempting a Get on a sentinel service ccm controls. Classifies:
-//   - nil err          → keychain works AND we somehow have a probe
-//                        entry, return true.
-//   - ErrNotFound      → keychain works, no probe entry, return true.
-//   - any other err    → keychain transport down, return false.
-//
-// Using a sentinel rather than the Claude service/account avoids
-// confusing "Claude entry missing" with "keychain unreachable".
-func keychainProbe() bool {
+// keychainHasClaudeEntry reports whether Claude Code currently stores a
+// credential blob in this host's keystore. This is the signal for "use
+// keychain backend" — purely "is the keystore reachable?" misfires
+// during the per-platform rollout (e.g. Linux Claude Code 2.1.x has
+// Secret Service available but still writes ~/.claude/.credentials.json).
+func keychainHasClaudeEntry() bool {
 	if keychainService == "" || keychainAccount == "" {
 		return false
 	}
-	_, err := keyring.Get(probeService, probeAccount)
-	if err == nil {
-		return true
-	}
-	if errors.Is(err, keyring.ErrNotFound) {
-		return true
-	}
-	return false
+	_, err := keyring.Get(keychainService, keychainAccount)
+	return err == nil
 }
