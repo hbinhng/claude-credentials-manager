@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
-	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 // identityHeaderAllowlist enumerates the request headers that identify a
@@ -112,6 +111,11 @@ type Proxy struct {
 	// and cross-process flock). In load-balance mode it is a *credPool
 	// that routes Fresh() to the currently-activated entry.
 	tokens tokenSource
+
+	// pool is non-nil only in load-balance mode. Used by the
+	// ModifyResponse hook to signal upstream-401 events back to the
+	// rotation policy via SignalActivatedFailed.
+	pool *credPool
 
 	// debug enables verbose per-request logging in the Director. Toggled
 	// via CCM_SHARE_DEBUG=1 at NewProxy time.
@@ -269,18 +273,51 @@ func (p *Proxy) Captured() http.Header {
 // background goroutine that periodically refreshes the credential so it
 // does not die mid-session during long idle stretches. The goroutine
 // exits when Close is called.
-func (p *Proxy) Transition(accessToken string, cred *store.Credential) error {
+// Transition switches the proxy from CAPTURE mode into SERVING
+// mode.
+//
+// tokens is the request-path read source — *credState in
+// single-cred mode, *credPool in load-balance mode.
+//
+// pool is non-nil only in load-balance mode and is used by the
+// proxy to signal upstream-401 events back to the rotation policy
+// via SignalActivatedFailed.
+func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPool) error {
 	p.modeMu.Lock()
 	if p.captured == nil {
 		p.modeMu.Unlock()
 		return errors.New("cannot transition: capture never happened")
 	}
 	p.accessToken = accessToken
-	p.tokens = newCredState(cred)
+	p.tokens = tokens
+	p.pool = pool
 	p.mode = modeServing
 	p.modeMu.Unlock()
 
-	go p.refreshLoop()
+	// ModifyResponse is set once per Transition. It is concurrency-
+	// safe to set here because the ReverseProxy only consults it on
+	// request completion, and we hold modeMu around the field
+	// change.
+	if pool != nil {
+		existingMR := p.rp.ModifyResponse
+		p.rp.ModifyResponse = func(r *http.Response) error {
+			if r.StatusCode == http.StatusUnauthorized {
+				fmt.Fprintf(errLog(), "ccm share: upstream 401 on activated\n")
+				pool.SignalActivatedFailed()
+			}
+			if existingMR != nil {
+				return existingMR(r)
+			}
+			return nil
+		}
+	}
+
+	if pool == nil {
+		go p.refreshLoop()
+	}
+	// Pool-mode goroutines (refresh timers + scheduler) are started
+	// by the session, not by Transition, since they need the
+	// session's clock and rebalance interval.
 	return nil
 }
 
@@ -405,6 +442,10 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 
 	realToken, err := p.getFreshToken()
 	if err != nil {
+		if errors.Is(err, errNoActivated) {
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
+			return
+		}
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: credential refresh failed: "+err.Error())
 		return
 	}

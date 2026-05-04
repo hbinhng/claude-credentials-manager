@@ -167,7 +167,7 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		// failure, which is not exercisable in tests.
 		return nil, err
 	}
-	if err := proxy.Transition(accessToken, cred); err != nil {
+	if err := proxy.Transition(accessToken, newCredState(cred), nil); err != nil {
 		_ = proxy.Close()
 		// coverage: unreachable — Transition errors only when capture has
 		// not run; StartSession always runs capture first via captureFn.
