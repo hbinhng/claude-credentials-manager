@@ -2,13 +2,22 @@
 
 package claude
 
-// Service and account names Claude Code uses for its OAuth blob in the
-// macOS Keychain. The implementer must verify these against a real
-// Claude Code install on macOS before this code ships.
-//
-// TODO(verify-on-mac): inspect the live keychain entry and substitute
-// the observed strings.
-const (
-	keychainService = "Claude Code-credentials"
-	keychainAccount = ""
-)
+import "os/user"
+
+// On macOS, Claude Code stores its OAuth blob under service
+// "Claude Code-credentials" with the OS login username as the account.
+// Verified by inspecting `security find-generic-password -s "Claude Code-credentials"`
+// on a live install: the `acct` attribute contains the macOS username.
+const keychainService = "Claude Code-credentials"
+
+// keychainAccount holds the per-user account string. Resolved once at
+// package init from os/user; empty when the lookup fails (unusual
+// macOS state — falls back to errUnsupported, which routes the backend
+// probe to the file backend).
+var keychainAccount = func() string {
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+	return u.Username
+}()
