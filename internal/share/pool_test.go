@@ -166,3 +166,113 @@ func TestMarkProbeStoresLastUsageOnSuccess(t *testing.T) {
 		t.Errorf("lastUsageAt not stamped")
 	}
 }
+
+func TestPromoteResetsCounterOfHealthyOldActivated(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	p.entries["a"].consecutiveFail = 1 // healthy (< 2)
+	p.Promote("b")
+	if got := p.entries["a"].status; got != statusCandidate {
+		t.Errorf("old activated status = %v, want candidate", got)
+	}
+	if got := p.entries["a"].consecutiveFail; got != 0 {
+		t.Errorf("old activated consecutiveFail = %d, want 0 (reset on rotation)", got)
+	}
+	if got := p.entries["b"].status; got != statusActivated {
+		t.Errorf("new activated status = %v, want activated", got)
+	}
+	if got := p.entries["b"].consecutiveFail; got != 0 {
+		t.Errorf("new activated consecutiveFail = %d, want 0", got)
+	}
+	if got := p.activated; got != "b" {
+		t.Errorf("pool.activated = %q, want b", got)
+	}
+}
+
+func TestPromoteDemotesUnhealthyOldActivatedToDegraded(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	p.entries["a"].consecutiveFail = 3 // unhealthy
+	p.Promote("b")
+	if got := p.entries["a"].status; got != statusDegraded {
+		t.Errorf("old activated status = %v, want degraded", got)
+	}
+	if got := p.entries["a"].consecutiveFail; got != 3 {
+		t.Errorf("old activated consecutiveFail = %d, want 3 (preserved)", got)
+	}
+}
+
+func TestDemoteSetsActivatedEmpty(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusDegraded, &fakeTokenSource{}),
+	})
+	p.entries["a"].consecutiveFail = 5
+	p.Demote("a")
+	if p.activated != "" {
+		t.Errorf("activated = %q, want empty", p.activated)
+	}
+	if got := p.entries["a"].status; got != statusDegraded {
+		t.Errorf("status = %v, want degraded", got)
+	}
+}
+
+func TestDemotePanicsOnSingleton(t *testing.T) {
+	p := makePool("a", true, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	defer func() {
+		if r := recover(); r == nil {
+			t.Fatal("Demote on singleton pool did not panic")
+		}
+	}()
+	p.Demote("a")
+}
+
+func TestSignalActivatedFailedIncrementsCounter(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	p.SignalActivatedFailed()
+	if got := p.entries["a"].consecutiveFail; got != 1 {
+		t.Errorf("consecutiveFail = %d, want 1", got)
+	}
+	p.SignalActivatedFailed()
+	if got := p.entries["a"].consecutiveFail; got != 2 {
+		t.Errorf("consecutiveFail = %d, want 2", got)
+	}
+}
+
+func TestSignalActivatedFailedNoOpWhenEmpty(t *testing.T) {
+	p := makePool("", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusDegraded, &fakeTokenSource{}),
+	})
+	p.SignalActivatedFailed()
+	if got := p.entries["a"].consecutiveFail; got != 0 {
+		t.Errorf("consecutiveFail bumped on empty pool: %d", got)
+	}
+}
+
+func TestSnapshotIsDeepCopy(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	p.entries["a"].consecutiveFail = 7
+	p.entries["a"].lastFeasibility = 1.5
+	snap := p.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("len(snap) = %d, want 1", len(snap))
+	}
+	if snap[0].consecutiveFail != 7 || snap[0].lastFeasibility != 1.5 {
+		t.Errorf("snapshot lost fields: %+v", snap[0])
+	}
+	// Mutate the snapshot, then assert the pool is untouched.
+	snap[0].consecutiveFail = 999
+	if got := p.entries["a"].consecutiveFail; got != 7 {
+		t.Errorf("Snapshot leaked aliasing — pool counter = %d, want 7", got)
+	}
+}

@@ -119,3 +119,87 @@ func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 		e.status = statusDegraded
 	}
 }
+
+// Promote atomically swaps the activated entry to newID. The old
+// activated is demoted to degraded if its consecutiveFail >= 2 (its
+// counter is preserved); otherwise to candidate with the counter
+// reset (rotation itself is the recovery signal for a healthy
+// loser).
+func (p *credPool) Promote(newID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if old, ok := p.entries[p.activated]; ok {
+		if old.consecutiveFail >= 2 {
+			old.status = statusDegraded
+		} else {
+			old.status = statusCandidate
+			old.consecutiveFail = 0
+		}
+	}
+	if e, ok := p.entries[newID]; ok {
+		e.status = statusActivated
+		e.consecutiveFail = 0
+	}
+	p.activated = newID
+}
+
+// Demote clears the activated slot — Fresh() will return
+// errNoActivated until a future Promote happens. Caller must
+// guarantee !p.singleton; we panic to surface the invariant
+// violation in tests.
+func (p *credPool) Demote(oldID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.singleton {
+		panic("ccm share: Demote called on singleton pool — invariant violation")
+	}
+	if e, ok := p.entries[oldID]; ok {
+		e.status = statusDegraded
+	}
+	p.activated = ""
+}
+
+// SignalActivatedFailed bumps the activated entry's
+// consecutiveFail. The next scheduler tick reads the counter and,
+// if it has reached the threshold, may demote the activated.
+// No-op when no entry is currently activated.
+func (p *credPool) SignalActivatedFailed() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.activated == "" {
+		return
+	}
+	if e, ok := p.entries[p.activated]; ok {
+		e.consecutiveFail++
+	}
+}
+
+// PoolEntryView is a read-only snapshot of one pool entry's state.
+type PoolEntryView struct {
+	id              string
+	name            string
+	status          entryStatus
+	consecutiveFail int
+	lastFeasibility float64
+	lastUsageAt     time.Time
+}
+
+// Snapshot returns a deep copy of every entry's current state, for
+// logging and SIGUSR1 introspection. Mutations to the returned
+// slice do not affect pool state.
+func (p *credPool) Snapshot() []PoolEntryView {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]PoolEntryView, 0, len(p.entries))
+	for id, e := range p.entries {
+		out = append(out, PoolEntryView{
+			id:              id,
+			name:            e.state.credName(),
+			status:          e.status,
+			consecutiveFail: e.consecutiveFail,
+			lastFeasibility: e.lastFeasibility,
+			lastUsageAt:     e.lastUsageAt,
+		})
+	}
+	return out
+}
