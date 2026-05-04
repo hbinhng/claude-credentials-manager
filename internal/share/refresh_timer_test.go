@@ -118,6 +118,57 @@ func TestRefreshTimerExitsOnDoneClose(t *testing.T) {
 	}
 }
 
+func TestRefreshTimerBackoffOnFresh(t *testing.T) {
+	now := time.Now()
+	state := &fakeRefreshableState{id: "a", expiresAt: now.Add(10 * time.Minute).UnixMilli()}
+	state.failNext.Store(true)
+	fc := newFakeClock(now)
+	done := make(chan struct{})
+	go runRefreshTimer(state, fc, func() time.Duration { return 0 }, done)
+
+	// Wait for the goroutine to register its first timer.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		registered := len(fc.timers) > 0
+		fc.mu.Unlock()
+		if registered {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Fire the first timer to trigger Fresh, which fails.
+	fc.Advance(6 * time.Minute)
+	// Wait for Fresh to be invoked and the backoff timer registered.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if state.calls.Load() >= 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Wait for the backoff timer to be registered (>=2 timers).
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		nTimers := len(fc.timers)
+		fc.mu.Unlock()
+		if nTimers >= 2 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	// Close done while sitting on the backoff timer to exit the
+	// inner select with the done branch.
+	close(done)
+	// Allow goroutine to exit.
+	time.Sleep(50 * time.Millisecond)
+	if state.calls.Load() < 1 {
+		t.Errorf("Fresh calls = %d, want >= 1", state.calls.Load())
+	}
+}
+
 func TestRefreshTimerCallsFreshWhenTimerFires(t *testing.T) {
 	now := time.Now()
 	state := &fakeRefreshableState{id: "a", expiresAt: now.Add(10 * time.Minute).UnixMilli()}

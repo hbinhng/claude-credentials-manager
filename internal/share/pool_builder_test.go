@@ -233,6 +233,71 @@ func setupRefreshStub(t *testing.T) *atomic.Int32 {
 	return &calls
 }
 
+func TestBuildPoolImplicitAllRejected(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	writeCredToFile(t, a)
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Error: "HTTP 403"}
+	})
+
+	_, _, err := BuildPool(nil)
+	if err == nil {
+		t.Fatal("BuildPool succeeded with implicit pool but every cred rejected")
+	}
+	if !strings.Contains(err.Error(), "no usable credentials in pool") {
+		t.Errorf("err = %v; want 'no usable credentials in pool' message", err)
+	}
+}
+
+func TestBuildPoolRefreshFailureRejectsCred(t *testing.T) {
+	setupFakeHome(t)
+	// Set up a cred whose refresh will hit a 401 from the OAuth server.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
+	}))
+	defer srv.Close()
+	orig := oauth.TokenURL
+	oauth.TokenURL = srv.URL
+	t.Cleanup(func() { oauth.TokenURL = orig })
+
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", -time.Hour) // expired → forces refresh
+	writeCredToFile(t, a)
+	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
+
+	_, _, err := BuildPool([]string{"alice"})
+	if err == nil {
+		t.Fatal("BuildPool succeeded with refresh-failing cred named explicitly")
+	}
+	if !strings.Contains(err.Error(), "refresh failed") && !strings.Contains(err.Error(), "rejected") {
+		t.Errorf("err = %v; want 'refresh failed' or 'rejected' message", err)
+	}
+}
+
+func TestCredLogNameFallback(t *testing.T) {
+	c1 := &store.Credential{ID: "abcdef0123456789", Name: "alice"}
+	if got := credLogName(c1); got != "alice" {
+		t.Errorf("got %q, want alice", got)
+	}
+	c2 := &store.Credential{ID: "abcdef0123456789"}
+	if got := credLogName(c2); got != "abcdef01" {
+		t.Errorf("got %q, want abcdef01 (shortID fallback)", got)
+	}
+}
+
+func TestJoinLinesEmpty(t *testing.T) {
+	if got := joinLines(nil); got != "" {
+		t.Errorf("joinLines(nil) = %q, want empty", got)
+	}
+	if got := joinLines([]string{"only"}); got != "only" {
+		t.Errorf("joinLines single = %q", got)
+	}
+	if got := joinLines([]string{"a", "b"}); got != "a\n  b" {
+		t.Errorf("joinLines multi = %q", got)
+	}
+}
+
 func TestBuildPoolExpiredCredIsRefreshedNotSkipped(t *testing.T) {
 	setupFakeHome(t)
 	calls := setupRefreshStub(t)

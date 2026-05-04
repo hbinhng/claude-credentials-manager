@@ -3,6 +3,7 @@ package share
 import (
 	"fmt"
 	"math"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -289,6 +290,53 @@ func TestSchedulerTieBreakByIDLex(t *testing.T) {
 	}
 }
 
+func TestSchedulerDebugLogsWhenNoEligible(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated, consecutiveFail: 1}},
+		activated: "a",
+		singleton: true,
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return nil, fmt.Errorf("blip")
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.SetDebug(true)
+	// Two ticks: first push counter to 2, second triggers no-eligible
+	// path. Singleton means activated stays put → debug branch.
+	sch.runOnce()
+	sch.runOnce()
+	// pool.activated should still be "a" (singleton can't demote).
+	if pool.activated != "a" {
+		t.Errorf("singleton activated changed to %q", pool.activated)
+	}
+}
+
+func TestSchedulerPreFailRotationPath(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, consecutiveFail: 3, lastUsage: &oauth.UsageInfo{}},
+		"b": {state: stateB, status: statusCandidate, lastUsage: &oauth.UsageInfo{}},
+	}, activated: "a"}
+	// Probe success for both — would normally reset a.consecutiveFail.
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return &oauth.UsageInfo{}, nil
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+	// preFail snapshot remembered consecutiveFail=3 → eligibility check
+	// rotates winner b in. a's status should be degraded (preFail >= 2 path).
+	if pool.activated != "b" {
+		t.Errorf("activated = %q, want b (preFail rotation)", pool.activated)
+	}
+	if pool.entries["a"].status != statusDegraded {
+		t.Errorf("a status = %v, want degraded (preFail rotation degrade path)", pool.entries["a"].status)
+	}
+}
+
 func TestSchedulerDegradedEntryReprobedEachTick(t *testing.T) {
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
@@ -324,6 +372,89 @@ func TestSchedulerDegradedEntryReprobedEachTick(t *testing.T) {
 	}
 	if pool.entries["b"].status != statusCandidate {
 		t.Errorf("b should have recovered to candidate")
+	}
+}
+
+func TestProductionProbeRefreshError(t *testing.T) {
+	state := &fakeRefreshableState{id: "x", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	state.failNext.Store(true)
+	_, err := productionProbe(state)
+	if err == nil {
+		t.Fatal("productionProbe: want error from refresh failure, got nil")
+	}
+}
+
+func TestProductionProbeUsageError(t *testing.T) {
+	state := &fakeRefreshableState{id: "x", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	orig := oauth.FetchUsageFn
+	defer func() { oauth.FetchUsageFn = orig }()
+	oauth.FetchUsageFn = func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Error: "HTTP 403"}
+	}
+	_, err := productionProbe(state)
+	if err == nil {
+		t.Fatal("productionProbe: want error from usage probe, got nil")
+	}
+}
+
+func TestProductionProbeOk(t *testing.T) {
+	state := &fakeRefreshableState{id: "x", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	orig := oauth.FetchUsageFn
+	defer func() { oauth.FetchUsageFn = orig }()
+	oauth.FetchUsageFn = func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{}
+	}
+	info, err := productionProbe(state)
+	if err != nil {
+		t.Fatalf("productionProbe: %v", err)
+	}
+	if info == nil {
+		t.Fatal("info is nil")
+	}
+}
+
+func TestSchedulerRunFiresOnTick(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		activated: "a",
+		singleton: true,
+	}
+	var probeCalls atomic.Int32
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		probeCalls.Add(1)
+		return &oauth.UsageInfo{}, nil
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, time.Second)
+	done := make(chan struct{})
+	go sch.Run(done)
+
+	// Wait for the goroutine to register its ticker.
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		registered := len(fc.tickers) > 0
+		fc.mu.Unlock()
+		if registered {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	fc.Advance(2 * time.Second)
+	// Wait for at least one probe call.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if probeCalls.Load() >= 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(done)
+	if probeCalls.Load() < 1 {
+		t.Errorf("probeCalls = %d, want >= 1", probeCalls.Load())
 	}
 }
 

@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -258,6 +259,15 @@ func TestSignalActivatedFailedNoOpWhenEmpty(t *testing.T) {
 	}
 }
 
+// Drives the !ok branch — activated points to a missing key.
+func TestSignalActivatedFailedActivatedMissingFromMap(t *testing.T) {
+	p := makePool("ghost", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusCandidate, &fakeTokenSource{}),
+	})
+	// Should not panic.
+	p.SignalActivatedFailed()
+}
+
 func TestSignalActivatedFailedRacePromote(t *testing.T) {
 	p := makePool("a", false, map[string]*poolEntry{
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
@@ -296,6 +306,44 @@ func TestSignalActivatedFailedRacePromote(t *testing.T) {
 	}
 	if activatedCount != 1 {
 		t.Errorf("activatedCount = %d, want 1", activatedCount)
+	}
+}
+
+func TestEntryStatusString(t *testing.T) {
+	cases := []struct {
+		s    entryStatus
+		want string
+	}{
+		{statusCandidate, "candidate"},
+		{statusActivated, "activated"},
+		{statusDegraded, "degraded"},
+		{entryStatus(99), "unknown"},
+	}
+	for _, c := range cases {
+		if got := c.s.String(); got != c.want {
+			t.Errorf("status %d.String() = %q, want %q", int(c.s), got, c.want)
+		}
+	}
+}
+
+func TestSnapshotLines(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "", statusDegraded, &fakeTokenSource{}), // no name
+	})
+	p.entries["a"].lastUsageAt = time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
+	p.entries["a"].lastFeasibility = 1.5
+	p.entries["a"].consecutiveFail = 3
+	lines := p.SnapshotLines()
+	if len(lines) != 2 {
+		t.Fatalf("len(lines) = %d, want 2", len(lines))
+	}
+	combined := lines[0] + "\n" + lines[1]
+	if !strings.Contains(combined, "alice") {
+		t.Errorf("missing alice: %s", combined)
+	}
+	if !strings.Contains(combined, "never") {
+		t.Errorf("missing 'never' for b's lastUsageAt: %s", combined)
 	}
 }
 

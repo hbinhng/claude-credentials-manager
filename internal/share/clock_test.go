@@ -103,6 +103,29 @@ func TestFakeClockTimerStopBeforeFire(t *testing.T) {
 	}
 }
 
+func TestFakeClockTickerStopPreventsFire(t *testing.T) {
+	fc := newFakeClock(time.Now())
+	tick := fc.NewTicker(time.Second)
+	tick.Stop()
+	fc.Advance(5 * time.Second)
+	select {
+	case <-tick.C():
+		t.Fatal("ticker fired after Stop")
+	default:
+	}
+}
+
+func TestFakeClockTimerStopAfterAlreadyStopped(t *testing.T) {
+	fc := newFakeClock(time.Now())
+	timer := fc.NewTimer(time.Hour)
+	if !timer.Stop() {
+		t.Fatal("first Stop should return true")
+	}
+	if timer.Stop() {
+		t.Fatal("second Stop should return false (already stopped)")
+	}
+}
+
 func TestFakeClockTickerFiresEachInterval(t *testing.T) {
 	fc := newFakeClock(time.Now())
 	tick := fc.NewTicker(5 * time.Second)
