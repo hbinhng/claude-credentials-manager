@@ -1,3 +1,9 @@
+// note: deviation from plan — runOnce snapshots consecutiveFail per entry
+// before probes run (preFail map). Without this, MarkProbe(success) resets
+// the counter and the SignalActivatedFailed signal is lost in the same
+// tick, so TestLoadBalanceUpstream401FastPath fails. Eligibility/demotion
+// uses max(preFail, current) so the 401 signal survives a tick where the
+// probe also succeeded.
 package share
 
 import (
@@ -114,8 +120,13 @@ func (s *scheduler) runOnce() {
 	}
 	s.pool.mu.RLock()
 	jobs := make([]job, 0, len(s.pool.entries))
+	// preFail snapshots each entry's consecutiveFail before probes
+	// run, so an upstream-401 signal (SignalActivatedFailed) is not
+	// reset by a subsequent probe-success in the same tick.
+	preFail := make(map[string]int, len(s.pool.entries))
 	for id, e := range s.pool.entries {
 		jobs = append(jobs, job{id: id, state: e.state})
+		preFail[id] = e.consecutiveFail
 	}
 	s.pool.mu.RUnlock()
 
@@ -144,7 +155,15 @@ func (s *scheduler) runOnce() {
 		case statusCandidate:
 			eligibleEntry = true
 		case statusActivated:
-			eligibleEntry = e.consecutiveFail < 2
+			// Use max(pre-tick fail count, current fail count). The
+			// pre-tick value preserves any upstream-401 signal that
+			// the probe path may have reset on success; the current
+			// value picks up new probe failures in this tick.
+			fail := e.consecutiveFail
+			if pf, ok := preFail[id]; ok && pf > fail {
+				fail = pf
+			}
+			eligibleEntry = fail < 2
 		}
 		if !eligibleEntry || e.lastUsage == nil {
 			continue
@@ -176,7 +195,14 @@ func (s *scheduler) runOnce() {
 	if len(eligible) == 0 {
 		// No eligible winner.
 		actEntry, hasAct := s.pool.entries[s.pool.activated]
-		if hasAct && actEntry.consecutiveFail >= 2 && !s.pool.singleton {
+		actFail := 0
+		if hasAct {
+			actFail = actEntry.consecutiveFail
+			if pf, ok := preFail[s.pool.activated]; ok && pf > actFail {
+				actFail = pf
+			}
+		}
+		if hasAct && actFail >= 2 && !s.pool.singleton {
 			// Branch (c): demote activated.
 			pending = logEntry{kind: "demote", oldName: actEntry.state.credName(), oldID: s.pool.activated}
 			actEntry.status = statusDegraded
@@ -195,7 +221,11 @@ func (s *scheduler) runOnce() {
 			oldEntry, hasOld := s.pool.entries[oldID]
 			newEntry := s.pool.entries[winner.id]
 			if hasOld {
-				if oldEntry.consecutiveFail >= 2 {
+				oldFail := oldEntry.consecutiveFail
+				if pf, ok := preFail[oldID]; ok && pf > oldFail {
+					oldFail = pf
+				}
+				if oldFail >= 2 {
 					oldEntry.status = statusDegraded
 				} else {
 					oldEntry.status = statusCandidate
