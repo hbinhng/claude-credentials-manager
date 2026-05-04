@@ -63,6 +63,14 @@ const (
 	modeServing
 )
 
+// tokenSource is the single hook the request path uses to obtain the
+// current OAuth bearer to inject into forwarded requests. The
+// existing *credState (single-cred mode) and the new *credPool
+// (load-balance mode) both satisfy it.
+type tokenSource interface {
+	Fresh() (string, error)
+}
+
 // backgroundRefreshInterval is how often the serving-mode refresher wakes
 // up to check the credential's expiration and refresh if needed. Anthropic
 // OAuth tokens are long-lived (hours), so this cadence is generous — the
@@ -100,10 +108,10 @@ type Proxy struct {
 	captureC chan struct{} // closed once capture has happened
 
 	// Credential state. Populated by Transition(); nil in CAPTURE mode.
-	// credState owns its own mutex and cross-process flock, so no
-	// additional Proxy-level synchronization is needed for credential
-	// access.
-	credState *credState
+	// In single-cred mode this is a *credState (which owns its own mutex
+	// and cross-process flock). In load-balance mode it is a *credPool
+	// that routes Fresh() to the currently-activated entry.
+	tokens tokenSource
 
 	// debug enables verbose per-request logging in the Director. Toggled
 	// via CCM_SHARE_DEBUG=1 at NewProxy time.
@@ -268,7 +276,7 @@ func (p *Proxy) Transition(accessToken string, cred *store.Credential) error {
 		return errors.New("cannot transition: capture never happened")
 	}
 	p.accessToken = accessToken
-	p.credState = newCredState(cred)
+	p.tokens = newCredState(cred)
 	p.mode = modeServing
 	p.modeMu.Unlock()
 
@@ -290,7 +298,7 @@ func (p *Proxy) refreshLoop() {
 		case <-p.done:
 			return
 		case <-ticker.C:
-			if _, err := p.getFreshToken(); err != nil {
+			if _, err := p.tokens.Fresh(); err != nil {
 				fmt.Fprintf(errLog(), "ccm share: background refresh check failed: %v\n", err)
 				continue
 			}
@@ -458,10 +466,10 @@ func (p *Proxy) onUpstreamError(w http.ResponseWriter, _ *http.Request, err erro
 // if a peer has written and refreshing via OAuth if expired. See
 // credState.Fresh for the full algorithm.
 func (p *Proxy) getFreshToken() (string, error) {
-	if p.credState == nil {
+	if p.tokens == nil {
 		return "", errors.New("no credential")
 	}
-	return p.credState.Fresh()
+	return p.tokens.Fresh()
 }
 
 // writeAnthropicError emits a JSON body in Anthropic's error envelope
