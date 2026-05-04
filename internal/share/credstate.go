@@ -107,3 +107,6 @@ func (s *credState) reloadIfPeerWrote() {
 	s.cred = reloaded
 	s.mtime = info.ModTime()
 }
+
+// Compile-time check that *credState satisfies tokenSource.
+var _ tokenSource = (*credState)(nil)
