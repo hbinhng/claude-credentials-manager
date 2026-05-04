@@ -110,3 +110,11 @@ func (s *credState) reloadIfPeerWrote() {
 
 // Compile-time check that *credState satisfies tokenSource.
 var _ tokenSource = (*credState)(nil)
+
+// Compile-time check that *credState satisfies poolEntryState.
+var _ poolEntryState = (*credState)(nil)
+
+func (s *credState) credID() string             { return s.cred.ID }
+func (s *credState) credName() string           { return s.cred.Name }
+func (s *credState) credExpiresAt() time.Time   { return time.UnixMilli(s.cred.ClaudeAiOauth.ExpiresAt) }
+func (s *credState) credPtr() *store.Credential { return s.cred }
