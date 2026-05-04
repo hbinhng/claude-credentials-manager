@@ -26,6 +26,11 @@ func setupFakeHome(t *testing.T) (claudeDir string, cleanup func()) {
 	if err := os.MkdirAll(ccmDir, 0700); err != nil {
 		t.Fatalf("create .ccm dir: %v", err)
 	}
+
+	// Pin file backend via t.Cleanup so it interacts correctly with
+	// withBackend's t.Cleanup (LIFO).
+	t.Cleanup(UseFileBackendForTest())
+
 	return dir, func() {
 		os.Setenv("HOME", oldHome)
 		os.Setenv("USERPROFILE", oldUserProfile)
@@ -39,6 +44,7 @@ func setupFakeHomeNoClaudeDir(t *testing.T) (tmpHome string, cleanup func()) {
 	oldUserProfile := os.Getenv("USERPROFILE")
 	os.Setenv("HOME", tmpHome)
 	os.Setenv("USERPROFILE", tmpHome)
+	t.Cleanup(UseFileBackendForTest())
 	return tmpHome, func() {
 		os.Setenv("HOME", oldHome)
 		os.Setenv("USERPROFILE", oldUserProfile)
