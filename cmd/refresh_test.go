@@ -18,6 +18,7 @@ func seedRefreshCred(t *testing.T, name string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if err := os.MkdirAll(filepath.Join(home, ".ccm"), 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
@@ -77,6 +78,7 @@ func TestDoRefreshCredential_HappyPath(t *testing.T) {
 func TestDoRefreshCredential_ResolveError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	if err := os.MkdirAll(filepath.Join(home, ".ccm"), 0700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}

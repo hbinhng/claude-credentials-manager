@@ -1,22 +1,16 @@
 package claude
 
 import (
-	"errors"
 	"runtime"
 	"sync"
 	"testing"
-
-	"github.com/zalando/go-keyring"
 )
 
 // probeBackend rule 1: Claude has a keychain entry → keychain backend.
 func TestProbeBackend_KeychainHasEntry_PicksKeychain(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-	keyring.MockInit()
-	if err := keyring.Set(keychainService, keychainAccount, "blob"); err != nil {
-		t.Fatal(err)
-	}
+	installFakeClaudeKeychainEntry(t)
 	got := probeBackend()
 	if _, ok := got.(keychainBackend); !ok {
 		t.Errorf("probeBackend = %T, want keychainBackend", got)
@@ -27,7 +21,7 @@ func TestProbeBackend_KeychainHasEntry_PicksKeychain(t *testing.T) {
 func TestProbeBackend_FileHasEntry_PicksFile(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-	keyring.MockInit()
+	resetKeychain(t)
 	if err := (fileBackend{}).Write([]byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +35,7 @@ func TestProbeBackend_FileHasEntry_PicksFile(t *testing.T) {
 func TestProbeBackend_EmptyEverywhere_PlatformDefault(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-	keyring.MockInit()
+	resetKeychain(t)
 	got := probeBackend()
 	wantKeychain := runtime.GOOS == "darwin"
 	if wantKeychain {
@@ -55,13 +49,12 @@ func TestProbeBackend_EmptyEverywhere_PlatformDefault(t *testing.T) {
 	}
 }
 
-// Transport down + file present → file. Transport down with no file
-// hits the platform default branch — still safe because keychain
-// methods will errUnsupported on Read.
+// Transport down + file present → file. Even if the keystore is broken,
+// a present file is the source of truth.
 func TestProbeBackend_TransportDown_FilePresent_PicksFile(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-	keyring.MockInitWithError(errors.New("dbus down"))
+	breakKeychainTransport(t)
 	if err := (fileBackend{}).Write([]byte(`{}`)); err != nil {
 		t.Fatal(err)
 	}
@@ -74,10 +67,7 @@ func TestProbeBackend_TransportDown_FilePresent_PicksFile(t *testing.T) {
 func TestDefaultCurrentBackend_RunsProbeOnce(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-	keyring.MockInit()
-	if err := keyring.Set(keychainService, keychainAccount, "blob"); err != nil {
-		t.Fatal(err)
-	}
+	installFakeClaudeKeychainEntry(t)
 	probeOnce = sync.Once{}
 	cachedBackend = nil
 	t.Cleanup(func() {

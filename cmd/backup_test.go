@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -161,6 +162,9 @@ func TestRunBackup_NoClaudeAiOauthErrors(t *testing.T) {
 }
 
 func TestRunBackup_SyncWriteFailure_PropagatesError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based failure injection is Unix-only")
+	}
 	home := setupHomeWithCcm(t)
 	saveCredFor(t, "writeerr", store.OAuthTokens{AccessToken: "stale", RefreshToken: "r", ExpiresAt: 1, Scopes: []string{"user:inference"}})
 	installActiveBlob(t, "writeerr", store.OAuthTokens{AccessToken: "fresh", RefreshToken: "r", ExpiresAt: 99999, Scopes: []string{"user:inference"}})

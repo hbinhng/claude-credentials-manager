@@ -3,6 +3,7 @@ package claude
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -40,8 +41,10 @@ func TestFileBackend_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("perm = %o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("perm = %o, want 0600", perm)
+		}
 	}
 }
 
@@ -82,6 +85,7 @@ func TestFileBackend_WriteAtomic_NoTmpLeftover(t *testing.T) {
 }
 
 func TestFileBackend_WriteFailure(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 

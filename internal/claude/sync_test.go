@@ -142,6 +142,7 @@ func TestSync_ClaudeNewer_StoreUpdated(t *testing.T) {
 }
 
 func TestSync_StoreWriteFailure(t *testing.T) {
+	skipIfChmodNoOp(t)
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 

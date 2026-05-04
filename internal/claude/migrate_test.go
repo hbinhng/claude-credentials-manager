@@ -249,6 +249,7 @@ func TestDetectLegacyState_1b_NoCCMSourceID(t *testing.T) {
 
 // detectLegacyState: state 2 — regular file is unreadable.
 func TestDetectLegacyState_State2_UnreadableFile(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -264,6 +265,7 @@ func TestDetectLegacyState_State2_UnreadableFile(t *testing.T) {
 
 // cleanupLegacyArtifacts: os.Remove fails with a non-NotExist error.
 func TestCleanupLegacyArtifacts_RemoveFails(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 

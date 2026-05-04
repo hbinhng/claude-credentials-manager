@@ -4,11 +4,24 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
+
+// skipIfChmodNoOp skips a test on platforms where os.Chmod doesn't gate
+// writes (Windows). Tests that use chmod 0500/0000 to provoke write
+// failures rely on Unix permission semantics — those failure modes
+// don't manifest on Windows the same way, and the production behavior
+// they verify is exercised by the equivalent Linux/macOS test runs.
+func skipIfChmodNoOp(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod-based failure injection is Unix-only")
+	}
+}
 
 func setupFakeHome(t *testing.T) (claudeDir string, cleanup func()) {
 	t.Helper()
@@ -265,8 +278,10 @@ func TestWriteActive_WritesRegularFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("perm = %o, want 0600", perm)
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm != 0600 {
+			t.Errorf("perm = %o, want 0600", perm)
+		}
 	}
 	data, _ := os.ReadFile(filepath.Join(dir, ".credentials.json"))
 	var parsed struct {
@@ -420,6 +435,7 @@ func TestUse_SwitchThenRestore_RestoresOriginal(t *testing.T) {
 }
 
 func TestUse_WriteFails_ReturnsWrappedError(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -440,6 +456,7 @@ func TestUse_WriteFails_ReturnsWrappedError(t *testing.T) {
 }
 
 func TestRestore_RemoveFailsWithoutBackup(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -465,6 +482,7 @@ func TestRestore_RemoveFailsWithoutBackup(t *testing.T) {
 // With backup present + dir locked, b.Write (atomic-rename inside the
 // locked dir) fails first and Restore wraps it as "restore backup".
 func TestRestore_RestoreBackupWriteFails(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -492,6 +510,7 @@ func TestRestore_RestoreBackupWriteFails(t *testing.T) {
 }
 
 func TestUse_BackupWriteFails(t *testing.T) {
+	skipIfChmodNoOp(t)
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
