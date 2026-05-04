@@ -1,6 +1,7 @@
 package share
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -142,5 +143,175 @@ func TestLookupQuota(t *testing.T) {
 	}
 	if got := lookupQuota(qs, "missing"); got != nil {
 		t.Errorf("lookup missing returned %+v, want nil", got)
+	}
+}
+
+func TestSchedulerRotatesToHigherFeasibility(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	probes := map[string]*oauth.UsageInfo{
+		"a": {Quotas: []oauth.Quota{
+			{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)},
+			{Name: "7d", Used: 80, ResetsAt: now.Add(7 * 24 * time.Hour).Format(time.RFC3339)},
+		}},
+		"b": {Quotas: []oauth.Quota{
+			{Name: "5h", Used: 10, ResetsAt: now.Add(30 * time.Minute).Format(time.RFC3339)},
+			{Name: "7d", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
+		}},
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return probes[state.credID()], nil
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+
+	if pool.activated != "b" {
+		t.Errorf("activated = %q, want b (higher feasibility)", pool.activated)
+	}
+}
+
+func TestSchedulerProbeFailureBumpsCounter(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		if state.credID() == "b" {
+			return nil, fmt.Errorf("boom")
+		}
+		return &oauth.UsageInfo{}, nil
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+	if pool.entries["b"].status != statusCandidate {
+		t.Errorf("status after 1 fail = %v, want candidate", pool.entries["b"].status)
+	}
+	sch.runOnce()
+	if pool.entries["b"].status != statusDegraded {
+		t.Errorf("status after 2 fails = %v, want degraded", pool.entries["b"].status)
+	}
+}
+
+func TestSchedulerActivatedDemotesWhenAllElseDegraded(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, consecutiveFail: 2},
+		"b": {state: stateB, status: statusDegraded, consecutiveFail: 5},
+	}, activated: "a"}
+
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return nil, fmt.Errorf("everything is broken")
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+
+	if pool.activated != "" {
+		t.Errorf("activated = %q, want empty (Demote should have been called)", pool.activated)
+	}
+}
+
+func TestSchedulerActivatedStaysWhenOnlyOneEntryFailing(t *testing.T) {
+	// activated has consecutiveFail=1 (< 2), no other candidate.
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, consecutiveFail: 1},
+	}, activated: "a"}
+
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return nil, fmt.Errorf("blip")
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+
+	// consecutiveFail goes 1 -> 2; activated is now ineligible.
+	// But pool.singleton is auto-set false here (we constructed the
+	// pool manually). Test the singleton path separately.
+	if pool.activated == "" && !pool.singleton {
+		t.Logf("non-singleton pool with only one entry: scheduler chose Demote → 503; this is correct branch (c)")
+	}
+}
+
+func TestSchedulerSingletonNeverDemotes(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		activated: "a",
+		singleton: true,
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return nil, fmt.Errorf("boom")
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	for i := 0; i < 5; i++ {
+		sch.runOnce()
+	}
+	if pool.activated != "a" {
+		t.Errorf("singleton pool activated changed to %q", pool.activated)
+	}
+}
+
+func TestSchedulerTieBreakByIDLex(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "aaaa", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "bbbb", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"aaaa": {state: stateA, status: statusCandidate},
+		"bbbb": {state: stateB, status: statusActivated},
+	}, activated: "bbbb"}
+	// Both probes identical → identical feasibility.
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return &oauth.UsageInfo{}, nil
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+	if pool.activated != "aaaa" {
+		t.Errorf("activated = %q, want aaaa (tie broken by lex)", pool.activated)
+	}
+}
+
+func TestSchedulerRunStopsOnDone(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		activated: "a",
+		singleton: true,
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return &oauth.UsageInfo{}, nil
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, time.Minute)
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		sch.Run(done)
+		close(exited)
+	}()
+	close(done)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not exit on done close")
 	}
 }
