@@ -67,48 +67,17 @@ func saveCred(t *testing.T, cred *store.Credential) {
 	}
 }
 
-// --- ActiveID / IsActive / IsManaged ---
-
-func TestActiveID_NoSidecar(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-	if got := ActiveID(); got != "" {
-		t.Errorf("ActiveID() = %q, want \"\"", got)
-	}
-}
-
-func TestActiveID_PresentSidecar(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-	if err := SetActive("xyz"); err != nil {
+// setActiveBlob writes a {ccmSourceId, claudeAiOauth} blob through the
+// file backend so tests that previously called SetActive(id) can seed
+// the active state without depending on the removed sidecar API.
+func setActiveBlob(t *testing.T, id string, tokens store.OAuthTokens) {
+	t.Helper()
+	blob, err := encodeBlob(id, tokens)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if got := ActiveID(); got != "xyz" {
-		t.Errorf("ActiveID() = %q, want \"xyz\"", got)
-	}
-}
-
-func TestIsActive(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-	_ = SetActive("alpha")
-	if !IsActive("alpha") {
-		t.Error("IsActive(alpha) = false")
-	}
-	if IsActive("beta") {
-		t.Error("IsActive(beta) = true")
-	}
-}
-
-func TestIsManaged(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-	if IsManaged() {
-		t.Error("IsManaged() = true with no sidecar")
-	}
-	_ = SetActive("z")
-	if !IsManaged() {
-		t.Error("IsManaged() = false after SetActive")
+	if err := (fileBackend{}).Write(blob); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -146,10 +115,14 @@ func TestUse_FreshClaudeDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	var parsed struct {
+		CCMSourceID   string            `json:"ccmSourceId"`
 		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
+	}
+	if parsed.CCMSourceID != cred.ID {
+		t.Errorf("CCMSourceID = %q, want %q", parsed.CCMSourceID, cred.ID)
 	}
 	if parsed.ClaudeAiOauth.AccessToken != "access-fresh" {
 		t.Errorf("AccessToken = %q", parsed.ClaudeAiOauth.AccessToken)
@@ -295,8 +268,8 @@ func TestWriteActive_WritesRegularFile(t *testing.T) {
 		CCMSourceID   string            `json:"ccmSourceId"`
 	}
 	_ = json.Unmarshal(data, &parsed)
-	if parsed.CCMSourceID != "" {
-		t.Errorf("ccmSourceId leaked into file")
+	if parsed.CCMSourceID != "wa" {
+		t.Errorf("CCMSourceID = %q, want wa", parsed.CCMSourceID)
 	}
 	if parsed.ClaudeAiOauth.AccessToken != "access-wa" {
 		t.Errorf("AccessToken = %q", parsed.ClaudeAiOauth.AccessToken)
@@ -308,8 +281,12 @@ func TestWriteActive_WritesRegularFile(t *testing.T) {
 func TestRestore_NoFile(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-	if err := Restore(); err == nil {
-		t.Error("Restore() = nil, want error for missing file")
+	// New behavior: silent no-op when nothing exists to restore.
+	if err := Restore(); err != nil {
+		t.Errorf("Restore() = %v, want nil (silent no-op)", err)
+	}
+	if _, err := os.Lstat(credentialsPath()); !os.IsNotExist(err) {
+		t.Error("Restore should not have created a file")
 	}
 }
 
@@ -355,7 +332,7 @@ func TestRestore_ManagedWithBackup(t *testing.T) {
 		t.Error("backup should be gone after restore")
 	}
 	if _, ok := Active(); ok {
-		t.Error("active.json should be cleared after Restore")
+		t.Error("active should be cleared after Restore")
 	}
 }
 
@@ -374,14 +351,13 @@ func TestRestore_ManagedNoBackup(t *testing.T) {
 		t.Error(".credentials.json should be gone with no backup")
 	}
 	if _, ok := Active(); ok {
-		t.Error("active.json should be cleared")
+		t.Error("active should be cleared")
 	}
 }
 
-// Active sidecar exists but the credentials file was already removed
+// Active blob exists but the credentials file/entry was already removed
 // (e.g. Claude rewrote it concurrently or the user deleted it manually).
-// Restore must tolerate the missing file and still clear active.json
-// instead of returning a confusing "file does not exist" error.
+// Restore must tolerate the missing entry as a no-op rather than error.
 func TestRestore_ManagedTargetMissing_TolerateAndClear(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
@@ -394,20 +370,17 @@ func TestRestore_ManagedTargetMissing_TolerateAndClear(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := Restore(); err != nil {
-		t.Errorf("Restore: %v, want nil (missing target should be tolerated when managed)", err)
+		t.Errorf("Restore: %v, want nil (missing target should be tolerated)", err)
 	}
 	if _, ok := Active(); ok {
-		t.Error("active.json should be cleared even when target was missing")
+		t.Error("active should be cleared even when target was missing")
 	}
 }
-
-// --- Fix 2: interaction test ---
 
 func TestUse_SwitchThenRestore_RestoresOriginal(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Plant a pre-existing original.
 	original := []byte(`{"original": true}`)
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), original, 0600); err != nil {
 		t.Fatal(err)
@@ -418,7 +391,6 @@ func TestUse_SwitchThenRestore_RestoresOriginal(t *testing.T) {
 	saveCred(t, a)
 	saveCred(t, b)
 
-	// First Use creates the backup; subsequent Use must NOT overwrite it.
 	if err := Use(a); err != nil {
 		t.Fatal(err)
 	}
@@ -437,20 +409,7 @@ func TestUse_SwitchThenRestore_RestoresOriginal(t *testing.T) {
 		t.Errorf("restored content = %q, want pre-existing original %q", got, original)
 	}
 	if _, ok := Active(); ok {
-		t.Error("active.json should be cleared after Restore")
-	}
-}
-
-// --- Fix 3: coverage gap tests ---
-
-func TestCredentialsPath(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	got := CredentialsPath()
-	want := filepath.Join(os.Getenv("HOME"), ".claude", ".credentials.json")
-	if got != want {
-		t.Errorf("CredentialsPath() = %q, want %q", got, want)
+		t.Error("active should be cleared after Restore")
 	}
 }
 
@@ -458,12 +417,10 @@ func TestUse_WriteFails_ReturnsWrappedError(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Make ~/.claude/ unwritable so writeClaudeCredentials fails on rename
-	// (the tmp file write into the dir will fail).
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0700)
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
 
 	cred := makeCred("writefail")
 	saveCred(t, cred)
@@ -476,27 +433,6 @@ func TestUse_WriteFails_ReturnsWrappedError(t *testing.T) {
 	}
 }
 
-func TestUse_SetActiveFails_ReturnsWrappedError(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	// Make ~/.ccm/ unwritable so SetActive fails inside Use after the
-	// claude file write succeeds.
-	if err := os.Chmod(store.Dir(), 0500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(store.Dir(), 0700)
-
-	cred := makeCred("setactivefail")
-	err := Use(cred)
-	if err == nil {
-		t.Fatal("Use: nil err, want SetActive failure")
-	}
-	if !strings.Contains(err.Error(), "set active") {
-		t.Errorf("err = %v, want wrapped 'set active' error", err)
-	}
-}
-
 func TestRestore_RemoveFailsWithoutBackup(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
@@ -506,11 +442,10 @@ func TestRestore_RemoveFailsWithoutBackup(t *testing.T) {
 	if err := Use(cred); err != nil {
 		t.Fatal(err)
 	}
-	// Make the dir unwritable so os.Remove(target) fails.
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0700)
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
 
 	err := Restore()
 	if err == nil {
@@ -521,7 +456,9 @@ func TestRestore_RemoveFailsWithoutBackup(t *testing.T) {
 	}
 }
 
-func TestRestore_RenameBackupFails(t *testing.T) {
+// With backup present + dir locked, b.Write (atomic-rename inside the
+// locked dir) fails first and Restore wraps it as "restore backup".
+func TestRestore_RestoreBackupWriteFails(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -530,88 +467,41 @@ func TestRestore_RenameBackupFails(t *testing.T) {
 	if err := Use(cred); err != nil {
 		t.Fatal(err)
 	}
-	// Plant a backup so we hit the rename branch.
 	bk := filepath.Join(dir, "bk.credentials.json")
 	if err := os.WriteFile(bk, []byte(`{"orig":true}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Make the dir unwritable so os.Rename(backup, target) fails.
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0700)
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
 
 	err := Restore()
 	if err == nil {
-		t.Fatal("Restore: nil err, want rename failure")
+		t.Fatal("Restore: nil err, want write failure")
 	}
 	if !strings.Contains(err.Error(), "restore backup") {
 		t.Errorf("err = %v, want wrapped 'restore backup' error", err)
 	}
 }
 
-func TestRestore_ClearActiveFails(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	cred := makeCred("clearfail")
-	saveCred(t, cred)
-	if err := Use(cred); err != nil {
-		t.Fatal(err)
-	}
-	// Lock ~/.ccm/ AFTER Use has written active.json so ClearActive fails.
-	if err := os.Chmod(store.Dir(), 0500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(store.Dir(), 0700)
-
-	err := Restore()
-	if err == nil {
-		t.Fatal("Restore: nil err, want ClearActive failure")
-	}
-	if !strings.Contains(err.Error(), "clear active") {
-		t.Errorf("err = %v, want wrapped 'clear active' error", err)
-	}
-}
-
-func TestWriteClaudeCredentials_RenameFails(t *testing.T) {
+func TestUse_BackupWriteFails(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	// Plant a non-empty directory at the target path so os.Rename(tmp, target) fails.
-	target := filepath.Join(dir, ".credentials.json")
-	if err := os.MkdirAll(filepath.Join(target, "subdir"), 0700); err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(target)
-
-	cred := makeCred("renwr")
-	err := writeClaudeCredentials(cred)
-	if err == nil {
-		t.Fatal("writeClaudeCredentials: nil err, want rename failure")
-	}
-}
-
-func TestUse_BackupRenameFails(t *testing.T) {
-	dir, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	// Plant an existing .credentials.json to trigger the backup path.
 	if err := os.WriteFile(filepath.Join(dir, ".credentials.json"), []byte(`{"orig":true}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Make the claudeDir unwritable so os.Rename(target, backupPath) fails.
-	// Rename requires write permission on the containing directory.
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0700)
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
 
 	cred := makeCred("bkrnfail")
 	saveCred(t, cred)
 	err := Use(cred)
 	if err == nil {
-		t.Fatal("Use: nil err, want backup rename failure")
+		t.Fatal("Use: nil err, want backup write failure")
 	}
 	if !strings.Contains(err.Error(), "backup original credentials") {
 		t.Errorf("err = %v, want wrapped 'backup original credentials' error", err)

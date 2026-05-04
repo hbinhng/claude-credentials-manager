@@ -2,6 +2,7 @@ package claude
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,56 +11,74 @@ import (
 )
 
 // migrate converts pre-existing ccm install layouts to the new
-// active.json + plain regular file format. Idempotent: short-circuits
-// when active.json already exists. All errors are swallowed —
-// migration is best-effort.
+// {ccmSourceId, claudeAiOauth} blob format written through the
+// CURRENTLY ACTIVE backend (not necessarily the file). This matters
+// when the user has just upgraded both Claude (which moved to the
+// keychain) and ccm (which probes keychain first): legacy file-based
+// state must be migrated INTO the keychain so ccm and Claude end up
+// reading from the same place.
+//
+// Idempotent: short-circuits the rewrite when Active() already returns
+// true AND the on-disk shape is canonical (regular file for file
+// backend). cleanupLegacyArtifacts always runs so leftover side files
+// (ccm.credentials.json, active.json) are removed even when no rewrite
+// is needed.
 func migrate() {
 	if _, ok := Active(); ok {
+		// Already in marker state. For the file backend, also normalize
+		// shape: rewrite a symlink at credentialsPath as a regular file.
+		if _, isFile := currentBackend().(fileBackend); isFile {
+			if info, err := os.Lstat(credentialsPath()); err == nil && info.Mode()&os.ModeSymlink != 0 {
+				if blob, hasBlob, _ := (fileBackend{}).Read(); hasBlob {
+					_ = (fileBackend{}).Write(blob)
+				}
+			}
+		}
+		_ = cleanupLegacyArtifacts()
 		return
 	}
 
 	id := detectLegacyState()
 	if id == "" {
+		_ = cleanupLegacyArtifacts()
 		return
 	}
 
 	cred, err := store.Load(id)
 	if err != nil {
-		// Store cred missing — record active anyway so future syncs
-		// have something to point at; the user can `ccm logout` if
-		// they want to clean up. Skip the file rewrite (we don't
-		// have data to write).
-		_ = SetActive(id)
 		_ = cleanupLegacyArtifacts()
 		return
 	}
 
-	body := map[string]any{"claudeAiOauth": cred.ClaudeAiOauth}
-	data, err := json.Marshal(body)
+	blob, err := encodeBlob(cred.ID, cred.ClaudeAiOauth)
 	if err != nil {
-		// coverage: unreachable — marshaling map[string]any with OAuthTokens never fails
+		// coverage: unreachable — encodeBlob never fails on store.OAuthTokens
 		return
 	}
-	tmp := credentialsPath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
+	b := currentBackend()
+	if err := b.Write(blob); err != nil {
 		return
 	}
-	if err := os.Rename(tmp, credentialsPath()); err != nil {
-		// coverage: unreachable in normal test environments — Rename fails only
-		// when src and dst are on different filesystems or dst is a non-empty dir;
-		// the latter is not detectable as a legacy state, so detectLegacyState
-		// never returns an id in that situation.
-		_ = os.Remove(tmp)
-		return
+	if _, isFile := b.(fileBackend); !isFile {
+		_ = os.Remove(credentialsPath())
 	}
-	_ = SetActive(id)
 	_ = cleanupLegacyArtifacts()
 }
 
-// detectLegacyState inspects ~/.claude/.credentials.json and returns
-// the recovered credential id, or "" when the layout is unrecognized
-// (state 3) or no file exists.
+// detectLegacyState recognises pre-current layouts and returns the
+// recovered credential id, or "" when no legacy state matches.
+//
+// Precedence (intentional): state 4 wins over states 1-3. Rationale:
+// active.json is the explicit, ccm-controlled marker from the most
+// recent layout; if it's present we trust it over inferring from the
+// shape of credentialsPath, which could be a symlink to an unrelated
+// store cred from an even-earlier install.
 func detectLegacyState() string {
+	// State 4: ~/.ccm/active.json present (any shape at credentialsPath).
+	if id, ok := readActiveSidecar(); ok {
+		return id
+	}
+
 	path := credentialsPath()
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -97,7 +116,7 @@ func detectLegacyState() string {
 		return ""
 	}
 
-	// State 2: regular file with ccmSourceId marker (Windows wrapper).
+	// State 2: regular file with ccmSourceId marker (Windows wrapper layout).
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return ""
@@ -113,12 +132,39 @@ func detectLegacyState() string {
 	return ""
 }
 
+// readActiveSidecar returns ("", false) when ~/.ccm/active.json is
+// absent, corrupt, or empty. Used only to detect state 4 during
+// migration; not part of the runtime path.
+func readActiveSidecar() (string, bool) {
+	data, err := os.ReadFile(activeSidecarPath())
+	if err != nil {
+		return "", false
+	}
+	var a struct {
+		ID string `json:"id"`
+	}
+	if json.Unmarshal(data, &a) != nil || a.ID == "" {
+		return "", false
+	}
+	return a.ID, true
+}
+
+func activeSidecarPath() string {
+	return filepath.Join(store.Dir(), "active.json")
+}
+
 // cleanupLegacyArtifacts removes ~/.claude/ccm.credentials.json (the
-// legacy intermediate file). Harmless when absent.
+// legacy intermediate file) and ~/.ccm/active.json (the modern sidecar
+// from before the embedded marker was reintroduced). Harmless when
+// absent.
 func cleanupLegacyArtifacts() error {
-	path := filepath.Join(claudeDir(), "ccm.credentials.json")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
+	for _, p := range []string{
+		filepath.Join(claudeDir(), "ccm.credentials.json"),
+		activeSidecarPath(),
+	} {
+		if err := os.Remove(p); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
 	}
 	return nil
 }
