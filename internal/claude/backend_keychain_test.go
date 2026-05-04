@@ -68,29 +68,26 @@ func TestKeychainBackend_RemoveError_Propagates(t *testing.T) {
 	}
 }
 
-func TestKeychainProbe_HealthyMock(t *testing.T) {
+func TestKeychainHasClaudeEntry_NoEntry(t *testing.T) {
 	keyring.MockInit()
-	if !keychainProbe() {
-		t.Error("keychainProbe on healthy mock = false")
+	if keychainHasClaudeEntry() {
+		t.Error("keychainHasClaudeEntry on empty mock = true, want false")
 	}
 }
 
-// keychainProbe's `if err == nil` branch only fires when the sentinel
-// service has an entry and Get returns nil error — covered by planting
-// one beforehand.
-func TestKeychainProbe_HealthyMockWithExistingEntry(t *testing.T) {
+func TestKeychainHasClaudeEntry_WithEntry(t *testing.T) {
 	keyring.MockInit()
-	if err := keyring.Set(probeService, probeAccount, "marker"); err != nil {
+	if err := keyring.Set(keychainService, keychainAccount, "blob"); err != nil {
 		t.Fatal(err)
 	}
-	if !keychainProbe() {
-		t.Error("keychainProbe with existing probe entry = false")
+	if !keychainHasClaudeEntry() {
+		t.Error("keychainHasClaudeEntry after Set = false, want true")
 	}
 }
 
-func TestKeychainProbe_BrokenMock(t *testing.T) {
+func TestKeychainHasClaudeEntry_TransportDown(t *testing.T) {
 	keyring.MockInitWithError(errors.New("dbus down"))
-	if keychainProbe() {
-		t.Error("keychainProbe on broken mock = true")
+	if keychainHasClaudeEntry() {
+		t.Error("keychainHasClaudeEntry on broken transport = true, want false")
 	}
 }
