@@ -1,6 +1,11 @@
 package share
 
 import (
+	"crypto/rand"
+	"encoding/binary"
+	"fmt"
+	"os"
+	"sync"
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
@@ -48,4 +53,52 @@ func nextRefreshDelay(cred *store.Credential, now time.Time, jitter func() time.
 		j = 0
 	}
 	return delay + j
+}
+
+// runRefreshTimer is the per-credential goroutine that proactively
+// refreshes a token shortly before it expires. The loop runs until
+// done is closed.
+func runRefreshTimer(state poolEntryState, c clock, jitter func() time.Duration, done <-chan struct{}) {
+	for {
+		delay := nextRefreshDelay(state.credPtr(), c.Now(), jitter)
+		timer := c.NewTimer(delay)
+		select {
+		case <-done:
+			timer.Stop()
+			return
+		case <-timer.C():
+		}
+		if _, err := state.Fresh(); err != nil {
+			fmt.Fprintf(errLog(), "ccm share: refresh failed for %s(%s): %v\n",
+				state.credName(), shortID(state.credID()), err)
+			// Constant 30s back-off after a failed refresh — see
+			// design doc §"Per-credential refresh timers".
+			boTimer := c.NewTimer(refreshErrorBackoff)
+			select {
+			case <-done:
+				boTimer.Stop()
+				return
+			case <-boTimer.C():
+			}
+		}
+	}
+}
+
+// jitterFn returns a random non-negative duration up to jitterCap,
+// using crypto/rand. On RNG failure (kernel broken — unreachable in
+// practice) it returns 0 and emits one log line per process.
+var rngFailureLogged sync.Once
+
+func jitterFn() time.Duration {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// coverage: unreachable — kernel RNG failure not exercised
+		// in unit tests.
+		rngFailureLogged.Do(func() {
+			fmt.Fprintf(os.Stderr, "ccm share: warning: crypto/rand failed, using deterministic refresh jitter: %v\n", err)
+		})
+		return 0
+	}
+	n := binary.LittleEndian.Uint64(b[:])
+	return time.Duration(n % uint64(jitterCap))
 }
