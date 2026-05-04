@@ -1,0 +1,254 @@
+package share
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
+)
+
+// withFakeUsage installs a fake oauth.FetchUsageFn for the test.
+// Defined in pool_builder_test.go and reused by other _test.go
+// files in this package.
+func withFakeUsage(t *testing.T, fn func(string) *oauth.UsageInfo) {
+	t.Helper()
+	orig := oauth.FetchUsageFn
+	oauth.FetchUsageFn = fn
+	t.Cleanup(func() { oauth.FetchUsageFn = orig })
+}
+
+// makeCredWithExpiry is the richer constructor BuildPool tests need.
+// (The existing helper `makeCred(t, id, accessToken)` from
+// credstate_test.go only takes two strings — too narrow for our
+// purposes.)
+func makeCredWithExpiry(t *testing.T, id, name string, expiresIn time.Duration) *store.Credential {
+	t.Helper()
+	return &store.Credential{
+		ID:   id,
+		Name: name,
+		ClaudeAiOauth: store.OAuthTokens{
+			AccessToken:  "atk-" + id,
+			RefreshToken: "rtk-" + id,
+			ExpiresAt:    time.Now().Add(expiresIn).UnixMilli(),
+			Scopes:       []string{"user:inference"},
+		},
+	}
+}
+
+// writeCredToFile persists a credential to the fake HOME via
+// store.Save and fails the test if it errors.
+func writeCredToFile(t *testing.T, c *store.Credential) {
+	t.Helper()
+	if err := store.Save(c); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+}
+
+// NOTE: setupFakeHome already exists at credstate_test.go:21 with
+// the same signature — REUSE it; do NOT redefine here.
+
+func TestBuildPoolNoArgsUsesAllValid(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 10, ResetsAt: time.Now().Add(time.Hour).Format(time.RFC3339)},
+			{Name: "7d", Used: 5, ResetsAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339)},
+		}}
+	})
+
+	pool, initial, err := BuildPool(nil)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if got := len(pool.entries); got != 2 {
+		t.Errorf("pool entries = %d, want 2", got)
+	}
+	if pool.singleton {
+		t.Errorf("pool.singleton = true with 2 entries")
+	}
+	if initial == nil {
+		t.Fatal("initial cred is nil")
+	}
+}
+
+func TestBuildPoolExplicitArgs(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	c := makeCredWithExpiry(t, "33333333-3333-3333-3333-333333333333", "carol", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+	writeCredToFile(t, c)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{}
+	})
+
+	pool, _, err := BuildPool([]string{"alice", "carol"})
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if got := len(pool.entries); got != 2 {
+		t.Errorf("pool entries = %d, want 2", got)
+	}
+	if _, ok := pool.entries["22222222-2222-2222-2222-222222222222"]; ok {
+		t.Errorf("bob should not be in pool")
+	}
+}
+
+func TestBuildPoolDedupesArgs(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	writeCredToFile(t, a)
+	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
+
+	pool, _, err := BuildPool([]string{"alice", "alice", "11111111"})
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if got := len(pool.entries); got != 1 {
+		t.Errorf("pool entries = %d, want 1 (deduped)", got)
+	}
+	if !pool.singleton {
+		t.Errorf("pool.singleton = false, want true (one entry)")
+	}
+}
+
+func TestBuildPoolUnresolvedArgFatal(t *testing.T) {
+	setupFakeHome(t)
+	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
+
+	_, _, err := BuildPool([]string{"nonexistent"})
+	if err == nil {
+		t.Fatal("BuildPool succeeded with unresolvable arg")
+	}
+}
+
+func TestBuildPoolUsageProbeRejectsCred(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		if strings.Contains(token, "1111") {
+			return &oauth.UsageInfo{Error: "HTTP 403"}
+		}
+		return &oauth.UsageInfo{}
+	})
+
+	pool, _, err := BuildPool(nil) // implicit pool — partial reject is OK
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if got := len(pool.entries); got != 1 {
+		t.Errorf("pool entries = %d, want 1 (alice rejected)", got)
+	}
+}
+
+func TestBuildPoolExplicitArgRejectedFatal(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	writeCredToFile(t, a)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Error: "HTTP 403"}
+	})
+
+	_, _, err := BuildPool([]string{"alice"})
+	if err == nil {
+		t.Fatal("BuildPool succeeded when explicitly-named alice failed probe")
+	}
+}
+
+func TestBuildPoolEmptyStoreFatal(t *testing.T) {
+	setupFakeHome(t)
+	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
+
+	_, _, err := BuildPool(nil)
+	if err == nil {
+		t.Fatal("BuildPool succeeded with empty store")
+	}
+}
+
+func TestBuildPoolPicksHighestFeasibilityInitial(t *testing.T) {
+	setupFakeHome(t)
+	// alice: low quota, distant reset; bob: high quota, short reset
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		if strings.Contains(token, "1111") {
+			return &oauth.UsageInfo{Quotas: []oauth.Quota{
+				{Name: "5h", Used: 90, ResetsAt: time.Now().Add(4 * time.Hour).Format(time.RFC3339)},
+				{Name: "7d", Used: 80, ResetsAt: time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)},
+			}}
+		}
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 10, ResetsAt: time.Now().Add(30 * time.Minute).Format(time.RFC3339)},
+			{Name: "7d", Used: 5, ResetsAt: time.Now().Add(time.Hour).Format(time.RFC3339)},
+		}}
+	})
+
+	pool, initial, err := BuildPool(nil)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if got := initial.ID; got != "22222222-2222-2222-2222-222222222222" {
+		t.Errorf("initial = %s, want bob (higher feasibility)", got)
+	}
+	if pool.activated != "22222222-2222-2222-2222-222222222222" {
+		t.Errorf("pool.activated = %q, want bob", pool.activated)
+	}
+}
+
+// Refresh is exercised via the existing oauth.TokenURL httptest seam.
+// We inject a server that responds to the OAuth refresh request so
+// BuildPool's Fresh() call doesn't go to the real network.
+func setupRefreshStub(t *testing.T) *atomic.Int32 {
+	t.Helper()
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"refreshed","refresh_token":"refreshed-rt","expires_in":3600,"scope":"user:inference"}`))
+	}))
+	t.Cleanup(srv.Close)
+	orig := oauth.TokenURL
+	oauth.TokenURL = srv.URL
+	t.Cleanup(func() { oauth.TokenURL = orig })
+	return &calls
+}
+
+func TestBuildPoolExpiredCredIsRefreshedNotSkipped(t *testing.T) {
+	setupFakeHome(t)
+	calls := setupRefreshStub(t)
+
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", -time.Hour) // expired
+	writeCredToFile(t, a)
+	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
+
+	pool, _, err := BuildPool(nil)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if got := len(pool.entries); got != 1 {
+		t.Errorf("pool entries = %d, want 1", got)
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("refresh calls = %d, want 1", got)
+	}
+}
