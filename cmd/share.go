@@ -30,6 +30,12 @@ func validateRebalanceInterval(s string) error {
 	if err != nil {
 		return fmt.Errorf("--rebalance-interval %q: %w", s, err)
 	}
+	return validateRebalanceDuration(d)
+}
+
+// validateRebalanceDuration is the duration-typed core that
+// validateRebalanceInterval and the CLI handler both call.
+func validateRebalanceDuration(d time.Duration) error {
 	if d < 30*time.Second {
 		return fmt.Errorf("--rebalance-interval must be >= 30s, got %s", d)
 	}
@@ -92,11 +98,8 @@ The share session stays alive until you press Ctrl-C.`,
 		rebalanceInterval, _ := cmd.Flags().GetDuration("rebalance-interval")
 
 		if loadBalance {
-			if rebalanceInterval < 30*time.Second {
-				return fmt.Errorf("--rebalance-interval must be >= 30s, got %s", rebalanceInterval)
-			}
-			if rebalanceInterval > time.Hour {
-				return fmt.Errorf("--rebalance-interval must be <= 1h, got %s", rebalanceInterval)
+			if err := validateRebalanceDuration(rebalanceInterval); err != nil {
+				return err
 			}
 			return runShareLoadBalance(args, share.Options{
 				BindHost:          bindHost,

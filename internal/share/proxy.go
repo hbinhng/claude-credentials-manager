@@ -314,7 +314,9 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 		existingMR := p.rp.ModifyResponse
 		p.rp.ModifyResponse = func(r *http.Response) error {
 			if r.StatusCode == http.StatusUnauthorized {
-				fmt.Fprintf(errLog(), "ccm share: upstream 401 on activated\n")
+				// SignalActivatedFailed emits the formatted log line
+				// (with name, id8, and N/2 counter) per the spec; do
+				// not log here too.
 				pool.SignalActivatedFailed()
 			}
 			if existingMR != nil {

@@ -229,8 +229,11 @@ func TestSchedulerActivatedDemotesWhenAllElseDegraded(t *testing.T) {
 	}
 }
 
-func TestSchedulerActivatedStaysWhenOnlyOneEntryFailing(t *testing.T) {
-	// activated has consecutiveFail=1 (< 2), no other candidate.
+func TestSchedulerNonSingletonOneEntryFailingDemotes(t *testing.T) {
+	// activated starts at consecutiveFail=1 (healthy). One failed
+	// probe pushes it to 2. Pool is non-singleton (no second entry,
+	// but `singleton: false` so the demote-to-503 path applies). The
+	// scheduler MUST demote: branch (c).
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
 	pool := &credPool{entries: map[string]*poolEntry{
@@ -243,11 +246,11 @@ func TestSchedulerActivatedStaysWhenOnlyOneEntryFailing(t *testing.T) {
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.runOnce()
 
-	// consecutiveFail goes 1 -> 2; activated is now ineligible.
-	// But pool.singleton is auto-set false here (we constructed the
-	// pool manually). Test the singleton path separately.
-	if pool.activated == "" && !pool.singleton {
-		t.Logf("non-singleton pool with only one entry: scheduler chose Demote → 503; this is correct branch (c)")
+	if pool.activated != "" {
+		t.Errorf("activated = %q, want empty (Demote should fire on branch c)", pool.activated)
+	}
+	if pool.entries["a"].status != statusDegraded {
+		t.Errorf("a status = %v, want degraded", pool.entries["a"].status)
 	}
 }
 

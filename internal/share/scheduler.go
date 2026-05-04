@@ -133,7 +133,15 @@ func (s *scheduler) runOnce() {
 	for _, j := range jobs {
 		info, err := s.probe(j.state)
 		if err != nil {
-			fmt.Fprintf(errLog(), "ccm share: probe failed for %s: %v\n", shortID(j.id), err)
+			if s.pool.singleton {
+				// Spec §"Logging" → "Pool-of-1 probe failure": distinct
+				// line so the operator knows the probe failed but no
+				// rotation is possible.
+				fmt.Fprintf(errLog(), "ccm share: %s(%s) probe failed (singleton pool, no rotation): %v\n",
+					j.state.credName(), shortID(j.id), err)
+			} else {
+				fmt.Fprintf(errLog(), "ccm share: probe failed for %s: %v\n", shortID(j.id), err)
+			}
 		}
 		s.pool.MarkProbe(j.id, info, err)
 	}
@@ -265,8 +273,14 @@ func (s *scheduler) runOnce() {
 			pending.oldName, shortID(pending.oldID), pending.newName, shortID(pending.newID),
 			pending.oldFeasibility, pending.newFeasibility)
 	case "demote":
-		fmt.Fprintf(errLog(), "ccm share: %s(%s) degraded; no usable credentials, serving 503 until recovery\n",
-			pending.oldName, shortID(pending.oldID))
+		// Spec §"Logging" → "Pool empty": only this line, not the
+		// per-entry "degraded after 2 failures" wrapper (MarkProbe
+		// already emits that for non-activated entries; the activated
+		// entry is being demoted by the scheduler, which is its own
+		// event).
+		fmt.Fprintf(errLog(), "ccm share: no usable credentials, serving 503 until recovery\n")
+		_ = pending.oldName
+		_ = pending.oldID
 	case "keep":
 		fmt.Fprintf(errLog(), "ccm share [debug]: no eligible candidate, keeping activated %s(%s)\n",
 			pending.oldName, shortID(pending.oldID))
