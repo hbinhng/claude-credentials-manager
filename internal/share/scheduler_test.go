@@ -289,6 +289,44 @@ func TestSchedulerTieBreakByIDLex(t *testing.T) {
 	}
 }
 
+func TestSchedulerDegradedEntryReprobedEachTick(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated},
+		"b": {state: stateB, status: statusDegraded, consecutiveFail: 5},
+	}, activated: "a"}
+
+	probeCalls := map[string]int{}
+	failBob := true
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		probeCalls[state.credID()]++
+		if state.credID() == "b" && failBob {
+			return nil, fmt.Errorf("still down")
+		}
+		return &oauth.UsageInfo{}, nil
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+
+	sch.runOnce()
+	if probeCalls["b"] != 1 {
+		t.Errorf("tick 1: probeCalls[b] = %d, want 1", probeCalls["b"])
+	}
+	if pool.entries["b"].status != statusDegraded {
+		t.Errorf("b should still be degraded")
+	}
+
+	failBob = false
+	sch.runOnce()
+	if probeCalls["b"] != 2 {
+		t.Errorf("tick 2: probeCalls[b] = %d, want 2 (degraded entries probed every tick)", probeCalls["b"])
+	}
+	if pool.entries["b"].status != statusCandidate {
+		t.Errorf("b should have recovered to candidate")
+	}
+}
+
 func TestSchedulerRunStopsOnDone(t *testing.T) {
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}

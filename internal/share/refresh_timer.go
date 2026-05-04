@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"fmt"
-	"os"
+	"io"
 	"sync"
 	"time"
 
@@ -84,6 +84,10 @@ func runRefreshTimer(state poolEntryState, c clock, jitter func() time.Duration,
 	}
 }
 
+// jitterReader is the test seam for crypto/rand. Defaults to
+// rand.Reader; tests stub it.
+var jitterReader io.Reader = rand.Reader
+
 // jitterFn returns a random non-negative duration up to jitterCap,
 // using crypto/rand. On RNG failure (kernel broken — unreachable in
 // practice) it returns 0 and emits one log line per process.
@@ -91,11 +95,10 @@ var rngFailureLogged sync.Once
 
 func jitterFn() time.Duration {
 	var b [8]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		// coverage: unreachable — kernel RNG failure not exercised
-		// in unit tests.
+	if _, err := io.ReadFull(jitterReader, b[:]); err != nil {
+		// coverage: unreachable in production — kernel RNG failure.
 		rngFailureLogged.Do(func() {
-			fmt.Fprintf(os.Stderr, "ccm share: warning: crypto/rand failed, using deterministic refresh jitter: %v\n", err)
+			fmt.Fprintf(errLog(), "ccm share: warning: crypto/rand failed, using deterministic refresh jitter: %v\n", err)
 		})
 		return 0
 	}

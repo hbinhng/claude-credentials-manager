@@ -101,11 +101,12 @@ func (p *credPool) Fresh() (string, error) {
 // scheduler-policy decision, not a probe-side-effect.
 func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	e, ok := p.entries[id]
 	if !ok {
+		p.mu.Unlock()
 		return
 	}
+	prevStatus := e.status
 	if err == nil {
 		e.consecutiveFail = 0
 		e.lastUsage = info
@@ -113,11 +114,22 @@ func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 		if e.status == statusDegraded {
 			e.status = statusCandidate
 		}
-		return
+	} else {
+		e.consecutiveFail++
+		if e.status == statusCandidate && e.consecutiveFail >= 2 {
+			e.status = statusDegraded
+		}
 	}
-	e.consecutiveFail++
-	if e.status == statusCandidate && e.consecutiveFail >= 2 {
-		e.status = statusDegraded
+	newStatus := e.status
+	name := e.state.credName()
+	p.mu.Unlock()
+
+	// Emit transition logs after releasing the lock.
+	if prevStatus == statusCandidate && newStatus == statusDegraded {
+		fmt.Fprintf(errLog(), "ccm share: %s(%s) degraded after 2 failures: %v\n", name, shortID(id), err)
+	}
+	if prevStatus == statusDegraded && newStatus == statusCandidate {
+		fmt.Fprintf(errLog(), "ccm share: %s(%s) recovered, back in pool\n", name, shortID(id))
 	}
 }
 
@@ -166,13 +178,22 @@ func (p *credPool) Demote(oldID string) {
 // No-op when no entry is currently activated.
 func (p *credPool) SignalActivatedFailed() {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	if p.activated == "" {
+		p.mu.Unlock()
 		return
 	}
-	if e, ok := p.entries[p.activated]; ok {
-		e.consecutiveFail++
+	e, ok := p.entries[p.activated]
+	if !ok {
+		p.mu.Unlock()
+		return
 	}
+	e.consecutiveFail++
+	count := e.consecutiveFail
+	name := e.state.credName()
+	id := p.activated
+	p.mu.Unlock()
+	fmt.Fprintf(errLog(), "ccm share: upstream 401 on activated %s(%s) (failure %d/2)\n",
+		name, shortID(id), count)
 }
 
 // PoolEntryView is a read-only snapshot of one pool entry's state.

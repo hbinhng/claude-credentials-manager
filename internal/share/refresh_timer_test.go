@@ -1,7 +1,11 @@
 package share
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -147,5 +151,30 @@ func TestRefreshTimerCallsFreshWhenTimerFires(t *testing.T) {
 	}
 	if got := state.calls.Load(); got < 1 {
 		t.Errorf("Fresh calls = %d, want >= 1", got)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read(p []byte) (int, error) { return 0, errors.New("rng broken") }
+
+func TestJitterFnReturnsZeroOnRNGFailure(t *testing.T) {
+	orig := jitterReader
+	jitterReader = errReader{}
+	t.Cleanup(func() { jitterReader = orig })
+
+	var logBuf bytes.Buffer
+	origLog := errLog
+	errLog = func() io.Writer { return &logBuf }
+	t.Cleanup(func() { errLog = origLog })
+
+	got := jitterFn()
+	if got != 0 {
+		t.Errorf("got %v, want 0 on RNG failure", got)
+	}
+	// Reset the once so additional invocations log on a fresh test
+	// run; first call should have produced one warning.
+	if !strings.Contains(logBuf.String(), "crypto/rand failed") {
+		t.Errorf("warning not logged: %q", logBuf.String())
 	}
 }
