@@ -64,7 +64,7 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
-	upstream, err := url.Parse(upstreamBase)
+	upstream, err := url.Parse(upstreamBase())
 	if err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("parse upstream: %w", err)

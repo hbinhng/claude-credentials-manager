@@ -137,7 +137,19 @@ const (
 	ctxKeyRealToken ctxKey = iota
 )
 
-const upstreamBase = "https://api.anthropic.com"
+var upstreamBaseOverride string
+
+const upstreamBaseDefault = "https://api.anthropic.com"
+
+// upstreamBase returns the URL the proxy forwards inbound requests to.
+// Production uses upstreamBaseDefault; tests can override via
+// SetUpstreamBaseForTest.
+func upstreamBase() string {
+	if upstreamBaseOverride != "" {
+		return upstreamBaseOverride
+	}
+	return upstreamBaseDefault
+}
 
 // ListenerBindAddr computes the host:port a `ccm share` listener should
 // bind to given the values of the `--bind-host` / `--bind-port` flags.
@@ -170,7 +182,7 @@ func NewProxy(bindAddr string) (*Proxy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", bindAddr, err)
 	}
-	upstream, err := url.Parse(upstreamBase)
+	upstream, err := url.Parse(upstreamBase())
 	if err != nil {
 		ln.Close()
 		return nil, fmt.Errorf("parse upstream: %w", err)
@@ -547,3 +559,7 @@ func (p *Proxy) markCaptured(h http.Header) {
 // errLog returns a writer for diagnostic log output. Abstracted so tests
 // can redirect it if needed.
 var errLog = func() io.Writer { return os.Stderr }
+
+// MarkCapturedForTest is a thin wrapper around the unexported
+// markCaptured. Test-only.
+func (p *Proxy) MarkCapturedForTest(h http.Header) { p.markCaptured(h) }

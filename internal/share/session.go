@@ -313,3 +313,46 @@ func startCloudflared(ctx context.Context, localURL string) (*Tunnel, string, er
 	}
 	return tun, tun.PublicURL(), nil
 }
+
+// SetUpstreamBaseForTest overrides the constant upstreamBase used
+// by NewProxy so tests can point the reverse proxy at a local
+// httptest server. Returns the previous value.
+func SetUpstreamBaseForTest(url string) string {
+	orig := upstreamBaseOverride
+	upstreamBaseOverride = url
+	return orig
+}
+
+func ResetUpstreamBaseForTest() {
+	upstreamBaseOverride = ""
+}
+
+func SetCaptureFnForTest(fn func(*Proxy, string) error) {
+	captureFn = fn
+}
+
+func ResetCaptureFnForTest() {
+	captureFn = runCapture
+}
+
+func SetCloudflaredFnForTest(fn func(context.Context, string) (*Tunnel, string, error)) {
+	startCloudflaredFn = fn
+}
+
+func ResetCloudflaredFnForTest() {
+	startCloudflaredFn = startCloudflared
+}
+
+func NewFakeClockForTest(now time.Time) *FakeClock {
+	return &FakeClock{inner: newFakeClock(now)}
+}
+
+// FakeClock is the test seam for the share package's clock interface,
+// exported so cross-package tests (cmd/share_loadbalance_acceptance_test)
+// can pass a deterministic clock through Options.Clock.
+type FakeClock struct{ inner *fakeClock }
+
+func (f *FakeClock) Advance(d time.Duration)               { f.inner.Advance(d) }
+func (f *FakeClock) Now() time.Time                        { return f.inner.Now() }
+func (f *FakeClock) NewTimer(d time.Duration) clockTimer   { return f.inner.NewTimer(d) }
+func (f *FakeClock) NewTicker(d time.Duration) clockTicker { return f.inner.NewTicker(d) }
