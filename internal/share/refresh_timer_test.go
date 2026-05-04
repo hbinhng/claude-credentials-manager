@@ -1,6 +1,8 @@
 package share
 
 import (
+	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -66,5 +68,84 @@ func TestNextRefreshDelayJitterCappedAt60s(t *testing.T) {
 	want := 23*time.Hour + 55*time.Minute + 60*time.Second
 	if got != want {
 		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// fakeRefreshableState lets the refresh timer be unit-tested without
+// the OAuth machinery. It pretends to be a poolEntryState whose
+// Fresh() either returns a stub error or bumps the credential's
+// ExpiresAt (simulating a successful refresh).
+type fakeRefreshableState struct {
+	id        string
+	expiresAt int64 // unix milli
+	failNext  atomic.Bool
+	calls     atomic.Int32
+}
+
+func (f *fakeRefreshableState) Fresh() (string, error) {
+	f.calls.Add(1)
+	if f.failNext.Load() {
+		return "", fmt.Errorf("refresh failed")
+	}
+	f.expiresAt = time.Now().Add(8 * time.Hour).UnixMilli()
+	return "tok", nil
+}
+func (f *fakeRefreshableState) credID() string           { return f.id }
+func (f *fakeRefreshableState) credName() string         { return "" }
+func (f *fakeRefreshableState) credExpiresAt() time.Time { return time.UnixMilli(f.expiresAt) }
+func (f *fakeRefreshableState) credPtr() *store.Credential {
+	return &store.Credential{ID: f.id, ClaudeAiOauth: store.OAuthTokens{ExpiresAt: f.expiresAt}}
+}
+
+func TestRefreshTimerExitsOnDoneClose(t *testing.T) {
+	state := &fakeRefreshableState{id: "a", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	fc := newFakeClock(time.Now())
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		runRefreshTimer(state, fc, func() time.Duration { return 0 }, done)
+		close(exited)
+	}()
+	close(done)
+	select {
+	case <-exited:
+	case <-time.After(time.Second):
+		t.Fatal("refresh timer did not exit after done closed")
+	}
+}
+
+func TestRefreshTimerCallsFreshWhenTimerFires(t *testing.T) {
+	now := time.Now()
+	state := &fakeRefreshableState{id: "a", expiresAt: now.Add(10 * time.Minute).UnixMilli()}
+	fc := newFakeClock(now)
+	done := make(chan struct{})
+	defer close(done)
+	go runRefreshTimer(state, fc, func() time.Duration { return 0 }, done)
+
+	// Wait for the goroutine to register its timer (small spin).
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		fc.mu.Lock()
+		registered := len(fc.timers) > 0
+		fc.mu.Unlock()
+		if registered {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// Advance past 5min margin so the timer fires.
+	fc.Advance(6 * time.Minute)
+
+	// Wait for Fresh to be invoked.
+	deadline = time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if state.calls.Load() >= 1 {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+	if got := state.calls.Load(); got < 1 {
+		t.Errorf("Fresh calls = %d, want >= 1", got)
 	}
 }
