@@ -26,16 +26,18 @@ func probeBackend() backend {
 	return fileBackend{}
 }
 
-// currentBackend returns the backend that should be used for this
-// process. Reassigned in tests via withBackend(t, fakeBackend{}) or
-// UseFileBackendForTest.
-//
-// The probe runs once per process and is cached. To force a re-probe
-// in a test (e.g. after MockInit), reassign currentBackend directly.
-var currentBackend = func() backend {
+// defaultCurrentBackend returns the cached probe result, running the
+// probe once per process. Pulled out as a named function so tests can
+// exercise the cached path without reassigning currentBackend.
+func defaultCurrentBackend() backend {
 	probeOnce.Do(func() { cachedBackend = probeBackend() })
 	return cachedBackend
 }
+
+// currentBackend returns the backend that should be used for this
+// process. Reassigned in tests via withBackend(t, fakeBackend{}) or
+// UseFileBackendForTest.
+var currentBackend = defaultCurrentBackend
 
 var (
 	probeOnce     sync.Once

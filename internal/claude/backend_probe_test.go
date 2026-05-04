@@ -24,6 +24,25 @@ func TestProbeBackend_KeychainBroken_FallsBackToFile(t *testing.T) {
 	}
 }
 
+func TestDefaultCurrentBackend_RunsProbeOnce(t *testing.T) {
+	keyring.MockInit()
+	probeOnce = sync.Once{}
+	cachedBackend = nil
+	t.Cleanup(func() {
+		probeOnce = sync.Once{}
+		cachedBackend = nil
+	})
+
+	first := defaultCurrentBackend()
+	if _, ok := first.(keychainBackend); !ok {
+		t.Errorf("first call: %T, want keychainBackend", first)
+	}
+	// Second call must hit the cache (sync.Once won't re-run).
+	if got := defaultCurrentBackend(); got != first {
+		t.Errorf("cache miss: got %T want same instance", got)
+	}
+}
+
 func TestUseFileBackendForTest_OverridesAndRestores(t *testing.T) {
 	// Force a known starting state: keychain backend via mock.
 	keyring.MockInit()

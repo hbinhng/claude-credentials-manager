@@ -75,6 +75,19 @@ func TestKeychainProbe_HealthyMock(t *testing.T) {
 	}
 }
 
+// keychainProbe's `if err == nil` branch only fires when the sentinel
+// service has an entry and Get returns nil error — covered by planting
+// one beforehand.
+func TestKeychainProbe_HealthyMockWithExistingEntry(t *testing.T) {
+	keyring.MockInit()
+	if err := keyring.Set(probeService, probeAccount, "marker"); err != nil {
+		t.Fatal(err)
+	}
+	if !keychainProbe() {
+		t.Error("keychainProbe with existing probe entry = false")
+	}
+}
+
 func TestKeychainProbe_BrokenMock(t *testing.T) {
 	keyring.MockInitWithError(errors.New("dbus down"))
 	if keychainProbe() {
