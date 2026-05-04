@@ -642,3 +642,97 @@ func TestResolveNameTakesPriorityOverPrefix(t *testing.T) {
 		t.Errorf("expected exact name match (c1), got ID=%q", got.ID)
 	}
 }
+
+// TestOAuthTokens_RoundTrip_PreservesUnknownFields verifies that fields
+// Claude Code adds beyond ccm's typed surface (rateLimitTier,
+// subscriptionType, future additions) survive a JSON unmarshal/marshal
+// cycle. Without the unknown-field passthrough this test would fail —
+// see the smoke test in commit history.
+func TestOAuthTokens_RoundTrip_PreservesUnknownFields(t *testing.T) {
+	original := []byte(`{
+		"accessToken": "tok",
+		"refreshToken": "ref",
+		"expiresAt": 12345,
+		"scopes": ["a", "b"],
+		"rateLimitTier": "max20x",
+		"subscriptionType": "pro",
+		"futureField": {"nested": true}
+	}`)
+
+	var tok OAuthTokens
+	if err := json.Unmarshal(original, &tok); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if tok.AccessToken != "tok" || tok.RefreshToken != "ref" || tok.ExpiresAt != 12345 {
+		t.Errorf("typed fields wrong: %+v", tok)
+	}
+	if len(tok.Scopes) != 2 || tok.Scopes[0] != "a" {
+		t.Errorf("scopes: %v", tok.Scopes)
+	}
+
+	out, err := json.Marshal(&tok)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	// Round-trip the output through a generic map and compare keys +
+	// values to the original, modulo whitespace.
+	var got, want map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(original, &want); err != nil {
+		t.Fatal(err)
+	}
+
+	for k := range want {
+		if _, ok := got[k]; !ok {
+			t.Errorf("key %q missing after round-trip", k)
+		}
+	}
+	for k := range got {
+		if _, ok := want[k]; !ok {
+			t.Errorf("key %q added after round-trip", k)
+		}
+	}
+}
+
+// TestOAuthTokens_NoExtras emits a normal blob without unknown fields
+// to confirm marshal output stays clean (no nil-extras pollution).
+func TestOAuthTokens_NoExtras(t *testing.T) {
+	tok := OAuthTokens{
+		AccessToken:  "a",
+		RefreshToken: "r",
+		ExpiresAt:    1,
+		Scopes:       []string{"s"},
+	}
+	out, err := json.Marshal(&tok)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m) != 4 {
+		t.Errorf("unexpected key count: %d, want 4 (got %v)", len(m), m)
+	}
+}
+
+// TestOAuthTokens_MalformedTypedField propagates the parse error
+// rather than silently zeroing the field.
+func TestOAuthTokens_MalformedTypedField(t *testing.T) {
+	bad := []byte(`{"accessToken": 42, "refreshToken": "r", "expiresAt": 1, "scopes": ["s"]}`)
+	var tok OAuthTokens
+	if err := json.Unmarshal(bad, &tok); err == nil {
+		t.Error("expected error on type mismatch, got nil")
+	}
+}
+
+// TestOAuthTokens_UnmarshalGarbage rejects non-JSON input.
+func TestOAuthTokens_UnmarshalGarbage(t *testing.T) {
+	var tok OAuthTokens
+	if err := json.Unmarshal([]byte("not json"), &tok); err == nil {
+		t.Error("expected error on garbage input")
+	}
+}

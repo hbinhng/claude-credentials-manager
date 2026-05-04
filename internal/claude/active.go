@@ -1,61 +1,42 @@
 package claude
 
-import (
-	"encoding/json"
-	"errors"
-	"os"
-	"path/filepath"
-
-	"github.com/hbinhng/claude-credentials-manager/internal/store"
-)
-
-// activePath is the absolute path to ~/.ccm/active.json.
-func activePath() string {
-	return filepath.Join(store.Dir(), "active.json")
-}
-
-type activeFile struct {
-	ID string `json:"id"`
-}
-
-// Active returns the currently-active credential id, or ("", false) when
-// no sidecar exists, the sidecar is corrupt, or the recorded id is empty.
+// Active returns the currently-active credential id and ok=true when
+// ccm is managing the active backend entry. Reads through
+// currentBackend().
 func Active() (string, bool) {
-	data, err := os.ReadFile(activePath())
-	if err != nil {
+	blob, ok, err := currentBackend().Read()
+	if err != nil || !ok {
 		return "", false
 	}
-	var a activeFile
-	if err := json.Unmarshal(data, &a); err != nil {
+	id, _, _, err := decodeBlob(blob)
+	if err != nil || id == "" {
 		return "", false
 	}
-	if a.ID == "" {
-		return "", false
-	}
-	return a.ID, true
+	return id, true
 }
 
-// SetActive atomically writes ~/.ccm/active.json with the given id.
-func SetActive(id string) error {
-	if err := store.EnsureDir(); err != nil {
-		return err
-	}
-	data, err := json.Marshal(activeFile{ID: id})
-	if err != nil {
-		// coverage: unreachable — marshaling a struct{string} never fails
-		return err
-	}
-	tmp := activePath() + ".tmp"
-	if err := os.WriteFile(tmp, data, 0600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, activePath())
+// IsActive reports whether the given credential id is the active one.
+func IsActive(id string) bool {
+	active, ok := Active()
+	return ok && active == id
 }
 
-// ClearActive removes ~/.ccm/active.json. A missing file is not an error.
-func ClearActive() error {
-	if err := os.Remove(activePath()); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return err
-	}
-	return nil
+// ActiveID returns the active credential id, or "" when none is active.
+func ActiveID() string {
+	id, _ := Active()
+	return id
+}
+
+// IsManaged reports whether ccm currently owns the Claude credential
+// store entry (file or keychain).
+func IsManaged() bool {
+	_, ok := Active()
+	return ok
+}
+
+// ReadActiveBlob exposes the raw active blob and whether one exists.
+// Used by ccm backup to decide between sync and import-as-new without
+// having to know which backend is in play.
+func ReadActiveBlob() ([]byte, bool, error) {
+	return currentBackend().Read()
 }

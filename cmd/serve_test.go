@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -91,6 +92,7 @@ func TestEffectiveHost(t *testing.T) {
 func TestPIDFileLifecycle(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	path := pidFilePath()
 	if err := writePIDFile(path); err != nil {
@@ -116,6 +118,7 @@ func TestPIDFileLifecycle(t *testing.T) {
 func TestWritePIDFile_StaleOverwritten(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	path := pidFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -131,6 +134,9 @@ func TestWritePIDFile_StaleOverwritten(t *testing.T) {
 }
 
 func TestWritePIDFile_MkdirFails(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("/dev/null trick is Unix-only")
+	}
 	// Pointing the PID file under a path whose parent cannot be a
 	// directory (a char device sits there) exercises the MkdirAll
 	// error branch.
@@ -143,6 +149,7 @@ func TestWritePIDFile_MkdirFails(t *testing.T) {
 func TestWritePIDFile_IgnoresGarbageContent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	path := pidFilePath()
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
@@ -211,6 +218,9 @@ func captureStdout(t *testing.T, fn func()) string {
 // TestRunServe_PIDFileError exercises the writePIDFile error branch
 // inside runServe. /dev/null/serve.pid has no writable parent.
 func TestRunServe_PIDFileError(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("/dev/null trick is Unix-only")
+	}
 	origUserHomeDir := os.Getenv("HOME")
 	t.Setenv("HOME", "/dev/null")
 	t.Cleanup(func() { _ = os.Setenv("HOME", origUserHomeDir) })
@@ -229,6 +239,7 @@ func TestRunServe_PIDFileError(t *testing.T) {
 func TestRunServe_NewHandlerError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	orig := serveNewHandlerFn
 	serveNewHandlerFn = func(serve.ServerConfig) (http.Handler, error) {
@@ -275,6 +286,7 @@ func TestRunServe_ResolveTokenError(t *testing.T) {
 func TestRunServe_ListenError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	held, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
