@@ -4,3 +4,4 @@ dist/
 npm/bin/*
 !npm/bin/ccm
 npm/platforms/
+docs/superpowers/

@@ -1,12 +1,87 @@
 package store
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
+// OAuthTokens is ccm's typed view of Claude's OAuth credential blob.
+//
+// Forward-compat: any JSON keys we don't have a typed field for are
+// captured in the unexported `extras` map by UnmarshalJSON and re-
+// emitted by MarshalJSON. This preserves fields Claude Code adds in
+// future versions without ccm needing to know about them. Currently
+// observed extras include `rateLimitTier` and `subscriptionType`.
 type OAuthTokens struct {
 	AccessToken  string   `json:"accessToken"`
 	RefreshToken string   `json:"refreshToken"`
 	ExpiresAt    int64    `json:"expiresAt"`
 	Scopes       []string `json:"scopes"`
+
+	// extras holds JSON keys we didn't recognise so we can round-trip
+	// them. Lower-cased so it doesn't enter the typed surface; the
+	// custom MarshalJSON re-emits its contents alongside the typed
+	// fields.
+	extras map[string]json.RawMessage
+}
+
+// UnmarshalJSON decodes a Claude OAuth blob and captures any unknown
+// keys into the extras map.
+func (t *OAuthTokens) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+
+	// Pull out the known fields. Each Unmarshal here can't fail
+	// catastrophically — JSON decoded fine above; type-mismatch errors
+	// from a malformed Claude write would surface here, and we let
+	// them propagate so the caller knows the blob is broken.
+	if v, ok := raw["accessToken"]; ok {
+		if err := json.Unmarshal(v, &t.AccessToken); err != nil {
+			return err
+		}
+		delete(raw, "accessToken")
+	}
+	if v, ok := raw["refreshToken"]; ok {
+		if err := json.Unmarshal(v, &t.RefreshToken); err != nil {
+			return err
+		}
+		delete(raw, "refreshToken")
+	}
+	if v, ok := raw["expiresAt"]; ok {
+		if err := json.Unmarshal(v, &t.ExpiresAt); err != nil {
+			return err
+		}
+		delete(raw, "expiresAt")
+	}
+	if v, ok := raw["scopes"]; ok {
+		if err := json.Unmarshal(v, &t.Scopes); err != nil {
+			return err
+		}
+		delete(raw, "scopes")
+	}
+
+	if len(raw) > 0 {
+		t.extras = raw
+	} else {
+		t.extras = nil
+	}
+	return nil
+}
+
+// MarshalJSON emits the typed fields plus any extras captured from a
+// previous Unmarshal.
+func (t OAuthTokens) MarshalJSON() ([]byte, error) {
+	out := make(map[string]any, 4+len(t.extras))
+	out["accessToken"] = t.AccessToken
+	out["refreshToken"] = t.RefreshToken
+	out["expiresAt"] = t.ExpiresAt
+	out["scopes"] = t.Scopes
+	for k, v := range t.extras {
+		out[k] = v
+	}
+	return json.Marshal(out)
 }
 
 type Subscription struct {

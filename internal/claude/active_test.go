@@ -1,14 +1,12 @@
 package claude
 
 import (
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-func TestActive_MissingFile(t *testing.T) {
+func TestActive_NoEntry(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -18,123 +16,95 @@ func TestActive_MissingFile(t *testing.T) {
 	}
 }
 
-func TestActive_RoundTrip(t *testing.T) {
+func TestActive_BlobWithMarker(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	if err := SetActive("the-id"); err != nil {
-		t.Fatalf("SetActive: %v", err)
-	}
+	setActiveBlob(t, "the-id", store.OAuthTokens{AccessToken: "a", ExpiresAt: 1})
 	id, ok := Active()
 	if !ok || id != "the-id" {
 		t.Errorf("Active() = (%q, %v), want (\"the-id\", true)", id, ok)
 	}
 }
 
-func TestActive_Clear(t *testing.T) {
+func TestActive_BlobWithoutMarker(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	if err := SetActive("x"); err != nil {
-		t.Fatalf("SetActive: %v", err)
-	}
-	if err := ClearActive(); err != nil {
-		t.Fatalf("ClearActive: %v", err)
-	}
-	id, ok := Active()
-	if ok || id != "" {
-		t.Errorf("Active() after clear = (%q, %v), want (\"\", false)", id, ok)
-	}
-}
-
-func TestClearActive_MissingIsNoError(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-	if err := ClearActive(); err != nil {
-		t.Errorf("ClearActive on missing file: %v, want nil", err)
-	}
-}
-
-func TestActive_CorruptFile(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	if err := os.WriteFile(activePath(), []byte("{not json"), 0600); err != nil {
+	if err := (fileBackend{}).Write([]byte(`{"claudeAiOauth":{"accessToken":"x","expiresAt":1}}`)); err != nil {
 		t.Fatal(err)
 	}
 	id, ok := Active()
 	if ok || id != "" {
-		t.Errorf("Active() with corrupt file = (%q, %v), want (\"\", false)", id, ok)
+		t.Errorf("Active() with marker-less blob = (%q, %v), want (\"\", false)", id, ok)
 	}
 }
 
-func TestActive_EmptyID(t *testing.T) {
+func TestActive_CorruptBlob(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	if err := os.WriteFile(activePath(), []byte(`{"id":""}`), 0600); err != nil {
+	if err := (fileBackend{}).Write([]byte(`{not json`)); err != nil {
 		t.Fatal(err)
 	}
 	id, ok := Active()
 	if ok || id != "" {
-		t.Errorf("Active() with empty id = (%q, %v), want (\"\", false)", id, ok)
+		t.Errorf("Active() with corrupt blob = (%q, %v), want (\"\", false)", id, ok)
 	}
 }
 
-func TestSetActive_AtomicAndModeSecure(t *testing.T) {
+func TestActive_BackendReadError(t *testing.T) {
+	withBackend(t, &fakeBackend{ReadErr: errSentinel("backend down")})
+	id, ok := Active()
+	if ok || id != "" {
+		t.Errorf("Active() on backend error = (%q, %v), want (\"\", false)", id, ok)
+	}
+}
+
+func TestReadActiveBlob_RoundTrip(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	if err := SetActive("perm"); err != nil {
-		t.Fatalf("SetActive: %v", err)
+	if _, ok, err := ReadActiveBlob(); ok || err != nil {
+		t.Errorf("ReadActiveBlob fresh = (ok=%v err=%v), want (false, nil)", ok, err)
 	}
-	info, err := os.Stat(activePath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if perm := info.Mode().Perm(); perm != 0600 {
-		t.Errorf("perm = %o, want 0600", perm)
-	}
-	// No leftover .tmp.
-	tmp := activePath() + ".tmp"
-	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
-		t.Errorf("leftover %s after SetActive", filepath.Base(tmp))
+	setActiveBlob(t, "x", store.OAuthTokens{AccessToken: "y", ExpiresAt: 1})
+	blob, ok, err := ReadActiveBlob()
+	if err != nil || !ok || len(blob) == 0 {
+		t.Errorf("ReadActiveBlob after write: ok=%v err=%v len(blob)=%d", ok, err, len(blob))
 	}
 }
 
-func TestSetActive_EnsureDirFails(t *testing.T) {
-	tmpHome := t.TempDir()
-	oldHome := os.Getenv("HOME")
-	oldUserProfile := os.Getenv("USERPROFILE")
-	os.Setenv("HOME", tmpHome)
-	os.Setenv("USERPROFILE", tmpHome)
-	defer func() {
-		os.Setenv("HOME", oldHome)
-		os.Setenv("USERPROFILE", oldUserProfile)
-	}()
-
-	// Make the home dir itself unwritable so MkdirAll(.ccm) fails.
-	if err := os.Chmod(tmpHome, 0500); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Chmod(tmpHome, 0700)
-
-	if err := SetActive("x"); err == nil {
-		t.Fatal("SetActive: nil err, want EnsureDir failure")
-	}
-}
-
-func TestSetActive_WriteFileFails(t *testing.T) {
+func TestIsActive_TrueAndFalse(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-
-	// ~/.ccm exists but is unwritable — WriteFile of tmp fails.
-	if err := os.Chmod(store.Dir(), 0500); err != nil {
-		t.Fatal(err)
+	setActiveBlob(t, "alpha", store.OAuthTokens{AccessToken: "a", ExpiresAt: 1})
+	if !IsActive("alpha") {
+		t.Error("IsActive(alpha) = false")
 	}
-	defer os.Chmod(store.Dir(), 0700)
-
-	if err := SetActive("y"); err == nil {
-		t.Fatal("SetActive: nil err, want write failure")
+	if IsActive("beta") {
+		t.Error("IsActive(beta) = true")
 	}
 }
+
+func TestActiveID_AndIsManaged(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+	if ActiveID() != "" || IsManaged() {
+		t.Error("fresh state: expected empty ActiveID and !IsManaged")
+	}
+	setActiveBlob(t, "x", store.OAuthTokens{AccessToken: "a", ExpiresAt: 1})
+	if ActiveID() != "x" {
+		t.Errorf("ActiveID = %q", ActiveID())
+	}
+	if !IsManaged() {
+		t.Error("IsManaged after set = false")
+	}
+}
+
+// errSentinel is a tiny error type so test files can produce typed
+// errors for the WriteErr/ReadErr/RemoveErr fakes without importing
+// errors.New everywhere.
+type errSentinel string
+
+func (e errSentinel) Error() string { return string(e) }

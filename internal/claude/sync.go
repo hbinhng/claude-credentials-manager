@@ -1,49 +1,40 @@
 package claude
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// Sync reconciles ~/.claude/.credentials.json into the active store
-// credential. Returns (true, nil) when the store was updated; (false,
-// nil) for any no-op (no active sidecar, no claude file, equal/older
-// claude data, etc.). Returns an error only when the store write itself
-// fails after we've decided a sync is needed.
+// Sync reconciles the active backend entry into the matching store
+// credential. Returns (true, nil) when the store was updated;
+// (false, nil) for any no-op. Returns an error only when the store
+// write itself fails after we've decided a sync is needed.
 //
 // Best-effort: callers in PreRunE swallow errors; explicit callers
 // (ccm backup) propagate them.
 func Sync() (bool, error) {
 	migrate() // best-effort, swallows its own errors
 
-	id, ok := Active()
-	if !ok {
+	blob, ok, err := currentBackend().Read()
+	if err != nil || !ok {
 		return false, nil
 	}
+	id, claudeTokens, hasTokens, err := decodeBlob(blob)
+	if err != nil || id == "" || !hasTokens {
+		return false, nil
+	}
+
 	cred, err := store.Load(id)
 	if err != nil {
 		return false, nil
 	}
 
-	data, err := os.ReadFile(credentialsPath())
-	if err != nil {
-		return false, nil
-	}
-	var parsed struct {
-		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
-	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	if claudeTokens.ExpiresAt <= cred.ClaudeAiOauth.ExpiresAt {
 		return false, nil
 	}
 
-	if parsed.ClaudeAiOauth.ExpiresAt <= cred.ClaudeAiOauth.ExpiresAt {
-		return false, nil
-	}
-
-	cred.ClaudeAiOauth = parsed.ClaudeAiOauth
+	cred.ClaudeAiOauth = claudeTokens
 	if err := store.Save(cred); err != nil {
 		return false, fmt.Errorf("sync: write store: %w", err)
 	}
