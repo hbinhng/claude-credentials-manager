@@ -198,6 +198,13 @@ func (s *scheduler) runOnce() {
 		actFail := 0
 		if hasAct {
 			actFail = actEntry.consecutiveFail
+			// coverage: unreachable in tests — when no entry is
+			// eligible, every probe must have failed for this branch
+			// to matter, so preFail (pre-tick) and current
+			// consecutiveFail are both >= 2. preFail > current can
+			// only happen on a probe-success that reset current to 0,
+			// but that would have made activated eligible. Kept for
+			// defensive symmetry with the rotation path.
 			if pf, ok := preFail[s.pool.activated]; ok && pf > actFail {
 				actFail = pf
 			}
