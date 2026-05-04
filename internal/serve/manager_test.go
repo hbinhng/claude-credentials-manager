@@ -44,8 +44,9 @@ func (f *fakeSession) Mode() string          { return f.mode }
 func (f *fakeSession) Reach() string         { return f.reach }
 func (f *fakeSession) Ticket() string        { return f.ticket }
 func (f *fakeSession) StartedAt() time.Time  { return f.startedAt }
-func (f *fakeSession) Done() <-chan struct{}  { return f.done }
+func (f *fakeSession) Done() <-chan struct{} { return f.done }
 func (f *fakeSession) Err() error            { return nil }
+func (f *fakeSession) Pool() share.PoolReader { return nil }
 
 func (f *fakeSession) Stop() error {
 	f.stopMu.Lock()

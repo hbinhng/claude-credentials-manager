@@ -2,6 +2,7 @@ package share
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -200,6 +201,34 @@ func (p *credPool) Snapshot() []PoolEntryView {
 			lastFeasibility: e.lastFeasibility,
 			lastUsageAt:     e.lastUsageAt,
 		})
+	}
+	return out
+}
+
+// PoolReader is the read-only surface exposed by Session.Pool().
+// Used by cmd/share for SIGUSR1 dumps without leaking unexported
+// pool internals.
+type PoolReader interface {
+	SnapshotLines() []string
+}
+
+// SnapshotLines renders one log-friendly line per entry.
+func (p *credPool) SnapshotLines() []string {
+	snap := p.Snapshot()
+	out := make([]string, 0, len(snap))
+	for _, v := range snap {
+		last := "never"
+		if !v.lastUsageAt.IsZero() {
+			last = v.lastUsageAt.Format(time.RFC3339)
+		}
+		name := v.name
+		if name == "" {
+			name = shortID(v.id)
+		} else {
+			name = fmt.Sprintf("%s(%s)", name, shortID(v.id))
+		}
+		out = append(out, fmt.Sprintf("  %s status=%s fail=%d feasibility=%.3f last=%s",
+			name, v.status, v.consecutiveFail, v.lastFeasibility, last))
 	}
 	return out
 }
