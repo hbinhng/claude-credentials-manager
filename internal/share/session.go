@@ -69,7 +69,7 @@ type Session interface {
 	Stop() error           // idempotent
 	Done() <-chan struct{} // closed once Stop finishes
 	Err() error            // non-nil if the session failed after Start
-	Pool() *credPool       // nil in single-cred mode
+	Pool() PoolReader      // nil in single-cred mode
 }
 
 // defaultStarter is the production SessionStarter. StartSession is the
@@ -115,12 +115,17 @@ type sessionImpl struct {
 }
 
 func (s *sessionImpl) CredID() string        { return s.credID }
-func (s *sessionImpl) Mode() string           { return s.mode }
-func (s *sessionImpl) Reach() string          { return s.reach }
-func (s *sessionImpl) Ticket() string         { return s.ticket }
-func (s *sessionImpl) StartedAt() time.Time   { return s.startedAt }
-func (s *sessionImpl) Done() <-chan struct{}  { return s.done }
-func (s *sessionImpl) Pool() *credPool        { return s.pool }
+func (s *sessionImpl) Mode() string          { return s.mode }
+func (s *sessionImpl) Reach() string         { return s.reach }
+func (s *sessionImpl) Ticket() string        { return s.ticket }
+func (s *sessionImpl) StartedAt() time.Time  { return s.startedAt }
+func (s *sessionImpl) Done() <-chan struct{} { return s.done }
+func (s *sessionImpl) Pool() PoolReader {
+	if s.pool == nil {
+		return nil
+	}
+	return s.pool
+}
 
 // Err always returns nil in the current implementation — StartSession
 // fails synchronously and there is no post-start failure-monitoring
