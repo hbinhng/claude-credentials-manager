@@ -2,21 +2,22 @@
 
 package claude
 
-import "os/user"
+import (
+	"errors"
+	"os/user"
 
-// Linux uses the same service name and account convention as macOS.
-// Claude Code uses npm `keytar`, which is a single cross-platform API
-// over the host keystore (Keychain on macOS, Credential Manager on
-// Windows, libsecret on Linux). keytar passes the SAME service+account
-// strings through to every backend — so once Claude Code's Linux build
-// starts writing to keytar, the entry will land in libsecret under
-// service="Claude Code-credentials", account=<OS username>, identical
-// to macOS today.
-//
-// zalando/go-keyring on Linux uses the same freedesktop generic schema
-// (`org.freedesktop.Secret.Generic` with `service`/`account` attributes)
-// keytar uses, so the two libraries are bit-compatible: ccm can read
-// what keytar writes and vice versa.
+	"github.com/zalando/go-keyring"
+)
+
+// Linux uses the same service name and account convention as macOS,
+// but a different access path (libsecret/Secret Service via D-Bus
+// rather than the macOS Keychain). Claude Code uses npm `keytar`,
+// which writes to libsecret with the freedesktop generic schema
+// (`org.freedesktop.Secret.Generic` with `service`/`account`
+// attributes). zalando/go-keyring uses the same schema, so the two
+// libraries are bit-compatible on Linux — unlike macOS, where
+// go-keyring wraps values with a `go-keyring-base64:` prefix that
+// keytar can't decode (so darwin uses /usr/bin/security directly).
 //
 // As of Claude Code 2.1.x (May 2026), the Linux build is still on the
 // file backend, so this code path is dormant; probeBackend correctly
@@ -35,3 +36,45 @@ var keychainAccount = func() string {
 	}
 	return u.Username
 }()
+
+func (keychainBackend) Read() ([]byte, bool, error) {
+	if keychainService == "" || keychainAccount == "" {
+		return nil, false, errUnsupported
+	}
+	val, err := keyring.Get(keychainService, keychainAccount)
+	if err != nil {
+		if errors.Is(err, keyring.ErrNotFound) {
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
+	return []byte(val), true, nil
+}
+
+func (keychainBackend) Write(blob []byte) error {
+	if keychainService == "" || keychainAccount == "" {
+		return errUnsupported
+	}
+	return keyring.Set(keychainService, keychainAccount, string(blob))
+}
+
+func (keychainBackend) Remove() error {
+	if keychainService == "" || keychainAccount == "" {
+		return errUnsupported
+	}
+	if err := keyring.Delete(keychainService, keychainAccount); err != nil {
+		if errors.Is(err, keyring.ErrNotFound) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+func keychainHasClaudeEntry() bool {
+	if keychainService == "" || keychainAccount == "" {
+		return false
+	}
+	_, err := keyring.Get(keychainService, keychainAccount)
+	return err == nil
+}

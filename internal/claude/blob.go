@@ -17,12 +17,18 @@ type blobShape struct {
 }
 
 // encodeBlob produces the JSON that lives in the file or keychain entry
-// when ccm activates a credential.
+// when ccm activates a credential. The output is single-line, compact
+// JSON — NOT MarshalIndent — because the macOS Keychain `security` CLI
+// flags any password containing non-printable characters (including
+// newlines) as "binary", causing subsequent reads to come back hex-
+// encoded and unparseable. Claude Code's keytar avoids this by using
+// the lower-level C API; ccm uses go-keyring which shells out to
+// `security`, so we have to keep the bytes printable.
 func encodeBlob(ccmSourceID string, tokens store.OAuthTokens) ([]byte, error) {
-	return json.MarshalIndent(blobShape{
+	return json.Marshal(blobShape{
 		CCMSourceID:   ccmSourceID,
 		ClaudeAiOauth: tokens,
-	}, "", "  ")
+	})
 }
 
 // decodeBlob parses raw bytes from a backend.
