@@ -13,3 +13,10 @@ type backend interface {
 	Write(blob []byte) error
 	Remove() error
 }
+
+// currentBackend returns the backend that should be used for this
+// process. Reassigned in tests via withBackend(t, fakeBackend{}).
+//
+// Until Task 6 wires in the real probe, this just returns fileBackend
+// so existing behavior is preserved.
+var currentBackend = func() backend { return fileBackend{} }
