@@ -36,13 +36,14 @@ func init() {
 
 var backupCmd = &cobra.Command{
 	Use:   "backup",
-	Short: "Import the current ~/.claude/.credentials.json into the ccm store",
-	Long: `Import the credential currently in ~/.claude/.credentials.json into the
-ccm store. If the file is already managed by ccm (active.json points to
-an existing store credential), the store entry is updated with the
-tokens claude currently has. Otherwise its OAuth tokens are copied into
-~/.ccm/, decorated with a fresh UUID and profile metadata (email as the
-name, subscription tier), and saved as a normal ccm-managed credential.
+	Short: "Import the active Claude credentials into the ccm store",
+	Long: `Import the credential currently active in Claude Code (file or
+keychain) into the ccm store. If the active blob already carries a
+ccmSourceId marker pointing at an existing store credential, the store
+entry is updated with the tokens Claude currently has. Otherwise its
+OAuth tokens are copied into ~/.ccm/, decorated with a fresh UUID and
+profile metadata (email as the name, subscription tier), and saved as
+a normal ccm-managed credential.
 
 This does not activate the imported credential; use ` + "`ccm use`" + ` for that.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
@@ -51,13 +52,15 @@ This does not activate the imported credential; use ` + "`ccm use`" + ` for that
 }
 
 func runBackup() error {
-	path := claude.CredentialsPath()
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		return fmt.Errorf("~/.claude/.credentials.json does not exist")
+	blob, ok, err := claude.ReadActiveBlob()
+	if err != nil {
+		return fmt.Errorf("read active credentials: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("no Claude credentials present")
 	}
 
-	// If we already own this file, sync rather than import.
-	if id, ok := claude.Active(); ok {
+	if id, present := claude.Active(); present {
 		if cred, err := store.Load(id); err == nil {
 			fmt.Printf("Syncing credentials for %s (%s)...\n", cred.Name, id[:min(8, len(id))])
 			changed, syncErr := backupSyncFn()
@@ -71,23 +74,17 @@ func runBackup() error {
 			}
 			return nil
 		}
-		// Active points to a missing store cred — fall through to
-		// import-as-new with a warning.
 		fmt.Fprintf(os.Stderr, "ccm: active credential %s missing from store; importing as new\n", id[:min(8, len(id))])
 	}
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read credentials: %w", err)
-	}
 	var parsed struct {
 		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
 	}
-	if err := json.Unmarshal(data, &parsed); err != nil {
+	if err := json.Unmarshal(blob, &parsed); err != nil {
 		return fmt.Errorf("parse credentials: %w", err)
 	}
 	if parsed.ClaudeAiOauth.AccessToken == "" {
-		return fmt.Errorf("no claudeAiOauth.accessToken found in ~/.claude/.credentials.json")
+		return fmt.Errorf("no claudeAiOauth.accessToken found in active Claude credentials")
 	}
 
 	id := uuid.New().String()

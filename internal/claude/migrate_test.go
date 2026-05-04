@@ -9,31 +9,17 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-func TestMigrate_NoOpWhenActiveExists(t *testing.T) {
+func TestMigrate_NoOpWhenActiveAlreadySet(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	if err := SetActive("preexisting"); err != nil {
-		t.Fatal(err)
-	}
-	cred := makeCred("never-migrate")
-	saveCred(t, cred)
-	if err := os.Symlink(store.CredPath(cred.ID), credentialsPath()); err != nil {
-		t.Skip("symlink unsupported")
-	}
+	setActiveBlob(t, "already-active", store.OAuthTokens{AccessToken: "x", ExpiresAt: 1})
 
 	migrate()
 
 	id, ok := Active()
-	if !ok || id != "preexisting" {
-		t.Errorf("Active() = (%q, %v), want (\"preexisting\", true) — migrate must not overwrite existing sidecar", id, ok)
-	}
-	info, err := os.Lstat(credentialsPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Error("symlink was disturbed despite active.json being present")
+	if !ok || id != "already-active" {
+		t.Errorf("Active() after migrate = (%q, %v), want (\"already-active\", true)", id, ok)
 	}
 }
 
@@ -66,10 +52,14 @@ func TestMigrate_State1a_AbsoluteSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	var parsed struct {
+		CCMSourceID   string            `json:"ccmSourceId"`
 		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
+	}
+	if parsed.CCMSourceID != cred.ID {
+		t.Errorf("CCMSourceID = %q, want %q (must be embedded after migration)", parsed.CCMSourceID, cred.ID)
 	}
 	if parsed.ClaudeAiOauth.AccessToken != cred.ClaudeAiOauth.AccessToken {
 		t.Errorf("AccessToken = %q, want %q", parsed.ClaudeAiOauth.AccessToken, cred.ClaudeAiOauth.AccessToken)
@@ -115,8 +105,8 @@ func TestMigrate_State1b_LegacyRelativeSymlink(t *testing.T) {
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.CCMSourceID != "" {
-		t.Error("ccmSourceId should be stripped from migrated file")
+	if parsed.CCMSourceID != cred.ID {
+		t.Errorf("CCMSourceID = %q, want %q (must be embedded after migration)", parsed.CCMSourceID, cred.ID)
 	}
 	if parsed.ClaudeAiOauth.AccessToken != cred.ClaudeAiOauth.AccessToken {
 		t.Errorf("AccessToken not preserved through migration")
@@ -155,8 +145,8 @@ func TestMigrate_State2_WindowsWrapperRegularFile(t *testing.T) {
 	if err := json.Unmarshal(out, &parsed); err != nil {
 		t.Fatal(err)
 	}
-	if parsed.CCMSourceID != "" {
-		t.Error("ccmSourceId marker should be stripped after migration")
+	if parsed.CCMSourceID != cred.ID {
+		t.Errorf("CCMSourceID = %q, want %q (must be embedded after migration)", parsed.CCMSourceID, cred.ID)
 	}
 	if parsed.ClaudeAiOauth.AccessToken != cred.ClaudeAiOauth.AccessToken {
 		t.Errorf("AccessToken not preserved through migration")
@@ -175,7 +165,7 @@ func TestMigrate_State3_PlainFile_NoOp(t *testing.T) {
 	migrate()
 
 	if _, ok := Active(); ok {
-		t.Error("migrate created an active.json from an unknown plain file")
+		t.Error("migrate created an active marker from an unknown plain file")
 	}
 	out, err := os.ReadFile(credentialsPath())
 	if err != nil {
@@ -191,7 +181,7 @@ func TestMigrate_NoCredentialsFile(t *testing.T) {
 	defer cleanup()
 	migrate()
 	if _, ok := Active(); ok {
-		t.Error("migrate created active.json with no credentials file present")
+		t.Error("migrate created marker with no credentials file present")
 	}
 }
 
@@ -206,29 +196,18 @@ func TestMigrate_State1a_StoreCredMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Symlink points to a store cred that doesn't exist on disk.
 	if err := os.Symlink(store.CredPath("ghost"), credentialsPath()); err != nil {
 		t.Skip("symlink unsupported")
 	}
 
 	migrate()
 
-	// Spec contract: SetActive(id) MUST be called even when store.Load fails,
-	// so future ccm commands know an id existed.
-	id, ok := Active()
-	if !ok || id != "ghost" {
-		t.Errorf("Active() = (%q, %v), want (\"ghost\", true) per spec — SetActive must run even when store.Load fails", id, ok)
+	if _, ok := Active(); ok {
+		t.Error("Active() should remain unset when store cred is missing")
 	}
 
-	// Spec contract: cleanupLegacyArtifacts() MUST also run.
 	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
 		t.Error("legacy ccm.credentials.json still present; cleanupLegacyArtifacts not called in ghost branch")
-	}
-
-	// Sanity: the ghost-branch path skips the file rewrite, so the
-	// symlink should still be present (we don't have data to write).
-	if _, err := os.Lstat(credentialsPath()); err != nil {
-		t.Errorf("credentialsPath disappeared after ghost-branch migrate: %v", err)
 	}
 }
 
@@ -292,19 +271,18 @@ func TestCleanupLegacyArtifacts_RemoveFails(t *testing.T) {
 	if err := os.WriteFile(ccmPath, []byte(`{}`), 0600); err != nil {
 		t.Fatal(err)
 	}
-	// Make dir unwritable so Remove fails.
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0700)
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
 
 	if err := cleanupLegacyArtifacts(); err == nil {
 		t.Fatal("cleanupLegacyArtifacts: nil err, want remove failure")
 	}
 }
 
-// migrate: WriteFile of the tmp credential file fails (claudeDir unwritable).
-func TestMigrate_WriteFileFails(t *testing.T) {
+// migrate: Write through fileBackend fails (claudeDir unwritable).
+func TestMigrate_WriteFails(t *testing.T) {
 	dir, cleanup := setupFakeHome(t)
 	defer cleanup()
 
@@ -314,17 +292,15 @@ func TestMigrate_WriteFileFails(t *testing.T) {
 		t.Skip("symlink unsupported")
 	}
 
-	// Make claudeDir unwritable so the tmp write fails.
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(dir, 0700)
+	t.Cleanup(func() { os.Chmod(dir, 0700) })
 
 	migrate() // must not panic; error is swallowed
 
-	// Active should not be set since we returned early.
 	if _, ok := Active(); ok {
-		t.Error("active.json should not be set when tmp write fails during migrate")
+		t.Error("Active should not be set when backend write fails during migrate")
 	}
 }
 
@@ -340,17 +316,89 @@ func TestMigrate_RenameFails(t *testing.T) {
 		t.Skip("symlink unsupported")
 	}
 
-	// Plant a directory where the .tmp file would land so Rename fails.
 	tmpPath := credentialsPath() + ".tmp"
 	if err := os.MkdirAll(tmpPath, 0700); err != nil {
 		t.Fatal(err)
 	}
-	defer os.RemoveAll(tmpPath)
+	t.Cleanup(func() { os.RemoveAll(tmpPath) })
 
 	migrate() // must not panic; error is swallowed
 
-	// Active should not be set since we returned early.
 	if _, ok := Active(); ok {
-		t.Error("active.json should not be set when tmp rename fails during migrate")
+		t.Error("Active should not be set when backend write fails during migrate")
+	}
+}
+
+// State 4: ~/.ccm/active.json + plain blob at credentialsPath. Migration
+// must rewrite the file with the embedded marker and delete active.json.
+func TestMigrate_State4_ActiveSidecarPlusPlainBlob(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	cred := makeCred("modern")
+	saveCred(t, cred)
+
+	if err := os.MkdirAll(filepath.Dir(activeSidecarPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeSidecarPath(), []byte(`{"id":"modern"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := json.Marshal(map[string]any{"claudeAiOauth": cred.ClaudeAiOauth})
+	if err := os.WriteFile(credentialsPath(), plain, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrate()
+
+	if _, err := os.Stat(activeSidecarPath()); !os.IsNotExist(err) {
+		t.Error("~/.ccm/active.json still present after migrate")
+	}
+
+	id, ok := Active()
+	if !ok || id != cred.ID {
+		t.Errorf("Active() = (%q, %v), want (%q, true)", id, ok, cred.ID)
+	}
+	data, err := os.ReadFile(credentialsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var parsed struct {
+		CCMSourceID   string            `json:"ccmSourceId"`
+		ClaudeAiOauth store.OAuthTokens `json:"claudeAiOauth"`
+	}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	if parsed.CCMSourceID != cred.ID {
+		t.Errorf("CCMSourceID = %q, want %q", parsed.CCMSourceID, cred.ID)
+	}
+	if parsed.ClaudeAiOauth.AccessToken != cred.ClaudeAiOauth.AccessToken {
+		t.Errorf("AccessToken not preserved")
+	}
+}
+
+func TestMigrate_State4_StoreCredMissing(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	if err := os.MkdirAll(filepath.Dir(activeSidecarPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeSidecarPath(), []byte(`{"id":"missing"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plain := []byte(`{"claudeAiOauth":{"accessToken":"x","expiresAt":1}}`)
+	if err := os.WriteFile(credentialsPath(), plain, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrate()
+
+	if _, err := os.Stat(activeSidecarPath()); !os.IsNotExist(err) {
+		t.Error("~/.ccm/active.json should be cleaned up even when store cred missing")
+	}
+	if _, ok := Active(); ok {
+		t.Error("Active() should remain unset when store cred missing")
 	}
 }

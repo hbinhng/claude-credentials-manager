@@ -1,14 +1,13 @@
 package cmd
 
 import (
-	"fmt"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/claude"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -26,32 +25,43 @@ func setupHomeWithCcm(t *testing.T) string {
 	return home
 }
 
-func writeActiveCred(t *testing.T, id string, expiresAt int64) *store.Credential {
+func saveCredFor(t *testing.T, id string, tokens store.OAuthTokens) *store.Credential {
 	t.Helper()
 	cred := &store.Credential{
-		ID:   id,
-		Name: "named-" + id,
-		ClaudeAiOauth: store.OAuthTokens{
-			AccessToken:  "stale",
-			RefreshToken: "r",
-			ExpiresAt:    expiresAt,
-			Scopes:       []string{"user:inference"},
-		},
+		ID:              id,
+		Name:            "named-" + id,
+		ClaudeAiOauth:   tokens,
 		CreatedAt:       "2026-01-01T00:00:00Z",
 		LastRefreshedAt: "2026-01-01T00:00:00Z",
 	}
 	if err := store.Save(cred); err != nil {
 		t.Fatal(err)
 	}
-	if err := claude.SetActive(id); err != nil {
-		t.Fatal(err)
-	}
 	return cred
 }
 
-func writeClaudeJSON(t *testing.T, body string) {
+// installActiveBlob writes a {ccmSourceId, claudeAiOauth} blob directly
+// into ~/.claude/.credentials.json. Tests use this to simulate Claude
+// having written a fresh blob (with our marker preserved by Claude's
+// round-trip behavior).
+func installActiveBlob(t *testing.T, id string, tokens store.OAuthTokens) {
 	t.Helper()
-	if err := os.WriteFile(claude.CredentialsPath(), []byte(body), 0600); err != nil {
+	body, _ := json.Marshal(map[string]any{
+		"ccmSourceId":   id,
+		"claudeAiOauth": tokens,
+	})
+	target := filepath.Join(os.Getenv("HOME"), ".claude", ".credentials.json")
+	if err := os.WriteFile(target, body, 0600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writePlainClaudeBlob writes a Claude blob WITHOUT our marker. Use to
+// simulate the "Claude has credentials but ccm hasn't activated" case.
+func writePlainClaudeBlob(t *testing.T, body string) {
+	t.Helper()
+	target := filepath.Join(os.Getenv("HOME"), ".claude", ".credentials.json")
+	if err := os.WriteFile(target, []byte(body), 0600); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -63,10 +73,10 @@ func TestRunBackup_MissingClaudeFileErrors(t *testing.T) {
 	}
 }
 
-func TestRunBackup_ActiveSidecar_SyncBranch_ClaudeNewer(t *testing.T) {
+func TestRunBackup_ActiveBlob_SyncBranch_ClaudeNewer(t *testing.T) {
 	setupHomeWithCcm(t)
-	cred := writeActiveCred(t, "active-id", 1000)
-	writeClaudeJSON(t, fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"fresh","refreshToken":"r2","expiresAt":%d,"scopes":["user:inference"]}}`, time.Now().Add(1*time.Hour).UnixMilli()))
+	cred := saveCredFor(t, "active-id", store.OAuthTokens{AccessToken: "stale", RefreshToken: "r", ExpiresAt: 1000, Scopes: []string{"user:inference"}})
+	installActiveBlob(t, "active-id", store.OAuthTokens{AccessToken: "fresh", RefreshToken: "r2", ExpiresAt: time.Now().Add(1 * time.Hour).UnixMilli(), Scopes: []string{"user:inference"}})
 
 	if err := runBackup(); err != nil {
 		t.Fatalf("runBackup: %v", err)
@@ -89,10 +99,10 @@ func TestRunBackup_ActiveSidecar_SyncBranch_ClaudeNewer(t *testing.T) {
 	}
 }
 
-func TestRunBackup_ActiveSidecar_SyncBranch_NoChange(t *testing.T) {
+func TestRunBackup_ActiveBlob_SyncBranch_NoChange(t *testing.T) {
 	setupHomeWithCcm(t)
-	cred := writeActiveCred(t, "noop", 5000)
-	writeClaudeJSON(t, fmt.Sprintf(`{"claudeAiOauth":{"accessToken":"stale","refreshToken":"r","expiresAt":%d,"scopes":["user:inference"]}}`, cred.ClaudeAiOauth.ExpiresAt))
+	cred := saveCredFor(t, "noop", store.OAuthTokens{AccessToken: "stale", RefreshToken: "r", ExpiresAt: 5000, Scopes: []string{"user:inference"}})
+	installActiveBlob(t, cred.ID, cred.ClaudeAiOauth)
 
 	if err := runBackup(); err != nil {
 		t.Fatalf("runBackup: %v", err)
@@ -103,12 +113,9 @@ func TestRunBackup_ActiveSidecar_SyncBranch_NoChange(t *testing.T) {
 	}
 }
 
-func TestRunBackup_ActiveSidecar_StoreMissing_FallsThrough(t *testing.T) {
+func TestRunBackup_ActiveBlob_StoreMissing_FallsThrough(t *testing.T) {
 	setupHomeWithCcm(t)
-	if err := claude.SetActive("ghost"); err != nil {
-		t.Fatal(err)
-	}
-	writeClaudeJSON(t, `{"claudeAiOauth":{"accessToken":"new","refreshToken":"r","expiresAt":1,"scopes":["user:inference"]}}`)
+	installActiveBlob(t, "ghost", store.OAuthTokens{AccessToken: "new", RefreshToken: "r", ExpiresAt: 1, Scopes: []string{"user:inference"}})
 
 	origProfile := backupFetchProfileFn
 	backupFetchProfileFn = func(string) backupProfile { return backupProfile{Email: "x@y", Tier: "T"} }
@@ -125,7 +132,7 @@ func TestRunBackup_ActiveSidecar_StoreMissing_FallsThrough(t *testing.T) {
 
 func TestRunBackup_NoActive_ImportsAsNew(t *testing.T) {
 	setupHomeWithCcm(t)
-	writeClaudeJSON(t, `{"claudeAiOauth":{"accessToken":"new","refreshToken":"r","expiresAt":2,"scopes":["user:inference"]}}`)
+	writePlainClaudeBlob(t, `{"claudeAiOauth":{"accessToken":"new","refreshToken":"r","expiresAt":2,"scopes":["user:inference"]}}`)
 
 	origProfile := backupFetchProfileFn
 	backupFetchProfileFn = func(string) backupProfile { return backupProfile{Email: "first@example.com", Tier: "Pro"} }
@@ -145,7 +152,7 @@ func TestRunBackup_NoActive_ImportsAsNew(t *testing.T) {
 
 func TestRunBackup_NoClaudeAiOauthErrors(t *testing.T) {
 	setupHomeWithCcm(t)
-	writeClaudeJSON(t, `{"claudeAiOauth":{}}`)
+	writePlainClaudeBlob(t, `{"claudeAiOauth":{}}`)
 	if err := runBackup(); err == nil {
 		t.Error("runBackup: nil err, want no-token error")
 	}
@@ -153,13 +160,13 @@ func TestRunBackup_NoClaudeAiOauthErrors(t *testing.T) {
 
 func TestRunBackup_SyncWriteFailure_PropagatesError(t *testing.T) {
 	home := setupHomeWithCcm(t)
-	writeActiveCred(t, "writeerr", 1)
-	writeClaudeJSON(t, `{"claudeAiOauth":{"accessToken":"fresh","refreshToken":"r","expiresAt":99999,"scopes":["user:inference"]}}`)
+	saveCredFor(t, "writeerr", store.OAuthTokens{AccessToken: "stale", RefreshToken: "r", ExpiresAt: 1, Scopes: []string{"user:inference"}})
+	installActiveBlob(t, "writeerr", store.OAuthTokens{AccessToken: "fresh", RefreshToken: "r", ExpiresAt: 99999, Scopes: []string{"user:inference"}})
 
 	if err := os.Chmod(filepath.Join(home, ".ccm"), 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(filepath.Join(home, ".ccm"), 0700)
+	t.Cleanup(func() { os.Chmod(filepath.Join(home, ".ccm"), 0700) })
 
 	err := runBackup()
 	if err == nil {

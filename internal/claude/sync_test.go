@@ -1,49 +1,15 @@
 package claude
 
 import (
-	"encoding/json"
 	"os"
 	"testing"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// writeClaudeFile writes a {claudeAiOauth: ...} regular file at
-// ~/.claude/.credentials.json.
-func writeClaudeFile(t *testing.T, tokens store.OAuthTokens) {
-	t.Helper()
-	body := map[string]any{"claudeAiOauth": tokens}
-	data, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(credentialsPath(), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestSync_NoActiveSidecar(t *testing.T) {
+func TestSync_NoBackendEntry(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
-
-	changed, err := Sync()
-	if err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	if changed {
-		t.Error("changed = true, want false")
-	}
-}
-
-func TestSync_NoClaudeFile(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	cred := makeCred("nofile")
-	saveCred(t, cred)
-	if err := SetActive(cred.ID); err != nil {
-		t.Fatal(err)
-	}
 
 	changed, err := Sync()
 	if err != nil {
@@ -58,10 +24,7 @@ func TestSync_StoreCredMissing(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
 
-	if err := SetActive("orphan"); err != nil {
-		t.Fatal(err)
-	}
-	writeClaudeFile(t, store.OAuthTokens{AccessToken: "t", ExpiresAt: 9999})
+	setActiveBlob(t, "orphan", store.OAuthTokens{AccessToken: "t", ExpiresAt: 9999})
 
 	changed, err := Sync()
 	if err != nil {
@@ -78,10 +41,7 @@ func TestSync_ClaudeUnparseable(t *testing.T) {
 
 	cred := makeCred("badclaude")
 	saveCred(t, cred)
-	if err := SetActive(cred.ID); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(credentialsPath(), []byte("{not json"), 0600); err != nil {
+	if err := (fileBackend{}).Write([]byte("{not json")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,10 +61,7 @@ func TestSync_ClaudeOlderThanStore(t *testing.T) {
 	cred := makeCred("oldclaude")
 	cred.ClaudeAiOauth.ExpiresAt = 9000
 	saveCred(t, cred)
-	if err := SetActive(cred.ID); err != nil {
-		t.Fatal(err)
-	}
-	writeClaudeFile(t, store.OAuthTokens{AccessToken: "stale", ExpiresAt: 5000})
+	setActiveBlob(t, cred.ID, store.OAuthTokens{AccessToken: "stale", ExpiresAt: 5000})
 
 	changed, err := Sync()
 	if err != nil {
@@ -130,10 +87,7 @@ func TestSync_ClaudeEqualToStore(t *testing.T) {
 	cred := makeCred("equal")
 	cred.ClaudeAiOauth.ExpiresAt = 7000
 	saveCred(t, cred)
-	if err := SetActive(cred.ID); err != nil {
-		t.Fatal(err)
-	}
-	writeClaudeFile(t, cred.ClaudeAiOauth)
+	setActiveBlob(t, cred.ID, cred.ClaudeAiOauth)
 
 	changed, err := Sync()
 	if err != nil {
@@ -152,9 +106,6 @@ func TestSync_ClaudeNewer_StoreUpdated(t *testing.T) {
 	cred.ClaudeAiOauth.ExpiresAt = 1000
 	cred.ClaudeAiOauth.AccessToken = "old"
 	saveCred(t, cred)
-	if err := SetActive(cred.ID); err != nil {
-		t.Fatal(err)
-	}
 
 	fresh := store.OAuthTokens{
 		AccessToken:  "new",
@@ -162,7 +113,7 @@ func TestSync_ClaudeNewer_StoreUpdated(t *testing.T) {
 		ExpiresAt:    9999,
 		Scopes:       []string{"user:inference"},
 	}
-	writeClaudeFile(t, fresh)
+	setActiveBlob(t, cred.ID, fresh)
 
 	changed, err := Sync()
 	if err != nil {
@@ -190,23 +141,6 @@ func TestSync_ClaudeNewer_StoreUpdated(t *testing.T) {
 	}
 }
 
-func TestSync_CorruptActiveFile(t *testing.T) {
-	_, cleanup := setupFakeHome(t)
-	defer cleanup()
-
-	if err := os.WriteFile(activePath(), []byte("{not json"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	changed, err := Sync()
-	if err != nil {
-		t.Fatalf("Sync: %v", err)
-	}
-	if changed {
-		t.Error("changed = true, want false")
-	}
-}
-
 func TestSync_StoreWriteFailure(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
@@ -214,15 +148,13 @@ func TestSync_StoreWriteFailure(t *testing.T) {
 	cred := makeCred("perm")
 	cred.ClaudeAiOauth.ExpiresAt = 1
 	saveCred(t, cred)
-	if err := SetActive(cred.ID); err != nil {
-		t.Fatal(err)
-	}
-	writeClaudeFile(t, store.OAuthTokens{AccessToken: "x", ExpiresAt: 9999})
+	setActiveBlob(t, cred.ID, store.OAuthTokens{AccessToken: "x", ExpiresAt: 9999})
 
-	if err := os.Chmod(store.Dir(), 0500); err != nil {
+	ccmDir := store.Dir()
+	if err := os.Chmod(ccmDir, 0500); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(store.Dir(), 0700)
+	t.Cleanup(func() { os.Chmod(ccmDir, 0700) })
 
 	_, err := Sync()
 	if err == nil {
@@ -251,13 +183,5 @@ func TestSync_RunsMigrateFirst(t *testing.T) {
 	id, ok := Active()
 	if !ok || id != cred.ID {
 		t.Errorf("Active() after migrate = (%q, %v), want (%q, true)", id, ok, cred.ID)
-	}
-
-	info, err := os.Lstat(credentialsPath())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Error("expected regular file, got symlink")
 	}
 }
