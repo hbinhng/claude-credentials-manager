@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -254,6 +255,47 @@ func TestSignalActivatedFailedNoOpWhenEmpty(t *testing.T) {
 	p.SignalActivatedFailed()
 	if got := p.entries["a"].consecutiveFail; got != 0 {
 		t.Errorf("consecutiveFail bumped on empty pool: %d", got)
+	}
+}
+
+func TestSignalActivatedFailedRacePromote(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	const N = 200
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < N; i++ {
+			p.SignalActivatedFailed()
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < N; i++ {
+			if i%2 == 0 {
+				p.Promote("b")
+			} else {
+				p.Promote("a")
+			}
+		}
+	}()
+	wg.Wait()
+	// Pool must be in a consistent state — exactly one entry has
+	// status activated, and the activated string matches.
+	var activatedCount int
+	for id, e := range p.entries {
+		if e.status == statusActivated {
+			activatedCount++
+			if id != p.activated {
+				t.Errorf("activated map key %q != entry status owner", id)
+			}
+		}
+	}
+	if activatedCount != 1 {
+		t.Errorf("activatedCount = %d, want 1", activatedCount)
 	}
 }
 

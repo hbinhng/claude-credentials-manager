@@ -85,6 +85,11 @@ can use ` + "`ccm launch <id> -- -p 'hi'`" + ` for a one-shot query.`,
 	},
 }
 
+// Note: ccm launch performs no status-code-specific retry. The
+// `claude` child handles its own retries. Specifically, neither 502
+// nor 503 are retried at this layer, so the ccm share --load-balance
+// 503 path requires no changes here. Confirmed during Task 18.
+
 // runLaunchLocal starts a loopback passthrough proxy for the named
 // credential and execs claude pointed at it.
 func runLaunchLocal(idOrName string, claudeArgs []string) error {
