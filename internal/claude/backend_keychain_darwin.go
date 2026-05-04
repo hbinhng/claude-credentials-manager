@@ -8,6 +8,10 @@ import "os/user"
 // "Claude Code-credentials" with the OS login username as the account.
 // Verified by inspecting `security find-generic-password -s "Claude Code-credentials"`
 // on a live install: the `acct` attribute contains the macOS username.
+//
+// Claude Code uses the npm `keytar` package, which keeps the same
+// service+account convention across platforms — see backend_keychain_linux.go
+// for the cross-platform schema notes.
 const keychainService = "Claude Code-credentials"
 
 // keychainAccount holds the per-user account string. Resolved once at
