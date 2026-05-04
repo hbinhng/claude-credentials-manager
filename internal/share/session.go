@@ -37,6 +37,15 @@ type Options struct {
 	BindPort      int
 	CapturePrompt string // if empty, runCapture falls back to DefaultCapturePrompt
 	Debug         bool
+
+	// Load-balance mode (all-or-nothing): set by cmd/share.go when
+	// --load-balance is passed. Pool owns the per-credential state;
+	// RebalanceInterval is the scheduler tick. Clock is an optional
+	// test seam — production wiring leaves it nil and the session
+	// substitutes realClock{}.
+	Pool              *credPool
+	RebalanceInterval time.Duration
+	Clock             clock
 }
 
 // SessionStarter abstracts StartSession for tests and for consumers
@@ -52,14 +61,15 @@ type SessionStarter interface {
 //
 // Session is safe for concurrent use.
 type Session interface {
-	Ticket() string        // base64-encoded ticket envelope
+	Ticket() string       // base64-encoded ticket envelope
 	CredID() string
-	Mode() string          // "tunnel" | "lan"
+	Mode() string // "tunnel" | "lan"
 	StartedAt() time.Time
 	Reach() string         // tunnel URL or "http://<bind-host>:<port>"
 	Stop() error           // idempotent
-	Done() <-chan struct{}  // closed once Stop finishes
+	Done() <-chan struct{} // closed once Stop finishes
 	Err() error            // non-nil if the session failed after Start
+	Pool() *credPool       // nil in single-cred mode
 }
 
 // defaultStarter is the production SessionStarter. StartSession is the
@@ -99,16 +109,18 @@ type sessionImpl struct {
 
 	proxy    *Proxy
 	tunnel   *Tunnel
+	pool     *credPool
 	stopOnce sync.Once
 	done     chan struct{}
 }
 
 func (s *sessionImpl) CredID() string        { return s.credID }
-func (s *sessionImpl) Mode() string          { return s.mode }
-func (s *sessionImpl) Reach() string         { return s.reach }
-func (s *sessionImpl) Ticket() string        { return s.ticket }
-func (s *sessionImpl) StartedAt() time.Time  { return s.startedAt }
+func (s *sessionImpl) Mode() string           { return s.mode }
+func (s *sessionImpl) Reach() string          { return s.reach }
+func (s *sessionImpl) Ticket() string         { return s.ticket }
+func (s *sessionImpl) StartedAt() time.Time   { return s.startedAt }
 func (s *sessionImpl) Done() <-chan struct{}  { return s.done }
+func (s *sessionImpl) Pool() *credPool        { return s.pool }
 
 // Err always returns nil in the current implementation — StartSession
 // fails synchronously and there is no post-start failure-monitoring
@@ -167,11 +179,45 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		// failure, which is not exercisable in tests.
 		return nil, err
 	}
-	if err := proxy.Transition(accessToken, newCredState(cred), nil); err != nil {
+
+	// Pick tokenSource: pool when --load-balance, else single-cred
+	// credState.
+	var tokens tokenSource
+	if opts.Pool != nil {
+		tokens = opts.Pool
+	} else {
+		tokens = newCredState(cred)
+	}
+	if err := proxy.Transition(accessToken, tokens, opts.Pool); err != nil {
 		_ = proxy.Close()
 		// coverage: unreachable — Transition errors only when capture has
 		// not run; StartSession always runs capture first via captureFn.
 		return nil, fmt.Errorf("transition: %w", err)
+	}
+
+	// Pool mode: start scheduler + per-cred refresh timers.
+	if opts.Pool != nil {
+		c := opts.Clock
+		if c == nil {
+			c = realClock{}
+		}
+		// Pre-flight: if Fresh fails synchronously, run one tick to
+		// see if rotation can pick a replacement.
+		if _, ferr := opts.Pool.Fresh(); ferr != nil {
+			sch := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
+			sch.runOnce()
+			if _, ferr2 := opts.Pool.Fresh(); ferr2 != nil {
+				_ = proxy.Close()
+				return nil, fmt.Errorf("pool transition: no usable credential after pre-flight rotation: %w", ferr2)
+			}
+		}
+		for _, e := range opts.Pool.entries {
+			state := e.state
+			go runRefreshTimer(state, c, jitterFn, proxy.done)
+		}
+		sch := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
+		sch.SetDebug(opts.Debug)
+		go sch.Run(proxy.done)
 	}
 
 	mode := "tunnel"
@@ -207,6 +253,7 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		startedAt: time.Now(),
 		proxy:     proxy,
 		tunnel:    tun,
+		pool:      opts.Pool,
 		done:      make(chan struct{}),
 	}, nil
 }
