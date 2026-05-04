@@ -25,7 +25,7 @@ const (
 )
 
 func (keychainBackend) Read() ([]byte, bool, error) {
-	if keychainService == "" {
+	if keychainService == "" || keychainAccount == "" {
 		return nil, false, errUnsupported
 	}
 	val, err := keyring.Get(keychainService, keychainAccount)
@@ -39,14 +39,14 @@ func (keychainBackend) Read() ([]byte, bool, error) {
 }
 
 func (keychainBackend) Write(blob []byte) error {
-	if keychainService == "" {
+	if keychainService == "" || keychainAccount == "" {
 		return errUnsupported
 	}
 	return keyring.Set(keychainService, keychainAccount, string(blob))
 }
 
 func (keychainBackend) Remove() error {
-	if keychainService == "" {
+	if keychainService == "" || keychainAccount == "" {
 		return errUnsupported
 	}
 	if err := keyring.Delete(keychainService, keychainAccount); err != nil {
@@ -68,7 +68,7 @@ func (keychainBackend) Remove() error {
 // Using a sentinel rather than the Claude service/account avoids
 // confusing "Claude entry missing" with "keychain unreachable".
 func keychainProbe() bool {
-	if keychainService == "" {
+	if keychainService == "" || keychainAccount == "" {
 		return false
 	}
 	_, err := keyring.Get(probeService, probeAccount)
