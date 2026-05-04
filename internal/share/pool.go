@@ -91,3 +91,31 @@ func (p *credPool) Fresh() (string, error) {
 	p.mu.RUnlock()
 	return state.Fresh()
 }
+
+// MarkProbe records the result of one usage probe against an entry
+// and applies the per-entry state-machine rules.
+//
+// MarkProbe NEVER demotes the activated entry — only the scheduler
+// can do that, via Demote. This is intentional: rotation is a
+// scheduler-policy decision, not a probe-side-effect.
+func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	e, ok := p.entries[id]
+	if !ok {
+		return
+	}
+	if err == nil {
+		e.consecutiveFail = 0
+		e.lastUsage = info
+		e.lastUsageAt = time.Now()
+		if e.status == statusDegraded {
+			e.status = statusCandidate
+		}
+		return
+	}
+	e.consecutiveFail++
+	if e.status == statusCandidate && e.consecutiveFail >= 2 {
+		e.status = statusDegraded
+	}
+}

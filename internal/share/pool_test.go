@@ -2,6 +2,7 @@ package share
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -82,5 +83,86 @@ func TestPoolFreshNoActivated(t *testing.T) {
 	_, err := p.Fresh()
 	if !errors.Is(err, errNoActivated) {
 		t.Errorf("got err %v, want errNoActivated", err)
+	}
+}
+
+func TestMarkProbeCandidateSuccessResetsFailCounter(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	p.entries["b"].consecutiveFail = 1
+	p.MarkProbe("b", &oauth.UsageInfo{}, nil)
+	if got := p.entries["b"].consecutiveFail; got != 0 {
+		t.Errorf("consecutiveFail = %d, want 0", got)
+	}
+	if got := p.entries["b"].status; got != statusCandidate {
+		t.Errorf("status = %v, want candidate", got)
+	}
+}
+
+func TestMarkProbeCandidateDegradesAfter2Failures(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	p.MarkProbe("b", nil, fmt.Errorf("fail 1"))
+	if p.entries["b"].status != statusCandidate {
+		t.Errorf("after 1 fail status = %v, want candidate", p.entries["b"].status)
+	}
+	p.MarkProbe("b", nil, fmt.Errorf("fail 2"))
+	if p.entries["b"].status != statusDegraded {
+		t.Errorf("after 2 fails status = %v, want degraded", p.entries["b"].status)
+	}
+}
+
+func TestMarkProbeDegradedRecoversOnFirstSuccess(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"b": newEntry("b", "bob", statusDegraded, &fakeTokenSource{}),
+	})
+	p.entries["b"].consecutiveFail = 5
+	p.MarkProbe("b", &oauth.UsageInfo{}, nil)
+	if got := p.entries["b"].status; got != statusCandidate {
+		t.Errorf("status = %v, want candidate", got)
+	}
+	if got := p.entries["b"].consecutiveFail; got != 0 {
+		t.Errorf("consecutiveFail = %d, want 0", got)
+	}
+}
+
+func TestMarkProbeActivatedNotDemoted(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	p.MarkProbe("a", nil, fmt.Errorf("fail 1"))
+	p.MarkProbe("a", nil, fmt.Errorf("fail 2"))
+	p.MarkProbe("a", nil, fmt.Errorf("fail 3"))
+	if got := p.entries["a"].status; got != statusActivated {
+		t.Errorf("status = %v, want activated (MarkProbe must NEVER demote activated)", got)
+	}
+	if got := p.entries["a"].consecutiveFail; got != 3 {
+		t.Errorf("consecutiveFail = %d, want 3", got)
+	}
+}
+
+func TestMarkProbeUnknownIDNoOp(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	// Should not panic.
+	p.MarkProbe("nonexistent", &oauth.UsageInfo{}, nil)
+}
+
+func TestMarkProbeStoresLastUsageOnSuccess(t *testing.T) {
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 42}}}
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	p.MarkProbe("a", info, nil)
+	if p.entries["a"].lastUsage != info {
+		t.Errorf("lastUsage not stored")
+	}
+	if p.entries["a"].lastUsageAt.IsZero() {
+		t.Errorf("lastUsageAt not stamped")
 	}
 }
