@@ -63,6 +63,22 @@ func TestDecodeBlob_Garbage_Errors(t *testing.T) {
 	}
 }
 
+func TestEncodeBlob_NoNewlines(t *testing.T) {
+	// macOS keychain's `security` CLI flags any password that contains
+	// non-printable characters as "binary" and returns it hex-encoded
+	// on read — which breaks the round-trip. Pin the contract: blob
+	// output is always single-line.
+	blob, err := encodeBlob("id-x", store.OAuthTokens{AccessToken: "a", ExpiresAt: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, b := range blob {
+		if b == '\n' || b == '\r' {
+			t.Fatalf("encodeBlob produced a newline (%#v); macOS keychain will flag this entry as binary", string(blob))
+		}
+	}
+}
+
 func TestEncodeBlob_NarrowsToTwoTopLevelKeys(t *testing.T) {
 	blob, err := encodeBlob("id-x", store.OAuthTokens{AccessToken: "a"})
 	if err != nil {
