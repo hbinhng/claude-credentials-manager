@@ -378,6 +378,115 @@ func TestMigrate_State4_ActiveSidecarPlusPlainBlob(t *testing.T) {
 	}
 }
 
+// migrate when Active() returns true AND credentialsPath is a symlink
+// (file backend) — should rewrite as a regular file via fileBackend.
+func TestMigrate_ActiveTrue_SymlinkRewrittenAsRegular(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Plant a wrapper file at ccm.credentials.json with the marker, and
+	// symlink credentialsPath at it. Active() will read through the
+	// symlink and see the marker → returns true.
+	cred := makeCred("symwrap")
+	saveCred(t, cred)
+	wrapper, _ := encodeBlob(cred.ID, cred.ClaudeAiOauth)
+	wrapperPath := filepath.Join(claudeDir(), "ccm.credentials.json")
+	if err := os.WriteFile(wrapperPath, wrapper, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("ccm.credentials.json", credentialsPath()); err != nil {
+		t.Skip("symlink unsupported")
+	}
+
+	migrate()
+
+	info, err := os.Lstat(credentialsPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Error("expected regular file after migrate, got symlink")
+	}
+	id, ok := Active()
+	if !ok || id != cred.ID {
+		t.Errorf("Active() = (%q, %v), want (%q, true)", id, ok, cred.ID)
+	}
+	// cleanupLegacyArtifacts should also have removed the wrapper.
+	if _, err := os.Stat(wrapperPath); !os.IsNotExist(err) {
+		t.Error("wrapper ccm.credentials.json still present")
+	}
+}
+
+// migrate writes through a non-file backend (e.g. keychain) and removes
+// the orphan file at credentialsPath afterwards.
+func TestMigrate_NonFileBackend_RemovesOrphanFile(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	// Pin a fake backend so the assertion `_, isFile := b.(fileBackend); !isFile`
+	// is true and migrate runs the orphan-file removal branch.
+	fb := &fakeBackend{}
+	withBackend(t, fb)
+
+	// Plant a state-4 layout so detectLegacyState returns an id.
+	cred := makeCred("orphancheck")
+	saveCred(t, cred)
+	if err := os.MkdirAll(filepath.Dir(activeSidecarPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeSidecarPath(), []byte(`{"id":"orphancheck"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plain, _ := json.Marshal(map[string]any{"claudeAiOauth": cred.ClaudeAiOauth})
+	if err := os.WriteFile(credentialsPath(), plain, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	migrate()
+
+	// The non-file backend has the new blob.
+	if !fb.exists {
+		t.Error("fake backend has no entry after migrate")
+	}
+	id, _, _, _ := decodeBlob(fb.blob)
+	if id != cred.ID {
+		t.Errorf("migrated blob id = %q, want %q", id, cred.ID)
+	}
+
+	// The orphan file at credentialsPath should be removed.
+	if _, err := os.Lstat(credentialsPath()); !os.IsNotExist(err) {
+		t.Error("orphan credentials file still present after non-file-backend migrate")
+	}
+}
+
+func TestReadActiveSidecar_CorruptJSON(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+	if err := os.MkdirAll(filepath.Dir(activeSidecarPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeSidecarPath(), []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := readActiveSidecar(); ok || id != "" {
+		t.Errorf("readActiveSidecar with corrupt = (%q, %v), want (\"\", false)", id, ok)
+	}
+}
+
+func TestReadActiveSidecar_EmptyID(t *testing.T) {
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+	if err := os.MkdirAll(filepath.Dir(activeSidecarPath()), 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(activeSidecarPath(), []byte(`{"id":""}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if id, ok := readActiveSidecar(); ok || id != "" {
+		t.Errorf("readActiveSidecar with empty id = (%q, %v), want (\"\", false)", id, ok)
+	}
+}
+
 func TestMigrate_State4_StoreCredMissing(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
 	defer cleanup()
