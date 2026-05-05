@@ -271,3 +271,89 @@ func TestStartSession_CapturePromptDefaults(t *testing.T) {
 		t.Errorf("captureFn got prompt=%q, want DefaultCapturePrompt %q", got, DefaultCapturePrompt)
 	}
 }
+
+func TestStartCloudflaredWithRetrySucceedsOnFirstAttempt(t *testing.T) {
+	origFn := startCloudflaredFn
+	defer func() { startCloudflaredFn = origFn }()
+	calls := 0
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		calls++
+		return NewTunnelForTest(nil), "https://test.example", nil
+	}
+	origBackoff := cloudflaredRetryBackoff
+	defer func() { cloudflaredRetryBackoff = origBackoff }()
+	cloudflaredRetryBackoff = func(int) time.Duration { return 0 }
+
+	t1, url, cancel, err := startCloudflaredWithRetry("http://127.0.0.1:9999", false)
+	if err != nil {
+		t.Fatalf("err = %v, want nil", err)
+	}
+	if calls != 1 {
+		t.Errorf("calls = %d, want 1", calls)
+	}
+	if url != "https://test.example" {
+		t.Errorf("url = %q", url)
+	}
+	if t1 == nil {
+		t.Fatal("tunnel is nil")
+	}
+	if cancel == nil {
+		t.Fatal("cancel func is nil")
+	}
+	cancel()
+}
+
+func TestStartCloudflaredWithRetrySucceedsAfterTransientFailures(t *testing.T) {
+	origFn := startCloudflaredFn
+	defer func() { startCloudflaredFn = origFn }()
+	calls := 0
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		calls++
+		if calls < 3 {
+			return nil, "", errors.New("transient cloudflared blip")
+		}
+		return NewTunnelForTest(nil), "https://test.example", nil
+	}
+	origBackoff := cloudflaredRetryBackoff
+	defer func() { cloudflaredRetryBackoff = origBackoff }()
+	cloudflaredRetryBackoff = func(int) time.Duration { return 0 }
+
+	t1, _, cancel, err := startCloudflaredWithRetry("http://127.0.0.1:9999", false)
+	if err != nil {
+		t.Fatalf("err = %v, want nil after retries", err)
+	}
+	if calls != 3 {
+		t.Errorf("calls = %d, want 3 (2 failures + 1 success)", calls)
+	}
+	if t1 == nil {
+		t.Fatal("tunnel is nil")
+	}
+	cancel()
+}
+
+func TestStartCloudflaredWithRetryFailsAfterMaxAttempts(t *testing.T) {
+	origFn := startCloudflaredFn
+	defer func() { startCloudflaredFn = origFn }()
+	calls := 0
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		calls++
+		return nil, "", errors.New("persistent cloudflared blip")
+	}
+	origBackoff := cloudflaredRetryBackoff
+	defer func() { cloudflaredRetryBackoff = origBackoff }()
+	cloudflaredRetryBackoff = func(int) time.Duration { return 0 }
+
+	_, _, _, err := startCloudflaredWithRetry("http://127.0.0.1:9999", false)
+	if err == nil {
+		t.Fatal("err = nil, want failure after max attempts")
+	}
+	if calls != cloudflaredMaxAttempts {
+		t.Errorf("calls = %d, want %d", calls, cloudflaredMaxAttempts)
+	}
+	if !strings.Contains(err.Error(), "after 5 attempts") {
+		t.Errorf("error %q does not say 'after 5 attempts'", err)
+	}
+	if !strings.Contains(err.Error(), "persistent cloudflared blip") {
+		t.Errorf("error %q does not wrap last attempt's cause", err)
+	}
+}

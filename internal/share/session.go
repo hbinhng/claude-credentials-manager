@@ -246,10 +246,8 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 	reach := ""
 	var tun *Tunnel
 	if opts.BindHost == "" {
-		ctx, cancel := context.WithCancel(context.Background())
-		t, publicURL, err := startCloudflaredFn(ctx, proxy.Addr())
+		t, publicURL, cancel, err := startCloudflaredWithRetry(proxy.Addr(), opts.Debug)
 		if err != nil {
-			cancel()
 			_ = proxy.Close()
 			return nil, fmt.Errorf("cloudflared: %w", err)
 		}
@@ -329,6 +327,62 @@ func startCloudflared(ctx context.Context, localURL string) (*Tunnel, string, er
 		return nil, "", err
 	}
 	return tun, tun.PublicURL(), nil
+}
+
+// cloudflaredMaxAttempts and cloudflaredRetryBackoff control the
+// retry loop in startCloudflaredWithRetry. Cloudflare Quick Tunnels
+// are flaky in practice (transient DNS, edge propagation hiccups,
+// QUIC/HTTP2 negotiation drops), so a single failure is rarely
+// terminal — retrying buys us a much higher success rate at the
+// cost of up to ~31s in the worst case.
+//
+// Exposed as package-level vars so tests can shorten them.
+var (
+	cloudflaredMaxAttempts   = 5
+	cloudflaredRetryBackoff  = func(attempt int) time.Duration {
+		// 1s, 2s, 4s, 8s between attempts (sum ~15s + per-attempt
+		// startup latency). Capped at 16s for sanity.
+		d := time.Second << uint(attempt-1)
+		if d > 16*time.Second {
+			d = 16 * time.Second
+		}
+		return d
+	}
+)
+
+// startCloudflaredWithRetry wraps startCloudflaredFn in a bounded
+// retry loop. Each attempt gets its own context so a cancellation
+// from a previous attempt's setShutdownHook does not poison the
+// retry. Returns the cancel func of the LAST successful attempt so
+// the caller can wire it as the tunnel's shutdown hook.
+//
+// On success: returns the tunnel, its public URL, and the cancel
+// func for the surviving attempt's context.
+// On failure (all attempts exhausted): returns the last error
+// observed, with each attempt's failure logged to stderr so the
+// operator can see what went wrong.
+func startCloudflaredWithRetry(localURL string, debug bool) (*Tunnel, string, context.CancelFunc, error) {
+	var lastErr error
+	for attempt := 1; attempt <= cloudflaredMaxAttempts; attempt++ {
+		ctx, cancel := context.WithCancel(context.Background())
+		t, publicURL, err := startCloudflaredFn(ctx, localURL)
+		if err == nil {
+			if attempt > 1 || debug {
+				fmt.Fprintf(errLog(), "ccm share: cloudflared tunnel ready (attempt %d/%d)\n",
+					attempt, cloudflaredMaxAttempts)
+			}
+			return t, publicURL, cancel, nil
+		}
+		cancel()
+		lastErr = err
+		fmt.Fprintf(errLog(), "ccm share: cloudflared attempt %d/%d failed: %v\n",
+			attempt, cloudflaredMaxAttempts, err)
+		if attempt < cloudflaredMaxAttempts {
+			time.Sleep(cloudflaredRetryBackoff(attempt))
+		}
+	}
+	return nil, "", nil, fmt.Errorf("cloudflared failed after %d attempts: %w",
+		cloudflaredMaxAttempts, lastErr)
 }
 
 // SetUpstreamBaseForTest overrides the constant upstreamBase used
