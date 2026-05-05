@@ -3,6 +3,7 @@ package share
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -172,9 +173,21 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 	if prompt == "" {
 		prompt = DefaultCapturePrompt
 	}
-	if err := captureFn(proxy, prompt); err != nil {
-		_ = proxy.Close()
-		return nil, fmt.Errorf("capture: %w", err)
+
+	if opts.Pool != nil {
+		// Load-balance mode: capture has already happened inside
+		// BuildPool (per-cred). The main proxy never enters CAPTURE
+		// state; seed an empty p.captured so Transition's
+		// capture-required gate passes. Director branches on
+		// p.pool != nil and reads headers from the pool, never from
+		// p.captured.
+		proxy.markCaptured(http.Header{})
+	} else {
+		// Single-cred mode: existing behavior.
+		if err := captureFn(proxy, prompt); err != nil {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("capture: %w", err)
+		}
 	}
 
 	accessToken, err := newAccessToken()
