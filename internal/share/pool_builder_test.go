@@ -175,7 +175,12 @@ func TestBuildPoolUsageProbeRejectsCred(t *testing.T) {
 	}
 }
 
-func TestBuildPoolExplicitArgRejectedFatal(t *testing.T) {
+func TestBuildPoolAllRejectedFatal(t *testing.T) {
+	// When EVERY admitted cred fails probe (regardless of
+	// explicit-vs-implicit), BuildPool returns a fatal error. The
+	// old explicit-only-fatal rule was relaxed: a partial probe
+	// failure on explicit args drops the bad cred but keeps the
+	// session alive on the survivors.
 	setupFakeHome(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	writeCredToFile(t, a)
@@ -186,7 +191,38 @@ func TestBuildPoolExplicitArgRejectedFatal(t *testing.T) {
 
 	_, _, err := BuildPool([]string{"alice"}, "", false)
 	if err == nil {
-		t.Fatal("BuildPool succeeded when explicitly-named alice failed probe")
+		t.Fatal("BuildPool succeeded with zero usable creds")
+	}
+}
+
+func TestBuildPoolExplicitArgRejectedDropsAndContinues(t *testing.T) {
+	// Two explicit creds; one fails the usage probe. The bad cred
+	// should be dropped and the session should continue with the
+	// good one.
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		// alice fails probe; bob succeeds
+		if token == a.ClaudeAiOauth.AccessToken {
+			return &oauth.UsageInfo{Error: "HTTP 429"}
+		}
+		return &oauth.UsageInfo{}
+	})
+
+	stubCaptureCredOK(t)
+	pool, _, err := BuildPool([]string{"alice", "bob"}, "", false)
+	if err != nil {
+		t.Fatalf("BuildPool: %v (want nil — bad cred should be dropped, not fatal)", err)
+	}
+	if _, present := pool.entries[a.ID]; present {
+		t.Errorf("alice (probe-failed) should not be in pool")
+	}
+	if _, present := pool.entries[b.ID]; !present {
+		t.Errorf("bob (probe-ok) should be in pool")
 	}
 }
 
@@ -423,7 +459,10 @@ func TestBuildPoolImplicitAllCapturesFailFatal(t *testing.T) {
 	}
 }
 
-func TestBuildPoolExplicitArgCaptureFailureFatal(t *testing.T) {
+func TestBuildPoolExplicitArgCaptureFailureDropsAndContinues(t *testing.T) {
+	// Two explicit creds; one fails capture. The bad cred should
+	// be dropped and the session should continue with the other.
+	// (Previously was fatal; relaxed for resilience.)
 	setupFakeHome(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
@@ -441,12 +480,15 @@ func TestBuildPoolExplicitArgCaptureFailureFatal(t *testing.T) {
 		return http.Header{}, nil
 	}
 
-	_, _, err := BuildPool([]string{"alice", "bob"}, "", false)
-	if err == nil {
-		t.Fatal("BuildPool: want fatal error for explicit cred capture failure, got nil")
+	pool, initial, err := BuildPool([]string{"alice", "bob"}, "", false)
+	if err != nil {
+		t.Fatalf("BuildPool: %v (want nil — alice capture failure should drop alice, not abort)", err)
 	}
-	if !strings.Contains(err.Error(), "alice") {
-		t.Errorf("error %q does not mention alice", err)
+	if initial.Name != "bob" {
+		t.Errorf("initial = %s, want bob (alice capture failed)", initial.Name)
+	}
+	if _, present := pool.entries[a.ID]; present {
+		t.Errorf("alice should not be in pool entries (capture failed)")
 	}
 }
 

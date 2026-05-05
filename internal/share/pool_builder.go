@@ -34,7 +34,6 @@ import (
 // claude provides its own outbound headers via LocalProxy, so per-
 // cred capture is unnecessary.
 func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *store.Credential, error) {
-	explicit := len(args) > 0
 	resolved, err := resolvePoolArgs(args)
 	if err != nil {
 		return nil, nil, err
@@ -84,11 +83,12 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 		})
 	}
 
-	// Explicit-arg pre-capture rejection check (refresh / usage probe).
-	if explicit && len(rejections) > 0 {
-		return nil, nil, fmt.Errorf("ccm: explicitly named credential(s) rejected:\n  %s",
-			joinLines(rejections))
-	}
+	// Rejected creds are dropped from the pool but never fatal on
+	// their own — the operator's intent is "use these creds for
+	// load-balancing", and dropping a bad one is closer to that
+	// intent than aborting the whole session over one transient
+	// 429 / refresh blip. Only fail if NO cred survives (handled
+	// below by the "len(pool.entries) == 0" path).
 
 	// Sort admitted creds by feasibility (highest first; ID lex tie-break).
 	sort.Slice(admitted, func(i, j int) bool {
@@ -112,10 +112,11 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 				captureRejects = append(captureRejects, msg)
 				captureFailedIDs[ad.cred.ID] = true
 				fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
-				if explicit {
-					return nil, nil, fmt.Errorf("ccm: explicitly named credential(s) failed capture:\n  %s",
-						joinLines(captureRejects))
-				}
+				// Capture failure on an explicitly-named cred used to
+				// be fatal; relaxed to "drop and continue" so a
+				// flaky claude install on one cred doesn't abort the
+				// whole load-balance session. Operator sees the
+				// per-cred skip log; only zero survivors is fatal.
 				continue
 			}
 			headers = h
