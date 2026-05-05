@@ -451,6 +451,13 @@ func LastSchedulerTickDoneForTest() <-chan struct{} {
 	return nil
 }
 
+// ResetLastSchedulerForTest clears the test seam so a fresh test
+// run does not observe a previous test's scheduler. Call from
+// t.Cleanup or at test start.
+func ResetLastSchedulerForTest() {
+	lastSchedulerForTest.Store(nil)
+}
+
 // LaunchExec is the shape of the launch-time exec call. Production
 // uses exec.Command(...).Run with stdin/stdout/stderr inherited;
 // tests can swap via SetLaunchExecFnForTest to synthesize HTTP

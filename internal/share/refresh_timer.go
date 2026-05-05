@@ -69,7 +69,7 @@ func runRefreshTimer(state poolEntryState, c clock, jitter func() time.Duration,
 		case <-timer.C():
 		}
 		if _, err := state.Fresh(); err != nil {
-			fmt.Fprintf(errLog(), "ccm share: refresh failed for %s(%s): %v\n",
+			fmt.Fprintf(errLog(), "ccm: refresh failed for %s(%s): %v\n",
 				state.credName(), shortID(state.credID()), err)
 			// Constant 30s back-off after a failed refresh — see
 			// design doc §"Per-credential refresh timers".
@@ -98,7 +98,7 @@ func jitterFn() time.Duration {
 	if _, err := io.ReadFull(jitterReader, b[:]); err != nil {
 		// coverage: unreachable in production — kernel RNG failure.
 		rngFailureLogged.Do(func() {
-			fmt.Fprintf(errLog(), "ccm share: warning: crypto/rand failed, using deterministic refresh jitter: %v\n", err)
+			fmt.Fprintf(errLog(), "ccm: warning: crypto/rand failed, using deterministic refresh jitter: %v\n", err)
 		})
 		return 0
 	}
