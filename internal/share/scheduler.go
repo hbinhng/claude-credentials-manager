@@ -88,6 +88,7 @@ type scheduler struct {
 	probe       usageProbe
 	clock       clock
 	interval    time.Duration
+	ttl         time.Duration // cache TTL = clampTTL(5 × interval)
 	debug       bool
 	prompt      string // passed to captureCredFn during rotation; empty → DefaultCapturePrompt
 	skipCapture bool   // launch --load-balance: short-circuit captureCredFn in branch (b)
@@ -98,12 +99,28 @@ type scheduler struct {
 	tickDone chan struct{}
 }
 
+// clampTTL bounds the computed cache TTL: floor (10min) keeps savings
+// non-trivial when the operator picks an aggressive rebalance interval,
+// ceiling (1h) prevents indefinite staleness if the operator picks a
+// long interval and the pool sees no traffic (header refreshes only
+// fire on the active cred's responses).
+func clampTTL(d time.Duration) time.Duration {
+	if d < 10*time.Minute {
+		return 10 * time.Minute
+	}
+	if d > time.Hour {
+		return time.Hour
+	}
+	return d
+}
+
 func newScheduler(pool *credPool, probe usageProbe, c clock, interval time.Duration) *scheduler {
 	return &scheduler{
 		pool:     pool,
 		probe:    probe,
 		clock:    c,
 		interval: interval,
+		ttl:      clampTTL(5 * interval),
 		tickDone: make(chan struct{}, 1),
 	}
 }
@@ -132,37 +149,60 @@ func (s *scheduler) Run(done <-chan struct{}) {
 	}
 }
 
-// runOnce performs one tick: probe every entry, recompute
-// feasibility, and apply the rotation rule.
+// runOnce performs one tick: probe every entry whose cached usage
+// is past TTL, recompute feasibility, and apply the rotation rule.
+// Singleton pools short-circuit before the snapshot — there's
+// nothing to rotate, so nothing to probe.
 func (s *scheduler) runOnce() {
 	type job struct {
-		id    string
-		state poolEntryState
+		id          string
+		state       poolEntryState
+		cachedUsage *oauth.UsageInfo
+		cachedAt    time.Time
 	}
 	s.pool.mu.RLock()
+	if s.pool.singleton {
+		s.pool.mu.RUnlock()
+		if s.debug {
+			fmt.Fprintf(errLog(), "ccm [debug]: singleton pool, no rotation\n")
+		}
+		select {
+		case s.tickDone <- struct{}{}:
+		default:
+		}
+		return
+	}
 	jobs := make([]job, 0, len(s.pool.entries))
 	// preFail snapshots each entry's consecutiveFail before probes
 	// run, so an upstream-401 signal (SignalActivatedFailed) is not
 	// reset by a subsequent probe-success in the same tick.
 	preFail := make(map[string]int, len(s.pool.entries))
 	for id, e := range s.pool.entries {
-		jobs = append(jobs, job{id: id, state: e.state})
+		jobs = append(jobs, job{
+			id:          id,
+			state:       e.state,
+			cachedUsage: e.lastUsage,
+			cachedAt:    e.lastUsageAt,
+		})
 		preFail[id] = e.consecutiveFail
 	}
 	s.pool.mu.RUnlock()
 
 	for _, j := range jobs {
+		// Cache hit: skip the probe entirely. consecutiveFail is not
+		// touched — a transient failure earlier carries forward to
+		// the next probe (TTL expiry).
+		if j.cachedUsage != nil && s.clock.Now().Sub(j.cachedAt) < s.ttl {
+			if s.debug {
+				age := s.clock.Now().Sub(j.cachedAt).Round(time.Second)
+				fmt.Fprintf(errLog(), "ccm [debug]: cache hit %s(%s) (age %s, TTL %s)\n",
+					j.state.credName(), shortID(j.id), age, s.ttl)
+			}
+			continue
+		}
 		info, err := s.probe(j.state)
 		if err != nil {
-			if s.pool.singleton {
-				// Spec §"Logging" → "Pool-of-1 probe failure": distinct
-				// line so the operator knows the probe failed but no
-				// rotation is possible.
-				fmt.Fprintf(errLog(), "ccm: %s(%s) probe failed (singleton pool, no rotation): %v\n",
-					j.state.credName(), shortID(j.id), err)
-			} else {
-				fmt.Fprintf(errLog(), "ccm: probe failed for %s: %v\n", shortID(j.id), err)
-			}
+			fmt.Fprintf(errLog(), "ccm: probe failed for %s: %v\n", shortID(j.id), err)
 		}
 		s.pool.MarkProbe(j.id, info, err)
 	}

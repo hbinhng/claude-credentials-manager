@@ -44,12 +44,19 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 		cred        *store.Credential
 		feasibility float64
 	}
+	type passAEntry struct {
+		state *credState
+		cred  *store.Credential
+	}
 
 	pool := &credPool{entries: make(map[string]*poolEntry)}
 	var rejections []string
-	var admitted []admittedEntry
+	var passA []passAEntry
 
-	// Admission loop: refresh + usage probe (unchanged from v1.13.0).
+	// Pass A: token-validity admission. Refresh each cred; reject
+	// only on refresh failure. NO usage probe at this stage — the
+	// usage endpoint is rate-limited by Anthropic, so we want to
+	// avoid calling it for the singleton path entirely.
 	for _, cred := range resolved {
 		state := newCredState(cred)
 		if _, ferr := state.Fresh(); ferr != nil {
@@ -58,28 +65,57 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
 			continue
 		}
-		info := oauth.FetchUsageFn(cred.ClaudeAiOauth.AccessToken)
-		if info == nil || info.Error != "" {
-			reason := "usage probe returned nil"
-			if info != nil {
-				reason = info.Error
+		passA = append(passA, passAEntry{state: state, cred: cred})
+	}
+
+	var admitted []admittedEntry
+
+	// Pass B: usage probe — only when more than one cred passed Pass A.
+	// A singleton pool can't rotate, so the probe would be wasted
+	// API spend. The lone cred enters with lastUsage=nil; the
+	// scheduler's singleton bypass means that nil is never read.
+	if len(passA) > 1 {
+		for _, pa := range passA {
+			info := oauth.FetchUsageFn(pa.cred.ClaudeAiOauth.AccessToken)
+			if info == nil || info.Error != "" {
+				reason := "usage probe returned nil"
+				if info != nil {
+					reason = info.Error
+				}
+				msg := fmt.Sprintf("%s(%s): %s", credLogName(pa.cred), shortID(pa.cred.ID), reason)
+				rejections = append(rejections, msg)
+				fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
+				continue
 			}
-			msg := fmt.Sprintf("%s(%s): %s", credLogName(cred), shortID(cred.ID), reason)
-			rejections = append(rejections, msg)
-			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
-			continue
+			f := computeFeasibility(info, timeNow())
+			admitted = append(admitted, admittedEntry{
+				entry: &poolEntry{
+					state:           pa.state,
+					status:          statusCandidate,
+					lastUsage:       info,
+					lastUsageAt:     timeNow(),
+					lastFeasibility: f,
+				},
+				cred:        pa.cred,
+				feasibility: f,
+			})
 		}
-		f := computeFeasibility(info, timeNow())
+	} else if len(passA) == 1 {
+		// Singleton path: skip the probe; lone cred enters with
+		// lastUsage=nil. Capture loop and Promote work fine on this
+		// shape; the scheduler bypass guarantees the nil is never
+		// dereferenced via computeFeasibility.
+		pa := passA[0]
 		admitted = append(admitted, admittedEntry{
 			entry: &poolEntry{
-				state:           state,
+				state:           pa.state,
 				status:          statusCandidate,
-				lastUsage:       info,
-				lastUsageAt:     timeNow(),
-				lastFeasibility: f,
+				lastUsage:       nil,
+				lastUsageAt:     time.Time{},
+				lastFeasibility: 0,
 			},
-			cred:        cred,
-			feasibility: f,
+			cred:        pa.cred,
+			feasibility: 0,
 		})
 	}
 

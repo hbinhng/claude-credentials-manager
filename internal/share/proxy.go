@@ -318,6 +318,14 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 				// (with name, id8, and N/2 counter) per the spec; do
 				// not log here too.
 				pool.SignalActivatedFailed()
+			} else if r.StatusCode >= 200 && r.StatusCode < 300 {
+				if info := parseRatelimitHeadersFn(r.Header); info != nil {
+					pool.UpdateActiveFromHeaders(info)
+					if p.debug {
+						fmt.Fprintf(errLog(),
+							"ccm share [debug]: refreshed cache from response headers\n")
+					}
+				}
 			}
 			if existingMR != nil {
 				return existingMR(r)

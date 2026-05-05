@@ -290,8 +290,13 @@ func setupRefreshStub(t *testing.T) *atomic.Int32 {
 
 func TestBuildPoolImplicitAllRejected(t *testing.T) {
 	setupFakeHome(t)
+	// Two creds — the singleton path skips the usage probe, so to
+	// exercise the "all rejected by probe" rejection we need >1 cred
+	// to enter Pass B.
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
 	writeCredToFile(t, a)
+	writeCredToFile(t, b)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo {
 		return &oauth.UsageInfo{Error: "HTTP 403"}
 	})
@@ -510,5 +515,70 @@ func TestBuildPoolExpiredCredIsRefreshedNotSkipped(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Errorf("refresh calls = %d, want 1", got)
+	}
+}
+
+func TestBuildPool_Singleton_SkipsUsageProbe(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	writeCredToFile(t, a)
+
+	called := 0
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		called++
+		t.Errorf("oauth.FetchUsageFn was called for singleton pool")
+		return &oauth.UsageInfo{}
+	})
+
+	stubCaptureCredOK(t)
+
+	pool, initial, err := BuildPool(nil, "", false)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if pool == nil || initial == nil {
+		t.Fatalf("nil pool/initial: %v / %v", pool, initial)
+	}
+	if !pool.singleton {
+		t.Errorf("pool.singleton = false, want true")
+	}
+	if called != 0 {
+		t.Errorf("FetchUsageFn called %d times for singleton, want 0", called)
+	}
+	// Lone cred entered with lastUsage=nil per the spec.
+	if e := pool.entries[initial.ID]; e == nil {
+		t.Fatalf("initial cred not in pool.entries")
+	} else if e.lastUsage != nil {
+		t.Errorf("singleton lastUsage = %+v, want nil (probe skipped)", e.lastUsage)
+	}
+}
+
+func TestBuildPool_MultiCred_StillProbes(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	called := 0
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		called++
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 5},
+			{Name: "7d", Used: 5},
+		}}
+	})
+
+	stubCaptureCredOK(t)
+
+	pool, _, err := BuildPool(nil, "", false)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if pool.singleton {
+		t.Errorf("pool.singleton = true, want false (multi-cred)")
+	}
+	if called != 2 {
+		t.Errorf("FetchUsageFn called %d times, want 2 (one per cred)", called)
 	}
 }

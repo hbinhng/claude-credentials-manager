@@ -438,10 +438,17 @@ func TestProductionProbeOk(t *testing.T) {
 func TestSchedulerRunFiresOnTick(t *testing.T) {
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	// Multi-entry pool so the singleton bypass doesn't short-circuit
+	// runOnce — this test asserts Run() actually fires runOnce on
+	// every tick, not anything singleton-specific.
 	pool := &credPool{
-		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		entries: map[string]*poolEntry{
+			"a": {state: stateA, status: statusActivated},
+			"b": {state: stateB, status: statusCandidate},
+		},
 		activated: "a",
-		singleton: true,
+		singleton: false,
 	}
 	var probeCalls atomic.Int32
 	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
@@ -644,5 +651,221 @@ func TestSchedulerTickDoneSignalsAfterRunOnce(t *testing.T) {
 		// pulse received
 	default:
 		t.Fatal("TickDone did not pulse after runOnce")
+	}
+}
+
+func TestClampTTL(t *testing.T) {
+	cases := []struct {
+		in, want time.Duration
+	}{
+		{30 * time.Second, 10 * time.Minute},
+		{5 * time.Minute, 10 * time.Minute},
+		{10 * time.Minute, 10 * time.Minute},
+		{20 * time.Minute, 20 * time.Minute},
+		{59 * time.Minute, 59 * time.Minute},
+		{60 * time.Minute, 60 * time.Minute},
+		{2 * time.Hour, time.Hour},
+	}
+	for _, tc := range cases {
+		if got := clampTTL(tc.in); got != tc.want {
+			t.Errorf("clampTTL(%s) = %s, want %s", tc.in, got, tc.want)
+		}
+	}
+}
+
+func TestNewSchedulerTTLClamp(t *testing.T) {
+	pool := &credPool{entries: map[string]*poolEntry{}}
+	fc := newFakeClock(time.Now())
+
+	// 30s interval → 5×30s = 150s → clamped to 10min floor
+	sch := newScheduler(pool, nil, fc, 30*time.Second)
+	if sch.ttl != 10*time.Minute {
+		t.Errorf("30s interval: ttl=%s, want 10m", sch.ttl)
+	}
+
+	// 1h interval → 5×1h = 5h → clamped to 1h ceiling
+	sch = newScheduler(pool, nil, fc, time.Hour)
+	if sch.ttl != time.Hour {
+		t.Errorf("1h interval: ttl=%s, want 1h", sch.ttl)
+	}
+
+	// 5m default → 25m, no clamp
+	sch = newScheduler(pool, nil, fc, 5*time.Minute)
+	if sch.ttl != 25*time.Minute {
+		t.Errorf("5m interval: ttl=%s, want 25m", sch.ttl)
+	}
+}
+
+func TestRunOnce_CacheHit_SkipsProbe(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries: map[string]*poolEntry{
+			"a": {state: stateA, status: statusActivated,
+				lastUsage: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10}}},
+				lastUsageAt: now,
+			},
+			"b": {state: stateB, status: statusCandidate,
+				lastUsage: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 50}}},
+				lastUsageAt: now,
+			},
+		},
+		activated: "a",
+	}
+	probeCalled := false
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		probeCalled = true
+		t.Errorf("probe was called despite fresh cache")
+		return nil, nil
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, 5*time.Minute) // ttl=25m
+
+	// Advance fake clock by 1 minute — well within 25m TTL.
+	fc.Advance(1 * time.Minute)
+	sch.runOnce()
+
+	if probeCalled {
+		t.Fatal("probe must not be called when cache fresh")
+	}
+}
+
+func TestRunOnce_CacheMiss_ProbesAndUpdates(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries: map[string]*poolEntry{
+			"a": {state: stateA, status: statusActivated,
+				lastUsage: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10}}},
+				lastUsageAt: now.Add(-30 * time.Minute), // past 25m TTL
+			},
+			"b": {state: stateB, status: statusCandidate,
+				lastUsage: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 50}}},
+				lastUsageAt: now.Add(-30 * time.Minute),
+			},
+		},
+		activated: "a",
+	}
+	calls := 0
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		calls++
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 5}}}, nil
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
+
+	sch.runOnce()
+
+	if calls != 2 {
+		t.Errorf("probe calls = %d, want 2 (both creds past TTL)", calls)
+	}
+}
+
+func TestRunOnce_CacheMiss_ProbeFails_DoesNotAbortTick(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries: map[string]*poolEntry{
+			"a": {state: stateA, status: statusActivated,
+				lastUsage: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10}}},
+				lastUsageAt: now.Add(-30 * time.Minute),
+			},
+			"b": {state: stateB, status: statusCandidate,
+				lastUsage: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 50}}},
+				lastUsageAt: now.Add(-30 * time.Minute),
+			},
+		},
+		activated: "a",
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return nil, errors.New("blip")
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
+
+	// Tick must not panic. consecutiveFail bumps for both creds.
+	sch.runOnce()
+
+	if pool.entries["a"].consecutiveFail < 1 {
+		t.Errorf("a consecutiveFail = %d, want >= 1 after probe failure",
+			pool.entries["a"].consecutiveFail)
+	}
+	if pool.entries["b"].consecutiveFail < 1 {
+		t.Errorf("b consecutiveFail = %d, want >= 1 after probe failure",
+			pool.entries["b"].consecutiveFail)
+	}
+}
+
+func TestRunOnce_Singleton_NoProbeNoAlgorithm(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		activated: "a",
+		singleton: true,
+	}
+	probeCalled := false
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		probeCalled = true
+		t.Error("probe was called on singleton pool")
+		return nil, nil
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
+
+	sch.runOnce()
+
+	if probeCalled {
+		t.Fatal("singleton bypass failed: probe was called")
+	}
+	// tickDone must be pulsed even on bypass so test syncs don't hang.
+	select {
+	case <-sch.tickDone:
+	case <-time.After(time.Second):
+		t.Fatal("tickDone not pulsed on singleton bypass")
+	}
+	// activated unchanged
+	if pool.activated != "a" {
+		t.Errorf("activated = %q, want 'a'", pool.activated)
+	}
+}
+
+func TestRunOnce_CacheMiss_ProbeFails_NilLastUsage(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries: map[string]*poolEntry{
+			// activated has cached value; candidate has nil lastUsage.
+			"a": {state: stateA, status: statusActivated,
+				lastUsage:   &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10}}},
+				lastUsageAt: now,
+			},
+			"b": {state: stateB, status: statusCandidate,
+				lastUsage:   nil,
+				lastUsageAt: time.Time{},
+			},
+		},
+		activated: "a",
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		// b's probe fails; a's is a cache hit and not invoked.
+		if state.credID() == "b" {
+			return nil, errors.New("nope")
+		}
+		t.Errorf("probe called for %q (should be cache hit)", state.credID())
+		return nil, nil
+	}
+	fc := newFakeClock(now)
+	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
+
+	// Must not panic; the eligibility check filters out nil lastUsage.
+	sch.runOnce()
+
+	if pool.entries["b"].consecutiveFail < 1 {
+		t.Errorf("b consecutiveFail = %d, want >= 1", pool.entries["b"].consecutiveFail)
 	}
 }
