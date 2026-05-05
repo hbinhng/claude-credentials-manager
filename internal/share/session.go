@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"os"
+	"os/exec"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -447,4 +449,31 @@ func LastSchedulerTickDoneForTest() <-chan struct{} {
 		return s.TickDone()
 	}
 	return nil
+}
+
+// LaunchExec is the shape of the launch-time exec call. Production
+// uses exec.Command(...).Run with stdin/stdout/stderr inherited;
+// tests can swap via SetLaunchExecFnForTest to synthesize HTTP
+// traffic through the proxy without spawning a real claude binary.
+type LaunchExec func(name string, args []string, env []string) error
+
+var launchExecFn LaunchExec = func(name string, args []string, env []string) error {
+	cmd := exec.Command(name, args...)
+	cmd.Env = env
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+// LaunchExecFn returns the current launch exec function. Used by
+// cmd/launch.go to invoke claude.
+func LaunchExecFn() LaunchExec { return launchExecFn }
+
+// SetLaunchExecFnForTest overrides the launch exec for the duration
+// of a test. Returns a restorer the caller can defer.
+func SetLaunchExecFnForTest(fn LaunchExec) func() {
+	orig := launchExecFn
+	launchExecFn = fn
+	return func() { launchExecFn = orig }
 }
