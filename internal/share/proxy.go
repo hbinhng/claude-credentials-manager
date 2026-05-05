@@ -481,11 +481,19 @@ func (p *Proxy) director(req *http.Request) {
 	}
 
 	// Overlay captured identity headers on top of whatever the client sent.
-	// We take a snapshot under the read lock to avoid racing with
-	// Transition (which only writes once, but cheap anyway).
-	p.modeMu.RLock()
-	captured := p.captured
-	p.modeMu.RUnlock()
+	// In load-balance mode (pool != nil), read the per-cred headers
+	// from the pool so each rotation's headers reach upstream. In
+	// single-cred mode, take a snapshot of p.captured under the read
+	// lock to avoid racing with Transition (which only writes once,
+	// but cheap anyway).
+	var captured http.Header
+	if p.pool != nil {
+		captured = p.pool.activatedHeaders()
+	} else {
+		p.modeMu.RLock()
+		captured = p.captured
+		p.modeMu.RUnlock()
+	}
 	for k, vs := range captured {
 		req.Header[k] = append([]string(nil), vs...)
 	}
