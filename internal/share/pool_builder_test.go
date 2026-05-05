@@ -1,6 +1,7 @@
 package share
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -52,8 +53,22 @@ func writeCredToFile(t *testing.T, c *store.Credential) {
 // NOTE: setupFakeHome already exists at credstate_test.go:21 with
 // the same signature — REUSE it; do NOT redefine here.
 
+// stubCaptureCredOK installs a default captureCredFn that returns a
+// minimal canned header set for any cred. Used by BuildPool tests
+// that don't care about per-cred header content but need capture
+// to succeed (otherwise BuildPool would attempt to spawn `claude`).
+func stubCaptureCredOK(t *testing.T) {
+	t.Helper()
+	orig := captureCredFn
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"stub"}}, nil
+	}
+	t.Cleanup(func() { captureCredFn = orig })
+}
+
 func TestBuildPoolNoArgsUsesAllValid(t *testing.T) {
 	setupFakeHome(t)
+	stubCaptureCredOK(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
 	writeCredToFile(t, a)
@@ -83,6 +98,7 @@ func TestBuildPoolNoArgsUsesAllValid(t *testing.T) {
 
 func TestBuildPoolExplicitArgs(t *testing.T) {
 	setupFakeHome(t)
+	stubCaptureCredOK(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
 	c := makeCredWithExpiry(t, "33333333-3333-3333-3333-333333333333", "carol", 6*time.Hour)
@@ -108,6 +124,7 @@ func TestBuildPoolExplicitArgs(t *testing.T) {
 
 func TestBuildPoolDedupesArgs(t *testing.T) {
 	setupFakeHome(t)
+	stubCaptureCredOK(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	writeCredToFile(t, a)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
@@ -136,6 +153,7 @@ func TestBuildPoolUnresolvedArgFatal(t *testing.T) {
 
 func TestBuildPoolUsageProbeRejectsCred(t *testing.T) {
 	setupFakeHome(t)
+	stubCaptureCredOK(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
 	writeCredToFile(t, a)
@@ -184,6 +202,7 @@ func TestBuildPoolEmptyStoreFatal(t *testing.T) {
 
 func TestBuildPoolPicksHighestFeasibilityInitial(t *testing.T) {
 	setupFakeHome(t)
+	stubCaptureCredOK(t)
 	// alice: low quota, distant reset; bob: high quota, short reset
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
 	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
@@ -298,8 +317,142 @@ func TestJoinLinesEmpty(t *testing.T) {
 	}
 }
 
+func TestBuildPoolCapturesInitialActivated(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	writeCredToFile(t, a)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 10, ResetsAt: time.Now().Add(time.Hour).Format(time.RFC3339)},
+			{Name: "7d", Used: 5, ResetsAt: time.Now().Add(24 * time.Hour).Format(time.RFC3339)},
+		}}
+	})
+
+	// Stub captureCredFn.
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCalls := 0
+	captureCredFn = func(cred *store.Credential, _ string) (http.Header, error) {
+		captureCalls++
+		return http.Header{"X-Cred": []string{cred.Name}}, nil
+	}
+
+	pool, initialCred, err := BuildPool(nil)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if captureCalls != 1 {
+		t.Errorf("captureCalls = %d, want 1", captureCalls)
+	}
+	if initialCred.ID != a.ID {
+		t.Errorf("initial = %s, want alice", initialCred.ID)
+	}
+	if got := pool.entries[a.ID].captured.Get("X-Cred"); got != "alice" {
+		t.Errorf("captured X-Cred = %q, want alice", got)
+	}
+}
+
+func TestBuildPoolFallsThroughToNextBestOnCaptureFailure(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	// Make alice the higher-feasibility cred.
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		if strings.Contains(token, "1111") {
+			return &oauth.UsageInfo{Quotas: []oauth.Quota{
+				{Name: "5h", Used: 10, ResetsAt: time.Now().Add(time.Hour).Format(time.RFC3339)},
+				{Name: "7d", Used: 5, ResetsAt: time.Now().Add(time.Hour).Format(time.RFC3339)},
+			}}
+		}
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 90, ResetsAt: time.Now().Add(4 * time.Hour).Format(time.RFC3339)},
+			{Name: "7d", Used: 80, ResetsAt: time.Now().Add(7 * 24 * time.Hour).Format(time.RFC3339)},
+		}}
+	})
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(cred *store.Credential, _ string) (http.Header, error) {
+		if cred.Name == "alice" {
+			return nil, errors.New("alice capture broken")
+		}
+		return http.Header{"X-Cred": []string{cred.Name}}, nil
+	}
+
+	pool, initialCred, err := BuildPool(nil)
+	if err != nil {
+		t.Fatalf("BuildPool: %v", err)
+	}
+	if initialCred.ID != b.ID {
+		t.Errorf("initial = %s, want bob (alice capture failed)", initialCred.ID)
+	}
+	if _, present := pool.entries[a.ID]; present {
+		t.Errorf("alice should not be in pool entries")
+	}
+	if got := pool.entries[b.ID].captured.Get("X-Cred"); got != "bob" {
+		t.Errorf("captured X-Cred = %q, want bob", got)
+	}
+}
+
+func TestBuildPoolImplicitAllCapturesFailFatal(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	writeCredToFile(t, a)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{}
+	})
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return nil, errors.New("everything broken")
+	}
+
+	_, _, err := BuildPool(nil)
+	if err == nil {
+		t.Fatal("BuildPool: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no candidate could be captured") &&
+		!strings.Contains(err.Error(), "no usable credentials") {
+		t.Errorf("error %q unexpected", err)
+	}
+}
+
+func TestBuildPoolExplicitArgCaptureFailureFatal(t *testing.T) {
+	setupFakeHome(t)
+	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
+	writeCredToFile(t, a)
+	writeCredToFile(t, b)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(cred *store.Credential, _ string) (http.Header, error) {
+		if cred.Name == "alice" {
+			return nil, errors.New("alice capture broken")
+		}
+		return http.Header{}, nil
+	}
+
+	_, _, err := BuildPool([]string{"alice", "bob"})
+	if err == nil {
+		t.Fatal("BuildPool: want fatal error for explicit cred capture failure, got nil")
+	}
+	if !strings.Contains(err.Error(), "alice") {
+		t.Errorf("error %q does not mention alice", err)
+	}
+}
+
 func TestBuildPoolExpiredCredIsRefreshedNotSkipped(t *testing.T) {
 	setupFakeHome(t)
+	stubCaptureCredOK(t)
 	calls := setupRefreshStub(t)
 
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", -time.Hour) // expired

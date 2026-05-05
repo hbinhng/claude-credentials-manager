@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 // makePoolForTest builds a pool with N pre-admitted credentials
@@ -160,6 +161,15 @@ func TestLoadBalanceGoroutineLeak(t *testing.T) {
 
 	stubServer := setupRefreshStub(t)
 	_ = stubServer
+
+	// Stub captureCredFn for BuildPool's per-cred capture. Stub
+	// captureFn too as a defensive belt — single-cred mode is not
+	// hit here, but keeping both in sync prevents accidental fan-out.
+	origCapCred := captureCredFn
+	defer func() { captureCredFn = origCapCred }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"test"}}, nil
+	}
 
 	pool, initialCred, err := BuildPool(nil)
 	if err != nil {
