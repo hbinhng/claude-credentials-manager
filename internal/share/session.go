@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
@@ -378,3 +379,72 @@ func (f *FakeClock) Advance(d time.Duration)               { f.inner.Advance(d) 
 func (f *FakeClock) Now() time.Time                        { return f.inner.Now() }
 func (f *FakeClock) NewTimer(d time.Duration) clockTimer   { return f.inner.NewTimer(d) }
 func (f *FakeClock) NewTicker(d time.Duration) clockTicker { return f.inner.NewTicker(d) }
+
+// PoolBackgroundOptions carries the public knobs for
+// StartPoolBackground. Capture/clock seams stay package-internal —
+// callers select share-mode vs launch-mode via SkipCapture.
+type PoolBackgroundOptions struct {
+	RebalanceInterval time.Duration
+	Debug             bool
+	SkipCapture       bool   // true → scheduler skipCapture=true (launch)
+	Prompt            string // unused when SkipCapture
+}
+
+// StartPoolBackground spawns per-cred refresh timers + the rotation
+// scheduler goroutine. They exit when done is closed (typically the
+// channel returned by LocalProxy.Done()). Pre-flight: if pool.Fresh()
+// fails synchronously, the scheduler's runOnce is invoked once to
+// attempt rotation; a second pool.Fresh() failure surfaces as a fatal
+// error from this function.
+//
+// The pre-flight scheduler is the SAME scheduler instance used by the
+// long-running goroutine. This matters: it inherits skipCapture,
+// prompt, and debug from opts so a launch-mode pre-flight does not
+// accidentally call captureCredFn (which would fail because there is
+// no spawned claude to drive an ephemeral capture).
+func StartPoolBackground(done <-chan struct{}, pool *credPool, opts PoolBackgroundOptions) error {
+	c := clock(realClock{})
+
+	// Build the scheduler ONCE, configured per opts. Used both for
+	// pre-flight (synchronous runOnce) and the long-running goroutine.
+	sch := newScheduler(pool, productionProbe, c, opts.RebalanceInterval)
+	sch.skipCapture = opts.SkipCapture
+	sch.prompt = opts.Prompt
+	sch.SetDebug(opts.Debug)
+
+	if _, err := pool.Fresh(); err != nil {
+		sch.runOnce()
+		if _, err := pool.Fresh(); err != nil {
+			return fmt.Errorf("pool pre-flight: no usable credential: %w", err)
+		}
+	}
+
+	for _, e := range pool.entries {
+		state := e.state
+		go runRefreshTimer(state, c, jitterFn, done)
+	}
+
+	go sch.Run(done)
+
+	// Tests can grab the scheduler via lastSchedulerForTest below.
+	lastSchedulerForTest.Store(sch)
+
+	return nil
+}
+
+// lastSchedulerForTest records the most recently constructed
+// scheduler from StartPoolBackground so tests can observe TickDone()
+// without restructuring the public API. Production code never reads
+// this value.
+var lastSchedulerForTest atomic.Pointer[scheduler]
+
+// LastSchedulerTickDoneForTest returns the TickDone channel of the
+// most recently constructed scheduler from StartPoolBackground.
+// Test-only. Returns nil if StartPoolBackground has never been
+// called.
+func LastSchedulerTickDoneForTest() <-chan struct{} {
+	if s := lastSchedulerForTest.Load(); s != nil {
+		return s.TickDone()
+	}
+	return nil
+}
