@@ -261,23 +261,31 @@ type PoolReader interface {
 	SnapshotLines() []string
 }
 
-// SnapshotLines renders one log-friendly line per entry.
+// SnapshotLines renders one log-friendly line per entry. Reads
+// directly from p.entries under p.mu.RLock — does not call Snapshot
+// (which takes its own RLock; sync.RWMutex does not allow recursive
+// RLocks).
 func (p *credPool) SnapshotLines() []string {
-	snap := p.Snapshot()
-	out := make([]string, 0, len(snap))
-	for _, v := range snap {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	out := make([]string, 0, len(p.entries))
+	for id, e := range p.entries {
 		last := "never"
-		if !v.lastUsageAt.IsZero() {
-			last = v.lastUsageAt.Format(time.RFC3339)
+		if !e.lastUsageAt.IsZero() {
+			last = e.lastUsageAt.Format(time.RFC3339)
 		}
-		name := v.name
+		name := e.state.credName()
 		if name == "" {
-			name = shortID(v.id)
+			name = shortID(id)
 		} else {
-			name = fmt.Sprintf("%s(%s)", name, shortID(v.id))
+			name = fmt.Sprintf("%s(%s)", name, shortID(id))
 		}
-		out = append(out, fmt.Sprintf("  %s status=%s fail=%d feasibility=%.3f last=%s",
-			name, v.status, v.consecutiveFail, v.lastFeasibility, last))
+		hdrs := "unset"
+		if e.captured != nil {
+			hdrs = fmt.Sprintf("%d", len(e.captured))
+		}
+		out = append(out, fmt.Sprintf("  %s status=%s fail=%d feasibility=%.3f last=%s headers=%s",
+			name, e.status, e.consecutiveFail, e.lastFeasibility, last, hdrs))
 	}
 	return out
 }
