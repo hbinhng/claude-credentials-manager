@@ -9,6 +9,7 @@ package share
 import (
 	"fmt"
 	"math"
+	"net/http"
 	"sort"
 	"time"
 
@@ -83,20 +84,39 @@ func productionProbe(state poolEntryState) (*oauth.UsageInfo, error) {
 }
 
 type scheduler struct {
-	pool     *credPool
-	probe    usageProbe
-	clock    clock
-	interval time.Duration
-	debug    bool
-	prompt   string // passed to captureCredFn during rotation; empty → DefaultCapturePrompt
+	pool        *credPool
+	probe       usageProbe
+	clock       clock
+	interval    time.Duration
+	debug       bool
+	prompt      string // passed to captureCredFn during rotation; empty → DefaultCapturePrompt
+	skipCapture bool   // launch --load-balance: short-circuit captureCredFn in branch (b)
+
+	// tickDone is pulsed at the end of every runOnce (buffered size
+	// 1; unread pulses coalesce). Tests use it to synchronize
+	// fake-clock advances with rotation completion.
+	tickDone chan struct{}
 }
 
 func newScheduler(pool *credPool, probe usageProbe, c clock, interval time.Duration) *scheduler {
-	return &scheduler{pool: pool, probe: probe, clock: c, interval: interval}
+	return &scheduler{
+		pool:     pool,
+		probe:    probe,
+		clock:    c,
+		interval: interval,
+		tickDone: make(chan struct{}, 1),
+	}
 }
 
 // SetDebug enables verbose tick-keep logs.
 func (s *scheduler) SetDebug(b bool) { s.debug = b }
+
+// TickDone returns a channel pulsed at the end of every runOnce
+// call. Buffered size 1; unread pulses coalesce. Used by tests
+// (and StartPoolBackground via LastSchedulerTickDoneForTest) to
+// synchronize on rotation completion without restructuring the
+// public API.
+func (s *scheduler) TickDone() <-chan struct{} { return s.tickDone }
 
 // Run blocks until done is closed, firing runOnce on every tick.
 func (s *scheduler) Run(done <-chan struct{}) {
@@ -264,14 +284,21 @@ func (s *scheduler) runOnce() {
 
 			s.pool.mu.Unlock()
 
-			headers, cerr := captureCredFn(winnerCred, s.prompt)
-			if cerr != nil {
-				fmt.Fprintf(errLog(), "ccm: capture failed for %s(%s): %v — skipping rotation\n",
-					winnerName, shortID(winner.id), cerr)
-			} else {
-				// Atomic swap via Promote — handles old-activated
-				// demotion semantics (preserve counter on degraded;
-				// reset on healthy) and stores the new headers.
+			var headers http.Header
+			var cerr error
+			if !s.skipCapture {
+				headers, cerr = captureCredFn(winnerCred, s.prompt)
+				if cerr != nil {
+					fmt.Fprintf(errLog(), "ccm: capture failed for %s(%s): %v — skipping rotation\n",
+						winnerName, shortID(winner.id), cerr)
+				}
+			}
+			if cerr == nil {
+				// Either skipCapture=true (headers stays nil) or
+				// capture succeeded (headers populated). Atomic swap
+				// via Promote — handles old-activated demotion
+				// semantics (preserve counter on degraded; reset on
+				// healthy) and stores the new headers.
 				s.pool.Promote(winner.id, headers)
 				pending = logEntry{
 					kind: "rotate", oldName: oldName, newName: winnerName,
@@ -301,7 +328,14 @@ func (s *scheduler) runOnce() {
 		_ = pending.oldName
 		_ = pending.oldID
 	case "keep":
-		fmt.Fprintf(errLog(), "ccm share [debug]: no eligible candidate, keeping activated %s(%s)\n",
+		fmt.Fprintf(errLog(), "ccm [debug]: no eligible candidate, keeping activated %s(%s)\n",
 			pending.oldName, shortID(pending.oldID))
+	}
+
+	// Pulse tickDone (non-blocking; size-1 buffer coalesces pulses).
+	// Used by tests to synchronize with rotation completion.
+	select {
+	case s.tickDone <- struct{}{}:
+	default:
 	}
 }

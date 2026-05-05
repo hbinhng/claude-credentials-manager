@@ -582,3 +582,67 @@ func TestSchedulerSuccessfulCaptureStoresHeadersAndPromotes(t *testing.T) {
 		t.Errorf("b captured X-Cred = %q, want b", got)
 	}
 }
+
+func TestSchedulerSkipCaptureRotatesWithoutCapture(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	probes := map[string]*oauth.UsageInfo{
+		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
+		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return probes[state.credID()], nil
+	}
+
+	captureCalls := 0
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		captureCalls++
+		return http.Header{}, nil
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.skipCapture = true
+	sch.runOnce()
+
+	if captureCalls != 0 {
+		t.Errorf("captureCalls = %d, want 0 (skipCapture must short-circuit)", captureCalls)
+	}
+	if pool.activated != "b" {
+		t.Errorf("activated = %q, want b", pool.activated)
+	}
+	if pool.entries["b"].captured != nil {
+		t.Errorf("b.captured = %v, want nil (skipCapture path stores nil)", pool.entries["b"].captured)
+	}
+}
+
+func TestSchedulerTickDoneSignalsAfterRunOnce(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		activated: "a",
+		singleton: true,
+	}
+	probeFn := func(_ poolEntryState) (*oauth.UsageInfo, error) {
+		return &oauth.UsageInfo{}, nil
+	}
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+
+	// runOnce should pulse tickDone exactly once.
+	sch.runOnce()
+
+	select {
+	case <-sch.TickDone():
+		// pulse received
+	default:
+		t.Fatal("TickDone did not pulse after runOnce")
+	}
+}
