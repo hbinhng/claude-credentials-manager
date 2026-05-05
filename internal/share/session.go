@@ -349,6 +349,14 @@ func ResetCaptureFnForTest() {
 	captureFn = runCapture
 }
 
+// SetCaptureCredFnForTest overrides captureCredFn for the duration
+// of a test. Returns a restorer the caller can defer.
+func SetCaptureCredFnForTest(fn func(*store.Credential, string) (http.Header, error)) func() {
+	orig := captureCredFn
+	captureCredFn = fn
+	return func() { captureCredFn = orig }
+}
+
 func SetCloudflaredFnForTest(fn func(context.Context, string) (*Tunnel, string, error)) {
 	startCloudflaredFn = fn
 }
