@@ -196,7 +196,7 @@ func TestLoadBalanceGoroutineLeak(t *testing.T) {
 		return http.Header{"User-Agent": []string{"test"}}, nil
 	}
 
-	pool, initialCred, err := BuildPool(nil, "")
+	pool, initialCred, err := BuildPool(nil, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}

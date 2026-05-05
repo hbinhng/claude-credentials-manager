@@ -81,7 +81,7 @@ func TestBuildPoolNoArgsUsesAllValid(t *testing.T) {
 		}}
 	})
 
-	pool, initial, err := BuildPool(nil, "")
+	pool, initial, err := BuildPool(nil, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestBuildPoolExplicitArgs(t *testing.T) {
 		return &oauth.UsageInfo{}
 	})
 
-	pool, _, err := BuildPool([]string{"alice", "carol"}, "")
+	pool, _, err := BuildPool([]string{"alice", "carol"}, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -129,7 +129,7 @@ func TestBuildPoolDedupesArgs(t *testing.T) {
 	writeCredToFile(t, a)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
 
-	pool, _, err := BuildPool([]string{"alice", "alice", "11111111"}, "")
+	pool, _, err := BuildPool([]string{"alice", "alice", "11111111"}, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -145,7 +145,7 @@ func TestBuildPoolUnresolvedArgFatal(t *testing.T) {
 	setupFakeHome(t)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
 
-	_, _, err := BuildPool([]string{"nonexistent"}, "")
+	_, _, err := BuildPool([]string{"nonexistent"}, "", false)
 	if err == nil {
 		t.Fatal("BuildPool succeeded with unresolvable arg")
 	}
@@ -166,7 +166,7 @@ func TestBuildPoolUsageProbeRejectsCred(t *testing.T) {
 		return &oauth.UsageInfo{}
 	})
 
-	pool, _, err := BuildPool(nil, "") // implicit pool — partial reject is OK
+	pool, _, err := BuildPool(nil, "", false) // implicit pool — partial reject is OK
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestBuildPoolExplicitArgRejectedFatal(t *testing.T) {
 		return &oauth.UsageInfo{Error: "HTTP 403"}
 	})
 
-	_, _, err := BuildPool([]string{"alice"}, "")
+	_, _, err := BuildPool([]string{"alice"}, "", false)
 	if err == nil {
 		t.Fatal("BuildPool succeeded when explicitly-named alice failed probe")
 	}
@@ -194,7 +194,7 @@ func TestBuildPoolEmptyStoreFatal(t *testing.T) {
 	setupFakeHome(t)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
 
-	_, _, err := BuildPool(nil, "")
+	_, _, err := BuildPool(nil, "", false)
 	if err == nil {
 		t.Fatal("BuildPool succeeded with empty store")
 	}
@@ -222,7 +222,7 @@ func TestBuildPoolPicksHighestFeasibilityInitial(t *testing.T) {
 		}}
 	})
 
-	pool, initial, err := BuildPool(nil, "")
+	pool, initial, err := BuildPool(nil, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestBuildPoolImplicitAllRejected(t *testing.T) {
 		return &oauth.UsageInfo{Error: "HTTP 403"}
 	})
 
-	_, _, err := BuildPool(nil, "")
+	_, _, err := BuildPool(nil, "", false)
 	if err == nil {
 		t.Fatal("BuildPool succeeded with implicit pool but every cred rejected")
 	}
@@ -285,7 +285,7 @@ func TestBuildPoolRefreshFailureRejectsCred(t *testing.T) {
 	writeCredToFile(t, a)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
 
-	_, _, err := BuildPool([]string{"alice"}, "")
+	_, _, err := BuildPool([]string{"alice"}, "", false)
 	if err == nil {
 		t.Fatal("BuildPool succeeded with refresh-failing cred named explicitly")
 	}
@@ -338,7 +338,7 @@ func TestBuildPoolCapturesInitialActivated(t *testing.T) {
 		return http.Header{"X-Cred": []string{cred.Name}}, nil
 	}
 
-	pool, initialCred, err := BuildPool(nil, "")
+	pool, initialCred, err := BuildPool(nil, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestBuildPoolFallsThroughToNextBestOnCaptureFailure(t *testing.T) {
 		return http.Header{"X-Cred": []string{cred.Name}}, nil
 	}
 
-	pool, initialCred, err := BuildPool(nil, "")
+	pool, initialCred, err := BuildPool(nil, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestBuildPoolImplicitAllCapturesFailFatal(t *testing.T) {
 		return nil, errors.New("everything broken")
 	}
 
-	_, _, err := BuildPool(nil, "")
+	_, _, err := BuildPool(nil, "", false)
 	if err == nil {
 		t.Fatal("BuildPool: want error, got nil")
 	}
@@ -441,7 +441,7 @@ func TestBuildPoolExplicitArgCaptureFailureFatal(t *testing.T) {
 		return http.Header{}, nil
 	}
 
-	_, _, err := BuildPool([]string{"alice", "bob"}, "")
+	_, _, err := BuildPool([]string{"alice", "bob"}, "", false)
 	if err == nil {
 		t.Fatal("BuildPool: want fatal error for explicit cred capture failure, got nil")
 	}
@@ -459,7 +459,7 @@ func TestBuildPoolExpiredCredIsRefreshedNotSkipped(t *testing.T) {
 	writeCredToFile(t, a)
 	withFakeUsage(t, func(token string) *oauth.UsageInfo { return &oauth.UsageInfo{} })
 
-	pool, _, err := BuildPool(nil, "")
+	pool, _, err := BuildPool(nil, "", false)
 	if err != nil {
 		t.Fatalf("BuildPool: %v", err)
 	}

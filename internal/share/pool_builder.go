@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"time"
 
@@ -25,7 +26,14 @@ import (
 // promotion time). On capture failure, BuildPool falls through to
 // the next-best cred (implicit pool) or returns a fatal error
 // (explicit pool).
-func BuildPool(args []string, prompt string) (*credPool, *store.Credential, error) {
+//
+// When skipCapture is true (launch --load-balance mode), the capture
+// loop short-circuits: the highest-feasibility admitted cred becomes
+// the initial activated with captured=nil, and the remaining
+// admitted creds enter as candidates with captured=nil. The spawned
+// claude provides its own outbound headers via LocalProxy, so per-
+// cred capture is unnecessary.
+func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *store.Credential, error) {
 	explicit := len(args) > 0
 	resolved, err := resolvePoolArgs(args)
 	if err != nil {
@@ -96,18 +104,25 @@ func BuildPool(args []string, prompt string) (*credPool, *store.Credential, erro
 	var captureRejects []string
 	captureFailedIDs := make(map[string]bool)
 	for _, ad := range admitted {
-		headers, cerr := captureCredFn(ad.cred, prompt) // empty → DefaultCapturePrompt in RunCapture
-		if cerr != nil {
-			msg := fmt.Sprintf("%s(%s): capture failed: %v", credLogName(ad.cred), shortID(ad.cred.ID), cerr)
-			captureRejects = append(captureRejects, msg)
-			captureFailedIDs[ad.cred.ID] = true
-			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
-			if explicit {
-				return nil, nil, fmt.Errorf("ccm: explicitly named credential(s) failed capture:\n  %s",
-					joinLines(captureRejects))
+		var headers http.Header
+		if !skipCapture {
+			h, cerr := captureCredFn(ad.cred, prompt) // empty → DefaultCapturePrompt in RunCapture
+			if cerr != nil {
+				msg := fmt.Sprintf("%s(%s): capture failed: %v", credLogName(ad.cred), shortID(ad.cred.ID), cerr)
+				captureRejects = append(captureRejects, msg)
+				captureFailedIDs[ad.cred.ID] = true
+				fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
+				if explicit {
+					return nil, nil, fmt.Errorf("ccm: explicitly named credential(s) failed capture:\n  %s",
+						joinLines(captureRejects))
+				}
+				continue
 			}
-			continue
+			headers = h
 		}
+		// skipCapture=true → headers stays nil. Promote stores nil
+		// (guarded by `if headers != nil`); LocalProxy.director never
+		// reads activatedHeaders in launch mode.
 		ad.entry.status = statusActivated
 		ad.entry.captured = headers
 		pool.entries[ad.cred.ID] = ad.entry

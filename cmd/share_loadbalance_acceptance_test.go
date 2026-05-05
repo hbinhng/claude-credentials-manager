@@ -136,7 +136,7 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	}
 	sessC := make(chan share.Session, 1)
 	go func() {
-		pool, initialCred, err := share.BuildPool(nil, "")
+		pool, initialCred, err := share.BuildPool(nil, "", false)
 		if err != nil {
 			t.Errorf("BuildPool: %v", err)
 			return
