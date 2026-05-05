@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,47 @@ func TestLocalProxyModifyResponseSignalsActivatedFailed(t *testing.T) {
 
 	if got := pool.entries["aaaaaaaa"].consecutiveFail; got != 1 {
 		t.Errorf("consecutiveFail after upstream 401 = %d, want 1", got)
+	}
+}
+
+func TestStartPoolBackgroundGoroutineLeak(t *testing.T) {
+	stateA := &fakeRefreshableState{id: "a", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	pool := &credPool{
+		entries:   map[string]*poolEntry{"a": {state: stateA, status: statusActivated}},
+		activated: "a",
+		singleton: true,
+	}
+	lp, err := NewLocalProxyWithPool(pool, false)
+	if err != nil {
+		t.Fatalf("NewLocalProxyWithPool: %v", err)
+	}
+	go func() { _ = lp.Start() }()
+	waitForListener(t, lp.Addr())
+
+	before := runtime.NumGoroutine()
+	if err := StartPoolBackground(lp.Done(), pool, PoolBackgroundOptions{
+		RebalanceInterval: time.Minute, SkipCapture: true,
+	}); err != nil {
+		t.Fatalf("StartPoolBackground: %v", err)
+	}
+	// Confirm goroutines spawned.
+	if got := runtime.NumGoroutine(); got <= before {
+		t.Errorf("no goroutines spawned (before=%d, after=%d)", before, got)
+	}
+	if err := lp.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	// Allow goroutines to drain. Tolerance is +2 because background
+	// HTTP transport idle-conn goroutines may linger briefly.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if runtime.NumGoroutine() <= before+2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := runtime.NumGoroutine(); got > before+2 {
+		t.Errorf("goroutine leak: before=%d after-Close=%d", before, got)
 	}
 }
 
