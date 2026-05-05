@@ -497,3 +497,65 @@ func TestSnapshotIsDeepCopy(t *testing.T) {
 		t.Errorf("Snapshot leaked aliasing — pool counter = %d, want 7", got)
 	}
 }
+
+func TestUpdateActiveFromHeaders_Happy(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{token: "tok-a"}),
+	})
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{
+		{Name: "5h", Used: 20, ResetsAt: "2026-05-05T12:00:00Z"},
+		{Name: "7d", Used: 74, ResetsAt: "2026-05-08T12:00:00Z"},
+	}}
+
+	before := time.Now()
+	p.UpdateActiveFromHeaders(info)
+	after := time.Now()
+
+	got := p.entries["a"]
+	if got.lastUsage != info {
+		t.Errorf("lastUsage not assigned: %+v", got.lastUsage)
+	}
+	if got.lastUsageAt.Before(before) || got.lastUsageAt.After(after) {
+		t.Errorf("lastUsageAt = %v, want between %v and %v", got.lastUsageAt, before, after)
+	}
+}
+
+func TestUpdateActiveFromHeaders_NoActive(t *testing.T) {
+	p := makePool("", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusCandidate, &fakeTokenSource{token: "tok-a"}),
+	})
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 50}}}
+	// Should be a no-op; no panic.
+	p.UpdateActiveFromHeaders(info)
+	if p.entries["a"].lastUsage != nil {
+		t.Errorf("entry mutated despite no active: %+v", p.entries["a"].lastUsage)
+	}
+}
+
+func TestUpdateActiveFromHeaders_ResetsFailCounter(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{token: "tok-a"}),
+	})
+	p.entries["a"].consecutiveFail = 1
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 50}}}
+	p.UpdateActiveFromHeaders(info)
+	if got := p.entries["a"].consecutiveFail; got != 0 {
+		t.Errorf("consecutiveFail = %d after successful update, want 0", got)
+	}
+}
+
+func TestUpdateActiveFromHeaders_NilInfo(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{token: "tok-a"}),
+	})
+	p.entries["a"].consecutiveFail = 3
+	// Defensive: nil info is no-op (proxy closure already nil-checks
+	// but tests / future callers shouldn't have to).
+	p.UpdateActiveFromHeaders(nil)
+	if got := p.entries["a"].consecutiveFail; got != 3 {
+		t.Errorf("consecutiveFail mutated despite nil info: %d", got)
+	}
+	if p.entries["a"].lastUsage != nil {
+		t.Errorf("lastUsage mutated despite nil info: %+v", p.entries["a"].lastUsage)
+	}
+}

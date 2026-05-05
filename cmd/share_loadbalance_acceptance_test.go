@@ -184,11 +184,14 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	}
 	bearersMu.Unlock()
 
-	// Flip the profile and advance the fake clock past one tick.
+	// Flip the profile and advance the fake clock past the cache TTL
+	// so the next tick re-probes and rotates. With the 30s rebalance
+	// interval, TTL clamps to its 10-minute floor — advance beyond
+	// that to force a probe.
 	currentProfile.Store(&highBob)
-	fc.Advance(31 * time.Second)
-	// Allow scheduler goroutine to run.
-	time.Sleep(100 * time.Millisecond)
+	fc.Advance(11 * time.Minute)
+	// Allow scheduler goroutine to run all ticks fired by the advance.
+	time.Sleep(200 * time.Millisecond)
 
 	// Second request — should now use bob's bearer.
 	req2, _ := http.NewRequest("POST", sess.Reach()+"/v1/messages", strings.NewReader(`{}`))

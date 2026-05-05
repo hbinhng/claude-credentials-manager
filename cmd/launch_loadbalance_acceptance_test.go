@@ -42,11 +42,13 @@ func TestAcceptanceLaunchLoadBalanceRotation(t *testing.T) {
 		t.Skip("acceptance test waits ~30s for a real scheduler tick; skipped under -short")
 	}
 
-	// Clear any scheduler stashed by a prior test in this binary
-	// so LastSchedulerTickDoneForTest reflects the scheduler this
-	// test starts.
+	// Clear any scheduler/pool stashed by a prior test in this binary
+	// so LastSchedulerTickDoneForTest / ExpireLastPoolCacheForTest
+	// reflect the scheduler+pool this test starts.
 	share.ResetLastSchedulerForTest()
+	share.ResetLastPoolForTest()
 	t.Cleanup(share.ResetLastSchedulerForTest)
+	t.Cleanup(share.ResetLastPoolForTest)
 
 	setupAcceptanceFakeHome(t)
 
@@ -203,7 +205,11 @@ func TestAcceptanceLaunchLoadBalanceRotation(t *testing.T) {
 	default:
 	}
 
-	// Flip the profile; the next scheduler tick will rotate.
+	// Flip the profile; the next scheduler tick will rotate. With the
+	// usage-cache TTL (clamped floor of 10min), the tick would
+	// short-circuit on a fresh cache and skip the rotation; manually
+	// expire the cache so the next probe fires.
+	share.ExpireLastPoolCacheForTest()
 	currentProfile.Store(strPtr("bob"))
 
 	// Wait deterministically for the post-flip tick to complete.

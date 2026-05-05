@@ -200,6 +200,42 @@ func (p *credPool) Demote(oldID string) {
 	p.activated = ""
 }
 
+// UpdateActiveFromHeaders is the hot-path cache refresh from a live
+// /v1/messages response. Called from Proxy.ModifyResponse after a
+// successful (2xx) response. Replaces the active cred's lastUsage
+// with the header-derived value and refreshes the cache TTL.
+//
+// Trade-off intentionally accepted: header values measure a different
+// ceiling than /api/oauth/usage (sliding rate-limit window vs. session
+// quota cap). We replace anyway because the feasibility formula stays
+// monotonic in "less used", and probe-rate reduction is the goal.
+// See docs/superpowers/specs/2026-05-05-usage-cache-design.md.
+//
+// No-op when activated is empty (e.g. degraded pool) or info is nil.
+func (p *credPool) UpdateActiveFromHeaders(info *oauth.UsageInfo) {
+	if info == nil {
+		// coverage: unreachable in production — proxy.go closure already
+		// gates on `info != nil`; defensive guard kept so direct callers
+		// (tests, future consumers) don't have to nil-check.
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.activated == "" {
+		return
+	}
+	e, ok := p.entries[p.activated]
+	if !ok {
+		// coverage: unreachable in production — activated is always a
+		// key in entries (Promote/Demote maintain the invariant).
+		// Defensive guard for activated/entries divergence.
+		return
+	}
+	e.lastUsage = info
+	e.lastUsageAt = time.Now()
+	e.consecutiveFail = 0 // request succeeded → cred is healthy
+}
+
 // SignalActivatedFailed bumps the activated entry's
 // consecutiveFail. The next scheduler tick reads the counter and,
 // if it has reached the threshold, may demote the activated.

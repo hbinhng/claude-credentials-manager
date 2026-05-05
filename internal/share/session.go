@@ -529,6 +529,7 @@ func StartPoolBackground(done <-chan struct{}, pool *credPool, opts PoolBackgrou
 
 	// Tests can grab the scheduler via lastSchedulerForTest below.
 	lastSchedulerForTest.Store(sch)
+	lastPoolForTest.Store(pool)
 
 	return nil
 }
@@ -555,6 +556,38 @@ func LastSchedulerTickDoneForTest() <-chan struct{} {
 // t.Cleanup or at test start.
 func ResetLastSchedulerForTest() {
 	lastSchedulerForTest.Store(nil)
+}
+
+// lastPoolForTest records the most recently constructed pool from
+// StartPoolBackground so tests can reach into it (e.g. to expire the
+// usage cache) without restructuring the public API. Production code
+// never reads this value.
+var lastPoolForTest atomic.Pointer[credPool]
+
+// ExpireLastPoolCacheForTest zeroes lastUsageAt for every entry in
+// the most recently constructed pool, forcing the next scheduler tick
+// to re-probe instead of cache-hitting. Test-only. No-op if
+// StartPoolBackground has never been called.
+//
+// Use case: real-time integration tests that wait for a scheduler
+// tick to rotate a profile. Without this hook the tick would
+// short-circuit on a fresh cache (TTL floor is 10min) and miss the
+// rotation the test is asserting.
+func ExpireLastPoolCacheForTest() {
+	p := lastPoolForTest.Load()
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, e := range p.entries {
+		e.lastUsageAt = time.Time{}
+	}
+}
+
+// ResetLastPoolForTest clears the test seam.
+func ResetLastPoolForTest() {
+	lastPoolForTest.Store(nil)
 }
 
 // LaunchExec is the shape of the launch-time exec call. Production
