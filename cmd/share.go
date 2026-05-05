@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -11,6 +13,23 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
+
+// readPinnedTokenFromEnv returns the trimmed CCM_SHARE_TOKEN value,
+// or empty string if unset / whitespace-only. Validation lives in
+// share.StartSession; this helper is only the env-read shim.
+func readPinnedTokenFromEnv() string {
+	return strings.TrimSpace(os.Getenv("CCM_SHARE_TOKEN"))
+}
+
+// wrapPinnedTokenErr re-wraps a share.StartSession error so the
+// operator sees the env-var name when the failure is a pinned-token
+// validation error. Other errors pass through unchanged.
+func wrapPinnedTokenErr(err error) error {
+	if err != nil && errors.Is(err, share.ErrInvalidPinnedToken) {
+		return fmt.Errorf("CCM_SHARE_TOKEN: %w", err)
+	}
+	return err
+}
 
 func init() {
 	rootCmd.AddCommand(shareCmd)
@@ -89,6 +108,10 @@ With --load-balance, pool every available credential (or every named
 credential) and rotate between them every --rebalance-interval based
 on a feasibility formula derived from the Anthropic usage API.
 
+Set CCM_SHARE_TOKEN to pin the inbound access token across restarts
+(must match [A-Za-z0-9_-]+); unset/empty mints a fresh random token
+per session.
+
 The share session stays alive until you press Ctrl-C.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		prompt, _ := cmd.Flags().GetString("prompt")
@@ -96,6 +119,8 @@ The share session stays alive until you press Ctrl-C.`,
 		bindPort, _ := cmd.Flags().GetInt("bind-port")
 		loadBalance, _ := cmd.Flags().GetBool("load-balance")
 		rebalanceInterval, _ := cmd.Flags().GetDuration("rebalance-interval")
+
+		pinnedToken := readPinnedTokenFromEnv()
 
 		if loadBalance {
 			if err := validateRebalanceDuration(rebalanceInterval); err != nil {
@@ -107,6 +132,7 @@ The share session stays alive until you press Ctrl-C.`,
 				CapturePrompt:     prompt,
 				Debug:             os.Getenv("CCM_SHARE_DEBUG") == "1",
 				RebalanceInterval: rebalanceInterval,
+				PinnedAccessToken: pinnedToken,
 			})
 		}
 
@@ -115,10 +141,11 @@ The share session stays alive until you press Ctrl-C.`,
 			return err
 		}
 		return runShareSingle(cred, share.Options{
-			BindHost:      bindHost,
-			BindPort:      bindPort,
-			CapturePrompt: prompt,
-			Debug:         os.Getenv("CCM_SHARE_DEBUG") == "1",
+			BindHost:          bindHost,
+			BindPort:          bindPort,
+			CapturePrompt:     prompt,
+			Debug:             os.Getenv("CCM_SHARE_DEBUG") == "1",
+			PinnedAccessToken: pinnedToken,
 		})
 	},
 }
@@ -126,7 +153,7 @@ The share session stays alive until you press Ctrl-C.`,
 func runShareSingle(cred *store.Credential, opts share.Options) error {
 	sess, err := share.StartSession(cred, opts)
 	if err != nil {
-		return err
+		return wrapPinnedTokenErr(err)
 	}
 	return runSessionLoop(sess, cred)
 }
@@ -140,7 +167,7 @@ func runShareLoadBalance(args []string, opts share.Options) error {
 	opts.Pool = pool
 	sess, err := share.StartSession(initialCred, opts)
 	if err != nil {
-		return err
+		return wrapPinnedTokenErr(err)
 	}
 	registerPoolSnapshotSignal(sess)
 	return runSessionLoop(sess, initialCred)

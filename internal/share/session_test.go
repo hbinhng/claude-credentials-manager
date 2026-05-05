@@ -357,3 +357,124 @@ func TestStartCloudflaredWithRetryFailsAfterMaxAttempts(t *testing.T) {
 		t.Errorf("error %q does not wrap last attempt's cause", err)
 	}
 }
+
+func TestValidatePinnedToken(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		wantErr bool
+	}{
+		{"empty allowed", "", false},
+		{"alnum lower", "abc123", false},
+		{"alnum upper", "ABC123", false},
+		{"underscore", "a_b_c", false},
+		{"dash", "a-b-c", false},
+		{"single char", "a", false},
+		{"long", strings.Repeat("a", 256), false},
+		{"random-token-shape", "Yc7-2_aAbCdEfGhIjKlMnOpQrStUvWxYzAB", false},
+		{"space rejected", "a b", true},
+		{"slash rejected", "a/b", true},
+		{"plus rejected", "a+b", true},
+		{"unicode rejected", "café", true},
+		{"newline rejected", "abc\n", true},
+		{"crlf rejected", "abc\r\n", true},
+		{"null rejected", "abc\x00", true},
+		{"tab rejected", "abc\t", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidatePinnedToken(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidatePinnedToken(%q) err=%v, want err=%v", tc.in, err, tc.wantErr)
+			}
+			if tc.wantErr && !errors.Is(err, ErrInvalidPinnedToken) {
+				t.Fatalf("error does not wrap ErrInvalidPinnedToken: %v", err)
+			}
+		})
+	}
+}
+
+func TestStartSession_PinnedToken_RejectsInvalidBeforeProxy(t *testing.T) {
+	// Track captureFn / cloudflared invocations to prove validation
+	// runs BEFORE NewProxy / capture / cloudflared.
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	capCalled := false
+	captureFn = func(p *Proxy, _ string) error {
+		capCalled = true
+		p.markCaptured(captureHeadersForTest())
+		return nil
+	}
+
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	tunCalled := false
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		tunCalled = true
+		return fakeTunnel(nil), "https://example.trycloudflare.com", nil
+	}
+
+	cred := fakeCred("pinned-bad-0000-0000-0000-000000000001", "tok")
+	sess, err := StartSession(cred, Options{PinnedAccessToken: "has space"})
+	if err == nil {
+		if sess != nil {
+			_ = sess.Stop()
+		}
+		t.Fatalf("StartSession succeeded with invalid pinned token")
+	}
+	if !errors.Is(err, ErrInvalidPinnedToken) {
+		t.Errorf("err=%v, want errors.Is ErrInvalidPinnedToken", err)
+	}
+	if capCalled {
+		t.Errorf("captureFn was called; validation must run before capture")
+	}
+	if tunCalled {
+		t.Errorf("startCloudflaredFn was called; validation must run before tunnel")
+	}
+}
+
+func TestStartSession_PinnedToken_RandomFallbackUnchanged(t *testing.T) {
+	// When PinnedAccessToken is empty, two sessions must mint
+	// distinct random tokens — proves the random path is unchanged.
+	origCapture := captureFn
+	defer func() { captureFn = origCapture }()
+	captureFn = func(p *Proxy, _ string) error {
+		p.markCaptured(captureHeadersForTest())
+		return nil
+	}
+
+	origTunnel := startCloudflaredFn
+	defer func() { startCloudflaredFn = origTunnel }()
+	startCloudflaredFn = func(_ context.Context, _ string) (*Tunnel, string, error) {
+		return fakeTunnel(nil), "https://example.trycloudflare.com", nil
+	}
+
+	cred := fakeCred("rand-0000-0000-0000-0000-000000000001", "tok")
+
+	sess1, err := StartSession(cred, Options{})
+	if err != nil {
+		t.Fatalf("StartSession 1: %v", err)
+	}
+	defer sess1.Stop()
+
+	sess2, err := StartSession(cred, Options{})
+	if err != nil {
+		t.Fatalf("StartSession 2: %v", err)
+	}
+	defer sess2.Stop()
+
+	tk1, err := DecodeTicket(sess1.Ticket())
+	if err != nil {
+		t.Fatalf("DecodeTicket 1: %v", err)
+	}
+	tk2, err := DecodeTicket(sess2.Ticket())
+	if err != nil {
+		t.Fatalf("DecodeTicket 2: %v", err)
+	}
+	if tk1.Token == "" || tk2.Token == "" {
+		t.Fatalf("random tokens are empty: %q %q", tk1.Token, tk2.Token)
+	}
+	if tk1.Token == tk2.Token {
+		t.Fatalf("two random sessions minted identical tokens: %q", tk1.Token)
+	}
+}

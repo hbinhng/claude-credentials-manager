@@ -2,10 +2,12 @@ package share
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +15,28 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
+
+// ErrInvalidPinnedToken is returned (wrapped) by StartSession and
+// ValidatePinnedToken when Options.PinnedAccessToken is non-empty
+// but does not match the URL-safe charset. Callers (CLI, future
+// serve UI) can errors.Is to detect and re-wrap with their own
+// surface name (env var, form field, etc.).
+var ErrInvalidPinnedToken = errors.New("pinned access token must match [A-Za-z0-9_-]+")
+
+var pinnedTokenPattern = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+
+// ValidatePinnedToken returns nil if s is empty (pinning disabled)
+// or matches the URL-safe charset. Otherwise the error wraps
+// ErrInvalidPinnedToken.
+func ValidatePinnedToken(s string) error {
+	if s == "" {
+		return nil
+	}
+	if !pinnedTokenPattern.MatchString(s) {
+		return fmt.Errorf("%w (got %d chars)", ErrInvalidPinnedToken, len(s))
+	}
+	return nil
+}
 
 // Options controls how StartSession brings up a share session.
 //
@@ -50,6 +74,16 @@ type Options struct {
 	Pool              *credPool
 	RebalanceInterval time.Duration
 	Clock             clock
+
+	// PinnedAccessToken, when non-empty, overrides the random bearer
+	// that StartSession would otherwise mint. Must match
+	// [A-Za-z0-9_-]+; any non-empty value outside that set yields a
+	// validation error wrapping ErrInvalidPinnedToken before any
+	// proxy / tunnel / scheduler is started.
+	//
+	// Empty (zero value) preserves today's behavior: a fresh
+	// crypto/rand-derived token is minted per session.
+	PinnedAccessToken string
 }
 
 // SessionStarter abstracts StartSession for tests and for consumers
@@ -163,6 +197,10 @@ func (s *sessionImpl) Stop() error {
 }
 
 func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Session, error) {
+	if err := ValidatePinnedToken(opts.PinnedAccessToken); err != nil {
+		return nil, err
+	}
+
 	bindAddr := ListenerBindAddr(opts.BindHost, opts.BindPort)
 	proxy, err := NewProxy(bindAddr)
 	if err != nil {
@@ -193,12 +231,19 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		}
 	}
 
-	accessToken, err := newAccessToken()
-	if err != nil {
-		_ = proxy.Close()
-		// coverage: unreachable — crypto/rand only errors on a kernel RNG
-		// failure, which is not exercisable in tests.
-		return nil, err
+	var accessToken string
+	if opts.PinnedAccessToken != "" {
+		accessToken = opts.PinnedAccessToken
+		fmt.Fprintln(errLog(), "ccm share: using pinned access token")
+	} else {
+		var err error
+		accessToken, err = newAccessToken()
+		if err != nil {
+			_ = proxy.Close()
+			// coverage: unreachable — crypto/rand only errors on a kernel RNG
+			// failure, which is not exercisable in tests.
+			return nil, err
+		}
 	}
 
 	// Pick tokenSource: pool when --load-balance, else single-cred

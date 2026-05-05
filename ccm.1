@@ -563,6 +563,23 @@ Minimum 16 characters. Used verbatim if set on a non-loopback bind;
 otherwise a random 22-character URL-safe token is generated and
 printed once at startup. Ignored on loopback binds (no auth required
 there).
+.TP
+.B CCM_SHARE_TOKEN
+Pin the inbound access token used by
+.BR "ccm share" .
+When set to a non-empty value matching
+.B [A-Za-z0-9_-]+
+the value becomes the bearer that consumers must present in
+.BR "Authorization: Bearer <token>" ,
+keeping the token half of the share ticket stable across restarts so
+remote consumers don't have to re-paste tickets. The host half (the
+Cloudflare Quick Tunnel URL) still rotates per restart. Whitespace is
+trimmed; an empty or whitespace-only value disables pinning and
+.BR "ccm share"
+mints a fresh random token as usual. Invalid charset rejects startup
+with a non-zero exit. Ignored by
+.BR "ccm serve" ;
+serve sessions are pinned via the web UI instead.
 .SH EXAMPLES
 Authenticate a new account (credential is named after the account email):
 .PP
