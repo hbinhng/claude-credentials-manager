@@ -25,7 +25,7 @@ import (
 // promotion time). On capture failure, BuildPool falls through to
 // the next-best cred (implicit pool) or returns a fatal error
 // (explicit pool).
-func BuildPool(args []string) (*credPool, *store.Credential, error) {
+func BuildPool(args []string, prompt string) (*credPool, *store.Credential, error) {
 	explicit := len(args) > 0
 	resolved, err := resolvePoolArgs(args)
 	if err != nil {
@@ -96,7 +96,7 @@ func BuildPool(args []string) (*credPool, *store.Credential, error) {
 	var captureRejects []string
 	captureFailedIDs := make(map[string]bool)
 	for _, ad := range admitted {
-		headers, cerr := captureCredFn(ad.cred, "") // empty prompt → DefaultCapturePrompt in captureFn
+		headers, cerr := captureCredFn(ad.cred, prompt) // empty → DefaultCapturePrompt in RunCapture
 		if cerr != nil {
 			msg := fmt.Sprintf("%s(%s): capture failed: %v", credLogName(ad.cred), shortID(ad.cred.ID), cerr)
 			captureRejects = append(captureRejects, msg)
