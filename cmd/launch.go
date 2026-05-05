@@ -208,6 +208,7 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 func runLaunchLoadBalance(args []string, claudeArgs []string, rebalanceInterval time.Duration) error {
 	debug := os.Getenv("CCM_LAUNCH_DEBUG") == "1" || os.Getenv("CCM_SHARE_DEBUG") == "1"
 
+	args = splitCommaArgs(args)
 	pool, _, err := share.BuildPool(args, "", true)
 	if err != nil {
 		return err
