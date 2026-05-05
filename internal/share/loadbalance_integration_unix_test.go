@@ -4,6 +4,7 @@ package share
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +34,12 @@ func makePoolForTest(t *testing.T, ids []string) *credPool {
 }
 
 func TestLoadBalanceTwoCredRotation(t *testing.T) {
+	origCap := captureCredFn
+	defer func() { captureCredFn = origCap }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"stub"}}, nil
+	}
+
 	pool := makePoolForTest(t, []string{"aaaaaaaa", "bbbbbbbb"})
 	now := time.Now()
 	probes := map[string]*oauth.UsageInfo{
@@ -58,6 +65,12 @@ func TestLoadBalanceTwoCredRotation(t *testing.T) {
 }
 
 func TestLoadBalanceActivatedDiesCandidatePromoted(t *testing.T) {
+	origCap := captureCredFn
+	defer func() { captureCredFn = origCap }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"stub"}}, nil
+	}
+
 	pool := makePoolForTest(t, []string{"aaaaaaaa", "bbbbbbbb"})
 	now := time.Now()
 	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
@@ -78,6 +91,12 @@ func TestLoadBalanceActivatedDiesCandidatePromoted(t *testing.T) {
 }
 
 func TestLoadBalanceAllDegraded503ThenRecovery(t *testing.T) {
+	origCap := captureCredFn
+	defer func() { captureCredFn = origCap }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"stub"}}, nil
+	}
+
 	pool := makePoolForTest(t, []string{"aaaaaaaa", "bbbbbbbb"})
 	now := time.Now()
 
@@ -113,6 +132,12 @@ func TestLoadBalanceAllDegraded503ThenRecovery(t *testing.T) {
 }
 
 func TestLoadBalanceUpstream401FastPath(t *testing.T) {
+	origCap := captureCredFn
+	defer func() { captureCredFn = origCap }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"stub"}}, nil
+	}
+
 	pool := makePoolForTest(t, []string{"aaaaaaaa", "bbbbbbbb"})
 	pool.entries["aaaaaaaa"].consecutiveFail = 0
 	pool.SignalActivatedFailed()
@@ -310,5 +335,81 @@ func TestProxyDirectorReadsHeadersFromPool(t *testing.T) {
 
 	if got := seen.Get("X-Cred"); got != "a" {
 		t.Errorf("upstream X-Cred = %q, want a (director should read from pool)", got)
+	}
+}
+
+func TestLoadBalancePerCredHeadersReplayedAfterRotation(t *testing.T) {
+	// Two creds; rotation flips activated; assert the new cred's
+	// captured headers are stored in the pool.
+	stateA := &fakeRefreshableState{id: "a", expiresAt: time.Now().Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: time.Now().Add(8 * time.Hour).UnixMilli()}
+	hdrA := http.Header{}
+	hdrA.Set("X-Test-Cred", "a")
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, captured: hdrA},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	now := time.Now()
+	probes := map[string]*oauth.UsageInfo{
+		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
+		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return probes[state.credID()], nil
+	}
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(cred *store.Credential, _ string) (http.Header, error) {
+		h := http.Header{}
+		h.Set("X-Test-Cred", cred.ID)
+		return h, nil
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+
+	// Now activated is b with new headers.
+	if pool.activated != "b" {
+		t.Fatalf("activated = %q, want b", pool.activated)
+	}
+	if got := pool.entries["b"].captured.Get("X-Test-Cred"); got != "b" {
+		t.Errorf("b captured X-Test-Cred = %q, want b", got)
+	}
+}
+
+func TestLoadBalanceAllCapturesFailKeepsActivated(t *testing.T) {
+	stateA := &fakeRefreshableState{id: "a", expiresAt: time.Now().Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: time.Now().Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, captured: http.Header{"X-Cred": []string{"a"}}},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	now := time.Now()
+	probes := map[string]*oauth.UsageInfo{
+		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
+		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return probes[state.credID()], nil
+	}
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return nil, errors.New("capture broken")
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	for i := 0; i < 5; i++ {
+		sch.runOnce()
+	}
+	if pool.activated != "a" {
+		t.Errorf("activated changed to %q despite all captures failing (want a)", pool.activated)
+	}
+	if got := pool.entries["a"].captured.Get("X-Cred"); got != "a" {
+		t.Errorf("a captured headers lost = %q", got)
 	}
 }

@@ -88,6 +88,7 @@ type scheduler struct {
 	clock    clock
 	interval time.Duration
 	debug    bool
+	prompt   string // passed to captureCredFn during rotation; empty → DefaultCapturePrompt
 }
 
 func newScheduler(pool *credPool, probe usageProbe, c clock, interval time.Duration) *scheduler {
@@ -231,37 +232,55 @@ func (s *scheduler) runOnce() {
 	} else {
 		winner := eligible[0]
 		if winner.id != s.pool.activated {
-			// Branch (b): rotation.
+			// Branch (b): rotation. Capture per-cred headers BEFORE
+			// promoting so the new activated has its own headers
+			// stored in the pool.
+			//
+			// Read snapshot fields under the write lock we already
+			// hold; release the lock around the slow captureCredFn
+			// call so in-flight requests' Fresh() / activatedHeaders()
+			// reads are not blocked. The lock is re-acquired after
+			// capture so the function tail's existing Unlock is
+			// balanced.
+			winnerCred := s.pool.entries[winner.id].state.credPtr()
+			winnerName := s.pool.entries[winner.id].state.credName()
 			oldID := s.pool.activated
 			oldEntry, hasOld := s.pool.entries[oldID]
-			newEntry := s.pool.entries[winner.id]
-			if hasOld {
-				oldFail := oldEntry.consecutiveFail
-				if pf, ok := preFail[oldID]; ok && pf > oldFail {
-					oldFail = pf
-				}
-				if oldFail >= 2 {
-					oldEntry.status = statusDegraded
-				} else {
-					oldEntry.status = statusCandidate
-					oldEntry.consecutiveFail = 0
-				}
-			}
-			newEntry.status = statusActivated
-			newEntry.consecutiveFail = 0
-			s.pool.activated = winner.id
-
 			oldName := "(none)"
 			oldFeas := 0.0
+			oldFail := 0
 			if hasOld {
 				oldName = oldEntry.state.credName()
 				oldFeas = oldEntry.lastFeasibility
+				oldFail = oldEntry.consecutiveFail
+				if pf, ok := preFail[oldID]; ok && pf > oldFail {
+					oldFail = pf
+				}
+				// Bump consecutiveFail to oldFail so Promote sees the
+				// preFail-aware count and applies the correct demote
+				// semantics (>=2 → degraded; <2 → candidate+reset).
+				oldEntry.consecutiveFail = oldFail
 			}
-			pending = logEntry{
-				kind: "rotate", oldName: oldName, newName: newEntry.state.credName(),
-				oldID: oldID, newID: winner.id,
-				oldFeasibility: oldFeas, newFeasibility: winner.feasibility,
+
+			s.pool.mu.Unlock()
+
+			headers, cerr := captureCredFn(winnerCred, s.prompt)
+			if cerr != nil {
+				fmt.Fprintf(errLog(), "ccm share: capture failed for %s(%s): %v — skipping rotation\n",
+					winnerName, shortID(winner.id), cerr)
+			} else {
+				// Atomic swap via Promote — handles old-activated
+				// demotion semantics (preserve counter on degraded;
+				// reset on healthy) and stores the new headers.
+				s.pool.Promote(winner.id, headers)
+				pending = logEntry{
+					kind: "rotate", oldName: oldName, newName: winnerName,
+					oldID: oldID, newID: winner.id,
+					oldFeasibility: oldFeas, newFeasibility: winner.feasibility,
+				}
 			}
+
+			s.pool.mu.Lock()
 		}
 	}
 

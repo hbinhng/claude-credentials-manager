@@ -235,6 +235,7 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		}
 		sch := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
 		sch.SetDebug(opts.Debug)
+		sch.prompt = opts.CapturePrompt // empty OK — captureFn defaults to DefaultCapturePrompt
 		go sch.Run(proxy.done)
 	}
 
