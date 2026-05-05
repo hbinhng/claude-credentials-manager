@@ -106,11 +106,15 @@ func TestCaptureCredHeadersReleasesPort(t *testing.T) {
 
 	// Capture the port the ephemeral proxy bound to, then verify
 	// the same port is rebindable after the function returns.
+	// We retry the rebind briefly because TIME_WAIT can hold the
+	// port for a short window after teardown — the test is checking
+	// that the LISTENER is closed (no goroutine still accepting),
+	// not that the kernel has dropped TIME_WAIT.
 	var capturedAddr string
 	origCapture := captureFn
 	defer func() { captureFn = origCapture }()
 	captureFn = func(p *Proxy, _ string) error {
-		capturedAddr = p.Addr() // remember the port pre-teardown
+		capturedAddr = p.Addr()
 		p.markCaptured(http.Header{"User-Agent": []string{"x"}})
 		return nil
 	}
@@ -119,16 +123,23 @@ func TestCaptureCredHeadersReleasesPort(t *testing.T) {
 		t.Fatalf("captureCredHeaders: %v", err)
 	}
 
-	// Parse the host:port out of the addr URL.
 	u, perr := url.Parse(capturedAddr)
 	if perr != nil {
 		t.Fatalf("parse addr %q: %v", capturedAddr, perr)
 	}
-	// Try to bind to the same host:port. If the ephemeral proxy
-	// did not release the port, this Listen will fail.
-	ln, err := net.Listen("tcp", u.Host)
-	if err != nil {
-		t.Fatalf("rebind %s after teardown: %v (port not released)", u.Host, err)
+
+	// Retry up to 5 times — rebind on a closed listener should
+	// succeed once any connection-level TIME_WAIT clears. If even
+	// after retries we cannot bind, the listener was not released.
+	var lastErr error
+	for i := 0; i < 5; i++ {
+		ln, err := net.Listen("tcp", u.Host)
+		if err == nil {
+			_ = ln.Close()
+			return
+		}
+		lastErr = err
+		time.Sleep(50 * time.Millisecond)
 	}
-	_ = ln.Close()
+	t.Fatalf("rebind %s after teardown: %v (port not released)", u.Host, lastErr)
 }

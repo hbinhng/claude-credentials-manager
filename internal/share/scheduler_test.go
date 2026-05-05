@@ -1,16 +1,32 @@
 package share
 
 import (
+	"errors"
 	"fmt"
 	"math"
+	"net/http"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 func ptrFloat(f float64) *float64 { return &f }
+
+// stubCaptureCredOKScheduler installs a default captureCredFn that
+// returns canned headers for any cred. Used by scheduler tests
+// where rotation triggers capture but the test doesn't care about
+// header content.
+func stubCaptureCredOKScheduler(t *testing.T) {
+	t.Helper()
+	orig := captureCredFn
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"User-Agent": []string{"stub"}}, nil
+	}
+	t.Cleanup(func() { captureCredFn = orig })
+}
 
 func TestComputeFeasibilityBothPresent(t *testing.T) {
 	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
@@ -148,6 +164,7 @@ func TestLookupQuota(t *testing.T) {
 }
 
 func TestSchedulerRotatesToHigherFeasibility(t *testing.T) {
+	stubCaptureCredOKScheduler(t)
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
 	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
@@ -275,6 +292,7 @@ func TestSchedulerSingletonNeverDemotes(t *testing.T) {
 }
 
 func TestSchedulerTieBreakByIDLex(t *testing.T) {
+	stubCaptureCredOKScheduler(t)
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "aaaa", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
 	stateB := &fakeRefreshableState{id: "bbbb", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
@@ -317,6 +335,7 @@ func TestSchedulerDebugLogsWhenNoEligible(t *testing.T) {
 }
 
 func TestSchedulerPreFailRotationPath(t *testing.T) {
+	stubCaptureCredOKScheduler(t)
 	now := time.Now()
 	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
 	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
@@ -485,5 +504,81 @@ func TestSchedulerRunStopsOnDone(t *testing.T) {
 	case <-exited:
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not exit on done close")
+	}
+}
+
+func TestSchedulerCaptureFailureSkipsRotation(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, captured: http.Header{"X-Cred": []string{"a"}}},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	probes := map[string]*oauth.UsageInfo{
+		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
+		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return probes[state.credID()], nil
+	}
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCalls := 0
+	captureCredFn = func(_ *store.Credential, _ string) (http.Header, error) {
+		captureCalls++
+		return nil, errors.New("capture broken")
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+
+	if pool.activated != "a" {
+		t.Errorf("activated changed to %q despite capture failure (want a)", pool.activated)
+	}
+	if pool.entries["b"].status != statusCandidate {
+		t.Errorf("b status = %v, want candidate (capture failure ≠ probe failure)", pool.entries["b"].status)
+	}
+	if pool.entries["b"].consecutiveFail != 0 {
+		t.Errorf("b consecutiveFail = %d, want 0 (capture failure must NOT bump it)", pool.entries["b"].consecutiveFail)
+	}
+	if captureCalls != 1 {
+		t.Errorf("captureCalls = %d, want 1", captureCalls)
+	}
+}
+
+func TestSchedulerSuccessfulCaptureStoresHeadersAndPromotes(t *testing.T) {
+	now := time.Now()
+	stateA := &fakeRefreshableState{id: "a", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	stateB := &fakeRefreshableState{id: "b", expiresAt: now.Add(8 * time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {state: stateA, status: statusActivated, captured: http.Header{"X-Cred": []string{"a"}}},
+		"b": {state: stateB, status: statusCandidate},
+	}, activated: "a"}
+
+	probes := map[string]*oauth.UsageInfo{
+		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
+		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
+	}
+	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+		return probes[state.credID()], nil
+	}
+
+	origCapture := captureCredFn
+	defer func() { captureCredFn = origCapture }()
+	captureCredFn = func(cred *store.Credential, _ string) (http.Header, error) {
+		return http.Header{"X-Cred": []string{cred.ID}}, nil
+	}
+
+	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
+	sch.runOnce()
+
+	if pool.activated != "b" {
+		t.Errorf("activated = %q, want b", pool.activated)
+	}
+	if got := pool.entries["b"].captured.Get("X-Cred"); got != "b" {
+		t.Errorf("b captured X-Cred = %q, want b", got)
 	}
 }
