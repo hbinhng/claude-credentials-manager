@@ -132,7 +132,7 @@ func runShareSingle(cred *store.Credential, opts share.Options) error {
 }
 
 func runShareLoadBalance(args []string, opts share.Options) error {
-	pool, initialCred, err := share.BuildPool(args)
+	pool, initialCred, err := share.BuildPool(args, opts.CapturePrompt)
 	if err != nil {
 		return err
 	}
