@@ -131,21 +131,17 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 		return fmt.Errorf("could not find 'claude' on PATH")
 	}
 
-	child := exec.Command(claudeBin, claudeArgs...)
 	// Build the child environment: inherit the parent's env minus
 	// any Anthropic auth vars that would override claude-cli's
 	// keychain-OAuth code path and break the passthrough proxy's
 	// Anthropic-Beta expectations.
-	child.Env = filterEnv(os.Environ(),
+	env := filterEnv(os.Environ(),
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
 	)
-	child.Env = append(child.Env, "ANTHROPIC_BASE_URL="+proxy.Addr())
-	child.Stdin = os.Stdin
-	child.Stdout = os.Stdout
-	child.Stderr = os.Stderr
+	env = append(env, "ANTHROPIC_BASE_URL="+proxy.Addr())
 
-	if err := child.Run(); err != nil {
+	if err := share.LaunchExecFn()(claudeBin, claudeArgs, env); err != nil {
 		var exitErr *exec.ExitError
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.ExitCode())
