@@ -132,6 +132,7 @@ func runShareSingle(cred *store.Credential, opts share.Options) error {
 }
 
 func runShareLoadBalance(args []string, opts share.Options) error {
+	args = splitCommaArgs(args)
 	pool, initialCred, err := share.BuildPool(args, opts.CapturePrompt, false)
 	if err != nil {
 		return err
