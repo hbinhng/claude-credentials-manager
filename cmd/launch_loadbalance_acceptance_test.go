@@ -42,6 +42,12 @@ func TestAcceptanceLaunchLoadBalanceRotation(t *testing.T) {
 		t.Skip("acceptance test waits ~30s for a real scheduler tick; skipped under -short")
 	}
 
+	// Clear any scheduler stashed by a prior test in this binary
+	// so LastSchedulerTickDoneForTest reflects the scheduler this
+	// test starts.
+	share.ResetLastSchedulerForTest()
+	t.Cleanup(share.ResetLastSchedulerForTest)
+
 	setupAcceptanceFakeHome(t)
 
 	now := time.Now()
@@ -184,15 +190,23 @@ func TestAcceptanceLaunchLoadBalanceRotation(t *testing.T) {
 	}
 	bearersMu.Unlock()
 
-	// Flip the profile; the next scheduler tick will rotate.
-	currentProfile.Store(strPtr("bob"))
-
-	// Wait deterministically for the next scheduler tick to complete
-	// using the test seam exposed by StartPoolBackground.
+	// Drain any tick pulse that may have already fired between
+	// StartPoolBackground returning and now (size-1 buffer
+	// coalesces, but the buffered pulse would predate the profile
+	// flip and falsely satisfy the wait below).
 	tickDone := share.LastSchedulerTickDoneForTest()
 	if tickDone == nil {
 		t.Fatal("LastSchedulerTickDoneForTest returned nil — StartPoolBackground was never called")
 	}
+	select {
+	case <-tickDone:
+	default:
+	}
+
+	// Flip the profile; the next scheduler tick will rotate.
+	currentProfile.Store(strPtr("bob"))
+
+	// Wait deterministically for the post-flip tick to complete.
 	select {
 	case <-tickDone:
 		// rotation completed
