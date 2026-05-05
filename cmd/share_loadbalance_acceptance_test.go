@@ -79,12 +79,15 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	t.Cleanup(func() { oauth.FetchUsageFn = origUsage })
 
 	// Stub upstream (api.anthropic.com) — record which bearer it
-	// sees on each request.
+	// sees on each request, plus the captured headers, so we can
+	// assert per-cred header replay.
 	var bearersMu sync.Mutex
 	var bearers []string
+	var capturedHeaders []http.Header
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		bearersMu.Lock()
 		bearers = append(bearers, r.Header.Get("Authorization"))
+		capturedHeaders = append(capturedHeaders, r.Header.Clone())
 		bearersMu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -95,7 +98,18 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	share.SetUpstreamBaseForTest(upstream.URL)
 	t.Cleanup(func() { share.ResetUpstreamBaseForTest() })
 
-	// Stub captureFn + cloudflared as in session_test.go.
+	// Stub captureCredFn — with --load-balance, BuildPool/scheduler
+	// drive per-cred capture, so this is the seam that controls
+	// what headers reach upstream. Stub captureFn too as a defensive
+	// belt — some test paths still touch it via the layering.
+	restoreCapCred := share.SetCaptureCredFnForTest(func(cred *store.Credential, _ string) (http.Header, error) {
+		h := http.Header{}
+		h.Set("User-Agent", "acceptance-test")
+		h.Set("X-Test-Cred", cred.ID)
+		h.Set("Anthropic-Beta", "oauth-2025-04-20")
+		return h, nil
+	})
+	t.Cleanup(restoreCapCred)
 	share.SetCaptureFnForTest(func(p *share.Proxy, _ string) error {
 		p.MarkCapturedForTest(http.Header{"User-Agent": []string{"acceptance-test"}})
 		return nil
@@ -163,6 +177,11 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	if len(bearers) == 0 || !strings.Contains(bearers[0], "atk-alice") {
 		t.Errorf("first request bearer = %v, want atk-alice", bearers)
 	}
+	if len(capturedHeaders) == 0 {
+		t.Errorf("no headers captured for first request")
+	} else if got := capturedHeaders[0].Get("X-Test-Cred"); got != a.ID {
+		t.Errorf("first request X-Test-Cred = %q, want %q", got, a.ID)
+	}
 	bearersMu.Unlock()
 
 	// Flip the profile and advance the fake clock past one tick.
@@ -181,9 +200,13 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	resp2.Body.Close()
 	bearersMu.Lock()
 	last := bearers[len(bearers)-1]
+	lastHeaders := capturedHeaders[len(capturedHeaders)-1]
 	bearersMu.Unlock()
 	if !strings.Contains(last, "atk-bob") {
 		t.Errorf("second request bearer = %q, want atk-bob (rotation should have happened)", last)
+	}
+	if got := lastHeaders.Get("X-Test-Cred"); got != b.ID {
+		t.Errorf("second request X-Test-Cred = %q, want %q (per-cred header replay)", got, b.ID)
 	}
 }
 
