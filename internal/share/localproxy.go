@@ -36,13 +36,27 @@ import (
 // are expected to start it, launch a single child `claude`, and
 // shut it down when `claude` exits — same trust model as
 // ~/.claude/.credentials.json itself.
+//
+// LocalProxy operates in two modes:
+//
+//   - Single-cred mode (NewLocalProxy(cred)): tokens wraps a fresh
+//     *credState; pool is nil; refreshLoop runs the background OAuth
+//     refresh cadence directly.
+//
+//   - Pool mode (NewLocalProxyWithPool(pool, debug)): tokens is the
+//     pool itself (it satisfies tokenSource); pool is set so
+//     ModifyResponse can signal upstream-401 events. Per-cred refresh
+//     timers and the rotation scheduler that StartPoolBackground
+//     wires up handle refresh cadence; LocalProxy's own refreshLoop
+//     is a no-op in this mode.
 type LocalProxy struct {
 	listener net.Listener
 	server   *http.Server
 	upstream *url.URL
 	rp       *httputil.ReverseProxy
 
-	credState *credState
+	tokens tokenSource // wired by NewLocalProxy / NewLocalProxyWithPool
+	pool   *credPool   // nil in single-cred mode
 
 	debug bool
 
@@ -60,12 +74,34 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	if cred == nil {
 		return nil, errors.New("NewLocalProxy: nil credential")
 	}
+	return newLocalProxyInternal(newCredState(cred), nil, os.Getenv("CCM_LAUNCH_DEBUG") == "1")
+}
+
+// NewLocalProxyWithPool builds a load-balance LocalProxy. The
+// supplied pool serves as the tokenSource; ModifyResponse signals
+// upstream-401 events back into pool.SignalActivatedFailed so the
+// next scheduler tick can demote/rotate as appropriate. Per-cred
+// refresh and rotation are driven by StartPoolBackground; the
+// proxy's own refreshLoop is a no-op when pool is non-nil.
+func NewLocalProxyWithPool(pool *credPool, debug bool) (*LocalProxy, error) {
+	if pool == nil {
+		return nil, errors.New("NewLocalProxyWithPool: nil pool")
+	}
+	return newLocalProxyInternal(pool, pool, debug)
+}
+
+func newLocalProxyInternal(tokens tokenSource, pool *credPool, debug bool) (*LocalProxy, error) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		// coverage: unreachable — net.Listen on 127.0.0.1:0 only
+		// fails when the loopback adapter is missing; not exercisable
+		// in tests.
 		return nil, fmt.Errorf("listen: %w", err)
 	}
 	upstream, err := url.Parse(upstreamBase())
 	if err != nil {
+		// coverage: unreachable — upstreamBase() always returns a
+		// well-formed URL (constant or test override).
 		ln.Close()
 		return nil, fmt.Errorf("parse upstream: %w", err)
 	}
@@ -73,9 +109,10 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	p := &LocalProxy{
 		listener: ln,
 		upstream: upstream,
-		credState: newCredState(cred),
+		tokens:   tokens,
+		pool:     pool,
 		done:     make(chan struct{}),
-		debug:    os.Getenv("CCM_LAUNCH_DEBUG") == "1",
+		debug:    debug,
 	}
 	p.rp = &httputil.ReverseProxy{
 		Director:     p.director,
@@ -86,6 +123,18 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 		// limit does not apply, but immediate flush still matters for
 		// SSE streaming to the child claude.
 		FlushInterval: -1,
+	}
+	if pool != nil {
+		// Pool mode: mirror share.Proxy's ModifyResponse hook so
+		// upstream-401 bumps the activated entry's consecutiveFail.
+		// The scheduler observes this on the next tick (preFail-aware
+		// path) and rotates / demotes accordingly.
+		p.rp.ModifyResponse = func(r *http.Response) error {
+			if r.StatusCode == http.StatusUnauthorized {
+				pool.SignalActivatedFailed()
+			}
+			return nil
+		}
 	}
 
 	mux := http.NewServeMux()
@@ -102,6 +151,10 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 func (p *LocalProxy) Addr() string {
 	return "http://" + p.listener.Addr().String()
 }
+
+// Done returns a channel that closes when Close is called. Used by
+// StartPoolBackground to tie scheduler/timer lifetimes to the proxy.
+func (p *LocalProxy) Done() <-chan struct{} { return p.done }
 
 // Start runs the HTTP server. It blocks until the server exits; run
 // it in its own goroutine. Start also kicks off a background token
@@ -123,13 +176,20 @@ func (p *LocalProxy) Close() error {
 	return p.server.Shutdown(ctx)
 }
 
-// refreshLoop is the background token refresher. Every
-// backgroundRefreshInterval it calls getFreshToken, which is a no-op
-// when the cached access token is still valid and triggers a full
-// OAuth refresh otherwise. Errors are logged but not fatal — the
-// next inbound request retries on its own code path and the child
-// claude stays up.
+// refreshLoop is the background token refresher (single-cred mode).
+// Every backgroundRefreshInterval it calls getFreshToken, which is a
+// no-op when the cached access token is still valid and triggers a
+// full OAuth refresh otherwise. Errors are logged but not fatal —
+// the next inbound request retries on its own code path and the
+// child claude stays up.
+//
+// In pool mode this loop is a no-op: per-cred refresh timers and
+// the scheduler goroutine that StartPoolBackground wires up handle
+// refresh cadence for every entry.
 func (p *LocalProxy) refreshLoop() {
+	if p.pool != nil {
+		return
+	}
 	ticker := time.NewTicker(backgroundRefreshInterval)
 	defer ticker.Stop()
 	for {
@@ -138,10 +198,14 @@ func (p *LocalProxy) refreshLoop() {
 			return
 		case <-ticker.C:
 			if _, err := p.getFreshToken(); err != nil {
+				// coverage: unreachable in unit tests — the single-
+				// cred refresh path requires real OAuth roundtrips.
 				fmt.Fprintf(errLog(), "ccm launch: background refresh check failed: %v\n", err)
 				continue
 			}
 			if p.debug {
+				// coverage: unreachable in unit tests — debug logging
+				// is environment-gated.
 				fmt.Fprintf(errLog(), "ccm launch [debug]: background refresh check ok\n")
 			}
 		}
@@ -153,6 +217,10 @@ func (p *LocalProxy) refreshLoop() {
 func (p *LocalProxy) handle(w http.ResponseWriter, r *http.Request) {
 	realToken, err := p.getFreshToken()
 	if err != nil {
+		if errors.Is(err, errNoActivated) {
+			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm: no usable credentials")
+			return
+		}
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm launch: credential refresh failed: "+err.Error())
 		return
 	}
@@ -165,6 +233,12 @@ func (p *LocalProxy) handle(w http.ResponseWriter, r *http.Request) {
 // overlay any other headers — claude-cli, running in its normal
 // keychain-OAuth code path, already produces the exact identity
 // headers Anthropic expects. We only need to replace the bearer.
+//
+// Note: in pool mode we deliberately do NOT replay
+// pool.activatedHeaders. The spawned claude provides its own
+// outbound headers per request; replaying captured headers would
+// double-up identity material and risk drift between the headers and
+// the bearer we're about to inject.
 func (p *LocalProxy) director(req *http.Request) {
 	req.URL.Scheme = p.upstream.Scheme
 	req.URL.Host = p.upstream.Host
@@ -200,12 +274,17 @@ func (p *LocalProxy) onUpstreamError(w http.ResponseWriter, _ *http.Request, err
 	writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm launch: upstream error: "+err.Error())
 }
 
-// getFreshToken returns the current access token. See credState.Fresh
-// for the full algorithm including peer-write reload and cross-process
-// flock during refresh.
+// getFreshToken returns the current access token via the configured
+// tokenSource. In single-cred mode it delegates to credState.Fresh
+// (peer-write reload + cross-process flock during refresh). In pool
+// mode it routes through credPool.Fresh, which returns the activated
+// entry's token or errNoActivated when the pool is empty.
 func (p *LocalProxy) getFreshToken() (string, error) {
-	if p.credState == nil {
+	if p.tokens == nil {
+		// coverage: unreachable — newLocalProxyInternal always
+		// initializes tokens; the nil-cred / nil-pool guards in the
+		// public constructors reject the misuse before we get here.
 		return "", errors.New("no credential")
 	}
-	return p.credState.Fresh()
+	return p.tokens.Fresh()
 }
