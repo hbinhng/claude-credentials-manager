@@ -407,6 +407,35 @@ func TestActivatedHeadersReturnsNilWhenActivatedMissing(t *testing.T) {
 	}
 }
 
+func TestSnapshotLinesIncludesCapturedHeadersCount(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	p.entries["a"].captured = http.Header{
+		"User-Agent":     []string{"x"},
+		"Anthropic-Beta": []string{"y"},
+	}
+	// b has no captured headers.
+
+	lines := p.SnapshotLines()
+	var aLine, bLine string
+	for _, l := range lines {
+		switch {
+		case strings.Contains(l, "alice"):
+			aLine = l
+		case strings.Contains(l, "bob"):
+			bLine = l
+		}
+	}
+	if !strings.Contains(aLine, "headers=2") {
+		t.Errorf("alice line %q missing headers=2", aLine)
+	}
+	if !strings.Contains(bLine, "headers=unset") {
+		t.Errorf("bob line %q missing headers=unset", bLine)
+	}
+}
+
 func TestSnapshotIsDeepCopy(t *testing.T) {
 	p := makePool("a", false, map[string]*poolEntry{
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
