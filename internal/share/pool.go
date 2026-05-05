@@ -265,9 +265,26 @@ type PoolReader interface {
 // directly from p.entries under p.mu.RLock — does not call Snapshot
 // (which takes its own RLock; sync.RWMutex does not allow recursive
 // RLocks).
+//
+// Launch-mode pools (every entry has captured == nil) suppress the
+// trailing headers= column entirely. Share-mode pools (at least one
+// entry has captured headers after the initial promotion) emit the
+// column with "unset"/"N".
 func (p *credPool) SnapshotLines() []string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+
+	// Detect launch-mode invariant: every entry has captured == nil.
+	// In that case suppress the headers= column to avoid emitting
+	// "headers=unset" for every line (low-signal noise).
+	anyCaptured := false
+	for _, e := range p.entries {
+		if e.captured != nil {
+			anyCaptured = true
+			break
+		}
+	}
+
 	out := make([]string, 0, len(p.entries))
 	for id, e := range p.entries {
 		last := "never"
@@ -280,12 +297,17 @@ func (p *credPool) SnapshotLines() []string {
 		} else {
 			name = fmt.Sprintf("%s(%s)", name, shortID(id))
 		}
-		hdrs := "unset"
-		if e.captured != nil {
-			hdrs = fmt.Sprintf("%d", len(e.captured))
+		if anyCaptured {
+			hdrs := "unset"
+			if e.captured != nil {
+				hdrs = fmt.Sprintf("%d", len(e.captured))
+			}
+			out = append(out, fmt.Sprintf("  %s status=%s fail=%d feasibility=%.3f last=%s headers=%s",
+				name, e.status, e.consecutiveFail, e.lastFeasibility, last, hdrs))
+		} else {
+			out = append(out, fmt.Sprintf("  %s status=%s fail=%d feasibility=%.3f last=%s",
+				name, e.status, e.consecutiveFail, e.lastFeasibility, last))
 		}
-		out = append(out, fmt.Sprintf("  %s status=%s fail=%d feasibility=%.3f last=%s headers=%s",
-			name, e.status, e.consecutiveFail, e.lastFeasibility, last, hdrs))
 	}
 	return out
 }

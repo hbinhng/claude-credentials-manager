@@ -436,6 +436,48 @@ func TestSnapshotLinesIncludesCapturedHeadersCount(t *testing.T) {
 	}
 }
 
+func TestSnapshotLinesSuppressesHeadersColumnInLaunchMode(t *testing.T) {
+	// All entries with captured == nil → column omitted entirely.
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	// p.entries[*].captured all nil by default
+
+	lines := p.SnapshotLines()
+	for _, l := range lines {
+		if strings.Contains(l, "headers=") {
+			t.Errorf("line %q contains headers= column despite no entries having captured headers", l)
+		}
+	}
+}
+
+func TestSnapshotLinesShowsHeadersColumnWhenAnyCaptureSet(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	p.entries["a"].captured = http.Header{"X": []string{"y"}}
+	// b.captured stays nil
+
+	lines := p.SnapshotLines()
+	var aLine, bLine string
+	for _, l := range lines {
+		if strings.Contains(l, "alice") {
+			aLine = l
+		}
+		if strings.Contains(l, "bob") {
+			bLine = l
+		}
+	}
+	if !strings.Contains(aLine, "headers=1") {
+		t.Errorf("alice line %q missing headers=1", aLine)
+	}
+	if !strings.Contains(bLine, "headers=unset") {
+		t.Errorf("bob line %q missing headers=unset", bLine)
+	}
+}
+
 func TestSnapshotIsDeepCopy(t *testing.T) {
 	p := makePool("a", false, map[string]*poolEntry{
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
