@@ -249,3 +249,56 @@ func TestLoadBalanceProxy503OnNoActivated(t *testing.T) {
 		t.Errorf("body = %q, want to contain 'no usable credentials'", string(body[:n]))
 	}
 }
+
+func TestProxyDirectorReadsHeadersFromPool(t *testing.T) {
+	// Set up an upstream stub that records what it sees.
+	var seen http.Header
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer upstream.Close()
+
+	// Point the proxy's upstream at the test server BEFORE NewProxy
+	// (which captures upstream from upstreamBase()).
+	prevBase := SetUpstreamBaseForTest(upstream.URL)
+	defer func() { upstreamBaseOverride = prevBase }()
+
+	// Set up two creds; activated = a with captured headers = {X-Cred: a}.
+	stateA := &fakeRefreshableState{id: "a", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
+	pool := &credPool{entries: map[string]*poolEntry{
+		"a": {
+			state:    stateA,
+			status:   statusActivated,
+			captured: http.Header{"X-Cred": []string{"a"}},
+		},
+	}, activated: "a"}
+
+	proxy, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	defer proxy.Close()
+	proxy.markCaptured(http.Header{}) // load-balance mode seeds empty p.captured
+	go proxy.Start()
+
+	// Transition with pool.
+	if err := proxy.Transition("acc-tok", pool, pool); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	// Issue a request through the proxy.
+	req, _ := http.NewRequest("POST", proxy.Addr()+"/v1/messages", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer acc-tok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("client Do: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := seen.Get("X-Cred"); got != "a" {
+		t.Errorf("upstream X-Cred = %q, want a (director should read from pool)", got)
+	}
+}
