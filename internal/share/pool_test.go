@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 	"testing"
@@ -175,7 +176,7 @@ func TestPromoteResetsCounterOfHealthyOldActivated(t *testing.T) {
 		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
 	})
 	p.entries["a"].consecutiveFail = 1 // healthy (< 2)
-	p.Promote("b")
+	p.Promote("b", nil)
 	if got := p.entries["a"].status; got != statusCandidate {
 		t.Errorf("old activated status = %v, want candidate", got)
 	}
@@ -199,7 +200,7 @@ func TestPromoteDemotesUnhealthyOldActivatedToDegraded(t *testing.T) {
 		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
 	})
 	p.entries["a"].consecutiveFail = 3 // unhealthy
-	p.Promote("b")
+	p.Promote("b", nil)
 	if got := p.entries["a"].status; got != statusDegraded {
 		t.Errorf("old activated status = %v, want degraded", got)
 	}
@@ -286,9 +287,9 @@ func TestSignalActivatedFailedRacePromote(t *testing.T) {
 		defer wg.Done()
 		for i := 0; i < N; i++ {
 			if i%2 == 0 {
-				p.Promote("b")
+				p.Promote("b", nil)
 			} else {
-				p.Promote("a")
+				p.Promote("a", nil)
 			}
 		}
 	}()
@@ -344,6 +345,65 @@ func TestSnapshotLines(t *testing.T) {
 	}
 	if !strings.Contains(combined, "never") {
 		t.Errorf("missing 'never' for b's lastUsageAt: %s", combined)
+	}
+}
+
+func TestPromoteStoresHeaders(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	hdrs := http.Header{"User-Agent": []string{"bob-ua"}, "X-Test": []string{"42"}}
+	p.Promote("b", hdrs)
+	if got := p.entries["b"].captured.Get("User-Agent"); got != "bob-ua" {
+		t.Errorf("captured User-Agent = %q, want bob-ua", got)
+	}
+	if got := p.entries["b"].captured.Get("X-Test"); got != "42" {
+		t.Errorf("captured X-Test = %q, want 42", got)
+	}
+}
+
+func TestPromoteClonesHeadersOnStore(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
+	})
+	hdrs := http.Header{"X-Test": []string{"original"}}
+	p.Promote("b", hdrs)
+
+	// Mutate the source map after Promote.
+	hdrs.Set("X-Test", "mutated")
+
+	if got := p.entries["b"].captured.Get("X-Test"); got != "original" {
+		t.Errorf("captured X-Test = %q, want original (Promote must clone)", got)
+	}
+}
+
+func TestActivatedHeadersReturnsActivatedEntry(t *testing.T) {
+	p := makePool("a", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
+	})
+	p.entries["a"].captured = http.Header{"User-Agent": []string{"alice-ua"}}
+	got := p.activatedHeaders()
+	if got.Get("User-Agent") != "alice-ua" {
+		t.Errorf("activatedHeaders().Get(User-Agent) = %q, want alice-ua", got.Get("User-Agent"))
+	}
+}
+
+func TestActivatedHeadersReturnsNilWhenNoActivated(t *testing.T) {
+	p := makePool("", false, map[string]*poolEntry{})
+	if got := p.activatedHeaders(); got != nil {
+		t.Errorf("activatedHeaders() = %v, want nil", got)
+	}
+}
+
+func TestActivatedHeadersReturnsNilWhenActivatedMissing(t *testing.T) {
+	// activated points to an ID that doesn't exist in entries.
+	p := makePool("ghost", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusCandidate, &fakeTokenSource{}),
+	})
+	if got := p.activatedHeaders(); got != nil {
+		t.Errorf("activatedHeaders() = %v, want nil (activated missing from map)", got)
 	}
 }
 

@@ -3,6 +3,7 @@ package share
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"sync"
 	"time"
 
@@ -64,6 +65,7 @@ type poolEntry struct {
 	lastUsage       *oauth.UsageInfo
 	lastUsageAt     time.Time
 	lastFeasibility float64
+	captured        http.Header // headers captured at last promotion (load-balance mode)
 }
 
 // credPool owns the pool of credentials and their per-session
@@ -133,12 +135,14 @@ func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 	}
 }
 
-// Promote atomically swaps the activated entry to newID. The old
-// activated is demoted to degraded if its consecutiveFail >= 2 (its
-// counter is preserved); otherwise to candidate with the counter
-// reset (rotation itself is the recovery signal for a healthy
-// loser).
-func (p *credPool) Promote(newID string) {
+// Promote atomically swaps the activated entry to newID and stores
+// the captured headers for the new activated. Headers are cloned on
+// store so callers can pass a value they later mutate.
+//
+// The old activated is demoted to degraded if its consecutiveFail >= 2
+// (counter preserved); otherwise to candidate with the counter reset
+// to 0 (rotation itself is the recovery signal for a healthy loser).
+func (p *credPool) Promote(newID string, headers http.Header) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if old, ok := p.entries[p.activated]; ok {
@@ -152,8 +156,32 @@ func (p *credPool) Promote(newID string) {
 	if e, ok := p.entries[newID]; ok {
 		e.status = statusActivated
 		e.consecutiveFail = 0
+		if headers != nil {
+			e.captured = headers.Clone()
+		}
 	}
 	p.activated = newID
+}
+
+// activatedHeaders returns the activated entry's captured headers
+// (or nil if no entry is currently activated). Used by Proxy.director
+// in load-balance mode to replay the right per-cred headers.
+//
+// Returns the stored slice without further cloning — director clones
+// values per key into the outbound request, and Promote already
+// cloned on store. The returned http.Header must be treated as
+// read-only by callers.
+func (p *credPool) activatedHeaders() http.Header {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.activated == "" {
+		return nil
+	}
+	e, ok := p.entries[p.activated]
+	if !ok {
+		return nil
+	}
+	return e.captured
 }
 
 // Demote clears the activated slot — Fresh() will return
