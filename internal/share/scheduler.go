@@ -138,10 +138,10 @@ func (s *scheduler) runOnce() {
 				// Spec §"Logging" → "Pool-of-1 probe failure": distinct
 				// line so the operator knows the probe failed but no
 				// rotation is possible.
-				fmt.Fprintf(errLog(), "ccm share: %s(%s) probe failed (singleton pool, no rotation): %v\n",
+				fmt.Fprintf(errLog(), "ccm: %s(%s) probe failed (singleton pool, no rotation): %v\n",
 					j.state.credName(), shortID(j.id), err)
 			} else {
-				fmt.Fprintf(errLog(), "ccm share: probe failed for %s: %v\n", shortID(j.id), err)
+				fmt.Fprintf(errLog(), "ccm: probe failed for %s: %v\n", shortID(j.id), err)
 			}
 		}
 		s.pool.MarkProbe(j.id, info, err)
@@ -266,7 +266,7 @@ func (s *scheduler) runOnce() {
 
 			headers, cerr := captureCredFn(winnerCred, s.prompt)
 			if cerr != nil {
-				fmt.Fprintf(errLog(), "ccm share: capture failed for %s(%s): %v — skipping rotation\n",
+				fmt.Fprintf(errLog(), "ccm: capture failed for %s(%s): %v — skipping rotation\n",
 					winnerName, shortID(winner.id), cerr)
 			} else {
 				// Atomic swap via Promote — handles old-activated
@@ -288,7 +288,7 @@ func (s *scheduler) runOnce() {
 	// Lock released before stderr write.
 	switch pending.kind {
 	case "rotate":
-		fmt.Fprintf(errLog(), "ccm share: rotated activated %s(%s) → %s(%s) (feasibility %.3f → %.3f)\n",
+		fmt.Fprintf(errLog(), "ccm: rotated activated %s(%s) → %s(%s) (feasibility %.3f → %.3f)\n",
 			pending.oldName, shortID(pending.oldID), pending.newName, shortID(pending.newID),
 			pending.oldFeasibility, pending.newFeasibility)
 	case "demote":
@@ -297,7 +297,7 @@ func (s *scheduler) runOnce() {
 		// already emits that for non-activated entries; the activated
 		// entry is being demoted by the scheduler, which is its own
 		// event).
-		fmt.Fprintf(errLog(), "ccm share: no usable credentials, serving 503 until recovery\n")
+		fmt.Fprintf(errLog(), "ccm: no usable credentials, serving 503 until recovery\n")
 		_ = pending.oldName
 		_ = pending.oldID
 	case "keep":

@@ -14,7 +14,7 @@ import (
 // errNoActivated is returned by credPool.Fresh when the pool has no
 // active entry — every entry is degraded (multi-pool case) or the
 // pool was constructed empty. Callers map this to HTTP 503.
-var errNoActivated = errors.New("ccm share: no usable credentials in pool")
+var errNoActivated = errors.New("ccm: no usable credentials in pool")
 
 // shortID returns up to the first 8 chars of an ID for log lines.
 // Real production IDs are UUIDs (36 chars); tests use shorter IDs
@@ -128,10 +128,10 @@ func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 
 	// Emit transition logs after releasing the lock.
 	if prevStatus == statusCandidate && newStatus == statusDegraded {
-		fmt.Fprintf(errLog(), "ccm share: %s(%s) degraded after 2 failures: %v\n", name, shortID(id), err)
+		fmt.Fprintf(errLog(), "ccm: %s(%s) degraded after 2 failures: %v\n", name, shortID(id), err)
 	}
 	if prevStatus == statusDegraded && newStatus == statusCandidate {
-		fmt.Fprintf(errLog(), "ccm share: %s(%s) recovered, back in pool\n", name, shortID(id))
+		fmt.Fprintf(errLog(), "ccm: %s(%s) recovered, back in pool\n", name, shortID(id))
 	}
 }
 
@@ -192,7 +192,7 @@ func (p *credPool) Demote(oldID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if p.singleton {
-		panic("ccm share: Demote called on singleton pool — invariant violation")
+		panic("ccm: Demote called on singleton pool — invariant violation")
 	}
 	if e, ok := p.entries[oldID]; ok {
 		e.status = statusDegraded
@@ -220,7 +220,7 @@ func (p *credPool) SignalActivatedFailed() {
 	name := e.state.credName()
 	id := p.activated
 	p.mu.Unlock()
-	fmt.Fprintf(errLog(), "ccm share: upstream 401 on activated %s(%s) (failure %d/2)\n",
+	fmt.Fprintf(errLog(), "ccm: upstream 401 on activated %s(%s) (failure %d/2)\n",
 		name, shortID(id), count)
 }
 

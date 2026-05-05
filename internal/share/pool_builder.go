@@ -48,7 +48,7 @@ func BuildPool(args []string, prompt string) (*credPool, *store.Credential, erro
 		if _, ferr := state.Fresh(); ferr != nil {
 			msg := fmt.Sprintf("%s(%s): refresh failed: %v", credLogName(cred), shortID(cred.ID), ferr)
 			rejections = append(rejections, msg)
-			fmt.Fprintf(errLog(), "ccm share: skipping %s\n", msg)
+			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
 			continue
 		}
 		info := oauth.FetchUsageFn(cred.ClaudeAiOauth.AccessToken)
@@ -59,7 +59,7 @@ func BuildPool(args []string, prompt string) (*credPool, *store.Credential, erro
 			}
 			msg := fmt.Sprintf("%s(%s): %s", credLogName(cred), shortID(cred.ID), reason)
 			rejections = append(rejections, msg)
-			fmt.Fprintf(errLog(), "ccm share: skipping %s\n", msg)
+			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
 			continue
 		}
 		f := computeFeasibility(info, timeNow())
@@ -78,7 +78,7 @@ func BuildPool(args []string, prompt string) (*credPool, *store.Credential, erro
 
 	// Explicit-arg pre-capture rejection check (refresh / usage probe).
 	if explicit && len(rejections) > 0 {
-		return nil, nil, fmt.Errorf("ccm share: explicitly named credential(s) rejected:\n  %s",
+		return nil, nil, fmt.Errorf("ccm: explicitly named credential(s) rejected:\n  %s",
 			joinLines(rejections))
 	}
 
@@ -101,9 +101,9 @@ func BuildPool(args []string, prompt string) (*credPool, *store.Credential, erro
 			msg := fmt.Sprintf("%s(%s): capture failed: %v", credLogName(ad.cred), shortID(ad.cred.ID), cerr)
 			captureRejects = append(captureRejects, msg)
 			captureFailedIDs[ad.cred.ID] = true
-			fmt.Fprintf(errLog(), "ccm share: skipping %s\n", msg)
+			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
 			if explicit {
-				return nil, nil, fmt.Errorf("ccm share: explicitly named credential(s) failed capture:\n  %s",
+				return nil, nil, fmt.Errorf("ccm: explicitly named credential(s) failed capture:\n  %s",
 					joinLines(captureRejects))
 			}
 			continue
@@ -128,21 +128,21 @@ func BuildPool(args []string, prompt string) (*credPool, *store.Credential, erro
 		}
 		pool.singleton = len(pool.entries) == 1
 
-		fmt.Fprintf(errLog(), "ccm share: load-balance pool: %d candidates, initial activated %s(%s) (feasibility %.3f)\n",
+		fmt.Fprintf(errLog(), "ccm: load-balance pool: %d candidates, initial activated %s(%s) (feasibility %.3f)\n",
 			len(pool.entries), credLogName(ad.cred), shortID(ad.cred.ID), ad.feasibility)
 		return pool, ad.cred, nil
 	}
 
 	// All captures failed (implicit-mode case).
 	if len(captureRejects) > 0 {
-		return nil, nil, fmt.Errorf("ccm share: no candidate could be captured:\n  %s",
+		return nil, nil, fmt.Errorf("ccm: no candidate could be captured:\n  %s",
 			joinLines(captureRejects))
 	}
 	if len(rejections) > 0 {
-		return nil, nil, fmt.Errorf("ccm share: no usable credentials in pool:\n  %s",
+		return nil, nil, fmt.Errorf("ccm: no usable credentials in pool:\n  %s",
 			joinLines(rejections))
 	}
-	return nil, nil, errors.New("ccm share: no credentials in store; run `ccm login` first")
+	return nil, nil, errors.New("ccm: no credentials in store; run `ccm login` first")
 }
 
 // resolvePoolArgs turns CLI arguments into a deduped list of
