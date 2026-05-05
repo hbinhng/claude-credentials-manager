@@ -179,10 +179,14 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 	// Build the child environment: inherit the parent's env minus
 	// any Anthropic auth vars that would override claude-cli's
 	// keychain-OAuth code path and break the passthrough proxy's
-	// Anthropic-Beta expectations.
+	// Anthropic-Beta expectations. Also strip ANTHROPIC_BASE_URL so
+	// our own value is the only one the child sees (otherwise an
+	// inherited override could win when the test or wrapping shell
+	// pre-populated it).
 	env := filterEnv(os.Environ(),
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
 	)
 	env = append(env, "ANTHROPIC_BASE_URL="+proxy.Addr())
 
@@ -236,6 +240,7 @@ func runLaunchLoadBalance(args []string, claudeArgs []string, rebalanceInterval 
 	env := filterEnv(os.Environ(),
 		"ANTHROPIC_API_KEY",
 		"ANTHROPIC_AUTH_TOKEN",
+		"ANTHROPIC_BASE_URL",
 	)
 	env = append(env, "ANTHROPIC_BASE_URL="+proxy.Addr())
 
