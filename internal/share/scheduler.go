@@ -405,9 +405,9 @@ func (s *scheduler) runOnce() {
 	// Lock released before stderr write.
 	switch pending.kind {
 	case "rotate":
-		fmt.Fprintf(errLog(), "ccm: rotated activated %s(%s) → %s(%s) (feasibility %.3f → %.3f)\n",
+		fmt.Fprintf(errLog(), "ccm: rotated activated %s(%s) → %s(%s) (lifetime %s → %s)\n",
 			pending.oldName, shortID(pending.oldID), pending.newName, shortID(pending.newID),
-			pending.oldFeasibility, pending.newFeasibility)
+			formatLifetime(pending.oldFeasibility), formatLifetime(pending.newFeasibility))
 	case "demote":
 		// Spec §"Logging" → "Pool empty": only this line, not the
 		// per-entry "degraded after 2 failures" wrapper (MarkProbe
