@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -116,6 +117,99 @@ func TestLoadFile_NotFoundIsError(t *testing.T) {
 	}
 	if recs != nil {
 		t.Fatalf("recs = %v, want nil", recs)
+	}
+}
+
+// LoadFile must skip blank lines (a kill -9 in the middle of a write
+// can leave an empty line; the parser must not panic).
+func TestLoadFile_SkipsBlankLines(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := EnsureDir(); err != nil {
+		t.Fatal(err)
+	}
+	sid := "5f2c8c4e-1234-4567-8abc-0123456789ab"
+	good := `{"ts":"2026-05-06T09:42:11Z","model":"x","in":1,"out":1,"cr":0,"cw":0,"stream":true}`
+	body := good + "\n\n   \n" + good + "\n"
+	if err := os.WriteFile(SessionPath(sid), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := LoadFile(SessionPath(sid))
+	if err != nil {
+		t.Fatalf("LoadFile: %v", err)
+	}
+	if len(recs) != 2 {
+		t.Fatalf("got %d records, want 2 (blank lines skipped)", len(recs))
+	}
+}
+
+// LoadFile must surface scanner-level errors (e.g. bufio.ErrTooLong
+// for a single line exceeding the scanner's 64 KB max token size).
+// The earlier valid records are still returned alongside the error.
+func TestLoadFile_ScannerErrorReturned(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	if err := EnsureDir(); err != nil {
+		t.Fatal(err)
+	}
+	sid := "5f2c8c4e-1234-4567-8abc-0123456789ab"
+	good := `{"ts":"2026-05-06T09:42:11Z","model":"x","in":1,"out":1,"cr":0,"cw":0,"stream":true}` + "\n"
+	huge := strings.Repeat("X", 200*1024) + "\n" // 200 KB single line — bufio.ErrTooLong
+	body := good + huge
+	if err := os.WriteFile(SessionPath(sid), []byte(body), 0600); err != nil {
+		t.Fatal(err)
+	}
+	recs, err := LoadFile(SessionPath(sid))
+	if err == nil {
+		t.Fatalf("expected scanner error from oversized line")
+	}
+	if len(recs) != 1 || recs[0].Model != "x" {
+		t.Errorf("expected first record returned despite later error; got %+v", recs)
+	}
+}
+
+// Triggers the EnsureDir error path: HOME points at a non-creatable
+// location (a regular file, so MkdirAll fails). Append returns the
+// wrapped error; no file is created.
+func TestAppend_EnsureDirErrorReturnsError(t *testing.T) {
+	if runtimeIsWindows() {
+		t.Skip("permission semantics differ on Windows")
+	}
+	tmp := t.TempDir()
+	// Make HOME a path where .ccm is unbuildable: create a regular
+	// file at HOME/.ccm so MkdirAll can't promote it to a dir.
+	t.Setenv("HOME", tmp)
+	if err := os.WriteFile(filepath.Join(tmp, ".ccm"), []byte("blocker"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rec := Record{TS: time.Now().UTC(), Model: "x", Out: 1}
+	if err := Append("5f2c8c4e-1234-4567-8abc-0123456789ab", rec); err == nil {
+		t.Fatalf("Append should error when usage dir cannot be created")
+	}
+}
+
+// Triggers the OpenFile error path: pre-create a *directory* at the
+// session-id ndjson path so OpenFile (without O_DIRECTORY) returns
+// EISDIR.
+func TestAppend_OpenErrorReturnsError(t *testing.T) {
+	if runtimeIsWindows() {
+		t.Skip("permission semantics differ on Windows")
+	}
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	sid := "5f2c8c4e-1234-4567-8abc-0123456789ab"
+	// Create the usage dir, then create a subdir at the session-id
+	// path so OpenFile sees a directory instead of a regular file.
+	if err := EnsureDir(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(SessionPath(sid), 0700); err != nil {
+		t.Fatal(err)
+	}
+	rec := Record{TS: time.Now().UTC(), Model: "x", Out: 1}
+	err := Append(sid, rec)
+	if err == nil {
+		t.Fatalf("Append should error when session-id path is a directory")
 	}
 }
 

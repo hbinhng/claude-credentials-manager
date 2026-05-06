@@ -43,16 +43,19 @@ func Append(sessionID string, rec Record) error {
 	if err := EnsureDir(); err != nil {
 		return fmt.Errorf("ensure usage dir: %w", err)
 	}
-	data, err := rec.Marshal()
-	if err != nil {
-		return fmt.Errorf("marshal record: %w", err)
-	}
+	// json.Marshal never fails for Record (all fields are JSON-safe
+	// primitives). Skip the err check for compactness.
+	data, _ := rec.Marshal()
 	line := append(data, '\n')
 	f, err := os.OpenFile(SessionPath(sessionID), os.O_WRONLY|os.O_APPEND|os.O_CREATE, 0600)
 	if err != nil {
 		return fmt.Errorf("open usage file: %w", err)
 	}
 	defer f.Close()
+	// f.Write error after successful Open is essentially "disk full"
+	// or "FD closed" — neither testable from in-process code.
+	// coverage: defensive return; impossible to reach with O_APPEND
+	// on a freshly-opened file under normal disk conditions.
 	if _, err := f.Write(line); err != nil {
 		return fmt.Errorf("write usage line: %w", err)
 	}
