@@ -16,6 +16,16 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 )
 
+// formatLifetime renders a time-to-exhaustion in operator-friendly
+// form. Finite seconds → time.Duration string (e.g. "2h30m0s"); +Inf → "∞".
+// Used in stderr log lines emitted by the scheduler and pool_builder.
+func formatLifetime(secs float64) string {
+	if math.IsInf(secs, 1) {
+		return "∞"
+	}
+	return time.Duration(secs * float64(time.Second)).Round(time.Second).String()
+}
+
 // computeFeasibility returns the rotation score for a single
 // credential's usage snapshot. See the design doc for the formula
 // and edge-case rules (clamps + missing-window fallbacks).
