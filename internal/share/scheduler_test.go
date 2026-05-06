@@ -28,6 +28,27 @@ func stubCaptureCredOKScheduler(t *testing.T) {
 	t.Cleanup(func() { captureCredFn = orig })
 }
 
+func TestFormatLifetime(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0s"},
+		{1, "1s"},
+		{60, "1m0s"},
+		{3600, "1h0m0s"},
+		{9000, "2h30m0s"},
+		{604800, "168h0m0s"},
+		{math.Inf(1), "∞"},
+	}
+	for _, tt := range tests {
+		got := formatLifetime(tt.in)
+		if got != tt.want {
+			t.Errorf("formatLifetime(%v) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestComputeFeasibilityBothPresent(t *testing.T) {
 	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
 	info := &oauth.UsageInfo{
