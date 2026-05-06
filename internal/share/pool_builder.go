@@ -180,8 +180,8 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 		}
 		pool.singleton = len(pool.entries) == 1
 
-		fmt.Fprintf(errLog(), "ccm: load-balance pool: %d candidates, initial activated %s(%s) (feasibility %.3f)\n",
-			len(pool.entries), credLogName(ad.cred), shortID(ad.cred.ID), ad.feasibility)
+		fmt.Fprintf(errLog(), "ccm: load-balance pool: %d candidates, initial activated %s(%s) (lifetime %s)\n",
+			len(pool.entries), credLogName(ad.cred), shortID(ad.cred.ID), formatLifetime(ad.feasibility))
 		return pool, ad.cred, nil
 	}
 
