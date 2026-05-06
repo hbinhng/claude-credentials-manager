@@ -2,6 +2,7 @@ package usage
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -150,12 +151,33 @@ func newJSONSink() *jsonSink {
 
 func (s *jsonSink) Write(p []byte) (int, error) { return s.buf.Write(p) }
 
+// gzipMagic is the two-byte signature at the start of any gzip stream.
+var gzipMagic = []byte{0x1f, 0x8b}
+
 func (s *jsonSink) Finalize() *Record {
+	body := s.buf.Bytes()
+	// Anthropic sends gzip-compressed JSON for /v1/messages when
+	// Accept-Encoding allows it (Go's default transport does). Detect
+	// by magic bytes and decompress before unmarshaling. ReverseProxy
+	// passes the original gzip bytes through to the client unchanged
+	// — only our captured copy is decompressed.
+	if bytes.HasPrefix(body, gzipMagic) {
+		gr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil
+		}
+		decoded, err := io.ReadAll(gr)
+		gr.Close()
+		if err != nil {
+			return nil
+		}
+		body = decoded
+	}
 	var resp struct {
 		Model string     `json:"model"`
 		Usage usageBlock `json:"usage"`
 	}
-	if err := json.Unmarshal(s.buf.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(body, &resp); err != nil {
 		return nil
 	}
 	in := derefOr(resp.Usage.InputTokens)
@@ -181,6 +203,80 @@ func derefOr(p *int64) int64 {
 		return 0
 	}
 	return *p
+}
+
+// ---- gzip wrapper ------------------------------------------------------
+
+// gzipSink wraps another Sink and decompresses incoming gzip bytes
+// before forwarding them. Used when an upstream response carries
+// Content-Encoding: gzip — without this, sseSink sees raw gzip frames
+// and never matches "event: " / "data: " prefixes.
+//
+// A pipe-backed goroutine drives gzip.Reader so that decompressed
+// bytes arrive at the inner sink as soon as gzip emits them. On
+// Finalize, the pipe is closed and we wait for the goroutine to
+// drain before consulting the inner sink.
+type gzipSink struct {
+	inner  Sink
+	pw     *io.PipeWriter
+	done   chan struct{}
+	closed bool
+}
+
+// NewGzipSink wraps another Sink so that gzip-compressed bytes
+// written to it are decompressed before being forwarded. Used for
+// SSE responses with Content-Encoding: gzip — without this wrapper,
+// sseSink sees raw deflate frames and never matches event/data
+// prefixes.
+func NewGzipSink(inner Sink) Sink { return newGzipSink(inner) }
+
+func newGzipSink(inner Sink) *gzipSink {
+	pr, pw := io.Pipe()
+	g := &gzipSink{inner: inner, pw: pw, done: make(chan struct{})}
+	go g.run(pr)
+	return g
+}
+
+func (g *gzipSink) run(pr *io.PipeReader) {
+	defer close(g.done)
+	defer pr.Close()
+	gr, err := gzip.NewReader(pr)
+	if err != nil {
+		// Malformed gzip — drain pipe so the writer side doesn't
+		// block, but emit nothing.
+		_, _ = io.Copy(io.Discard, pr)
+		return
+	}
+	defer gr.Close()
+	buf := make([]byte, 8*1024)
+	for {
+		n, err := gr.Read(buf)
+		if n > 0 {
+			_, _ = g.inner.Write(buf[:n])
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
+func (g *gzipSink) Write(p []byte) (int, error) {
+	if g.closed {
+		return len(p), nil
+	}
+	// Pipe writes block until the goroutine has consumed them. gzip
+	// throughput is very high (>>100 MB/s), so this is effectively
+	// memcpy speed for our SSE chunks.
+	return g.pw.Write(p)
+}
+
+func (g *gzipSink) Finalize() *Record {
+	if !g.closed {
+		g.closed = true
+		_ = g.pw.Close()
+	}
+	<-g.done
+	return g.inner.Finalize()
 }
 
 // ---- dispatch ----------------------------------------------------------
