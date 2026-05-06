@@ -28,6 +28,52 @@ func stubCaptureCredOKScheduler(t *testing.T) {
 	t.Cleanup(func() { captureCredFn = orig })
 }
 
+func TestSecondsUntil(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+
+	t.Run("empty stamp", func(t *testing.T) {
+		got, ok := secondsUntil("", now)
+		if ok {
+			t.Errorf("ok = true for empty stamp, want false")
+		}
+		if got != 0 {
+			t.Errorf("got = %v, want 0 (sentinel) for empty stamp", got)
+		}
+	})
+
+	t.Run("RFC3339 valid", func(t *testing.T) {
+		stamp := now.Add(1234 * time.Second).Format(time.RFC3339)
+		got, ok := secondsUntil(stamp, now)
+		if !ok {
+			t.Errorf("ok = false for valid stamp %q", stamp)
+		}
+		if math.Abs(got-1234) > 1 {
+			t.Errorf("got = %v, want ~1234", got)
+		}
+	})
+
+	t.Run("RFC3339Nano fallback", func(t *testing.T) {
+		stamp := now.Add(time.Second).Format(time.RFC3339Nano)
+		got, ok := secondsUntil(stamp, now)
+		if !ok {
+			t.Errorf("ok = false for RFC3339Nano stamp")
+		}
+		if math.Abs(got-1) > 0.5 {
+			t.Errorf("got = %v, want ~1", got)
+		}
+	})
+
+	t.Run("garbage parse failure", func(t *testing.T) {
+		got, ok := secondsUntil("not-a-timestamp", now)
+		if ok {
+			t.Errorf("ok = true for unparseable stamp, want false")
+		}
+		if got != 0 {
+			t.Errorf("got = %v, want 0", got)
+		}
+	})
+}
+
 func TestFormatLifetime(t *testing.T) {
 	tests := []struct {
 		in   float64

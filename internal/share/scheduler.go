@@ -37,27 +37,40 @@ func computeFeasibility(info *oauth.UsageInfo, now time.Time) float64 {
 
 // windowInputs returns (left%, wait_seconds) for a single quota
 // window, applying clamps and best-case fallbacks for nil/missing.
+//
+// Temporary shim during the formula transition: preserves the old
+// "missing/unparseable stamp → wait=1" semantic so existing tests
+// keep passing. windowInputs is removed in the next commit.
 func windowInputs(q *oauth.Quota, now time.Time) (float64, float64) {
 	if q == nil {
 		return 100, 1
 	}
 	left := math.Max(0, math.Min(100, 100-q.Used))
-	wait := math.Max(1, secondsUntil(q.ResetsAt, now))
+	wait, ok := secondsUntil(q.ResetsAt, now)
+	if !ok {
+		wait = 1
+	}
+	wait = math.Max(1, wait)
 	return left, wait
 }
 
-func secondsUntil(stamp string, now time.Time) float64 {
+// secondsUntil parses an RFC3339(Nano) timestamp and returns
+// (seconds_from_now, ok). ok=false if the stamp is empty or
+// unparseable. Callers should treat ok=false as "no signal" rather
+// than substituting a default — the new feasibility formula needs
+// to distinguish "couldn't parse" from "valid 1s wait".
+func secondsUntil(stamp string, now time.Time) (float64, bool) {
 	if stamp == "" {
-		return 1
+		return 0, false
 	}
 	t, err := time.Parse(time.RFC3339, stamp)
 	if err != nil {
 		t, err = time.Parse(time.RFC3339Nano, stamp)
 		if err != nil {
-			return 1
+			return 0, false
 		}
 	}
-	return t.Sub(now).Seconds()
+	return t.Sub(now).Seconds(), true
 }
 
 func lookupQuota(qs []oauth.Quota, name string) *oauth.Quota {
