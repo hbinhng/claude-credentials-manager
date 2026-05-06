@@ -310,9 +310,13 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 	// safe to set here because the ReverseProxy only consults it on
 	// request completion, and we hold modeMu around the field
 	// change.
-	if pool != nil {
-		existingMR := p.rp.ModifyResponse
-		p.rp.ModifyResponse = func(r *http.Response) error {
+	//
+	// The hook runs in all modes (single-cred and pool) because the
+	// usage tee installs unconditionally. Pool-only branches stay
+	// gated on `pool != nil`.
+	existingMR := p.rp.ModifyResponse
+	p.rp.ModifyResponse = func(r *http.Response) error {
+		if pool != nil {
 			if r.StatusCode == http.StatusUnauthorized {
 				// SignalActivatedFailed emits the formatted log line
 				// (with name, id8, and N/2 counter) per the spec; do
@@ -327,11 +331,17 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 					}
 				}
 			}
-			if existingMR != nil {
-				return existingMR(r)
-			}
-			return nil
 		}
+
+		// Usage tee runs in all modes (single-cred or pool).
+		if r.StatusCode >= 200 && r.StatusCode < 300 {
+			installUsageTee(r)
+		}
+
+		if existingMR != nil {
+			return existingMR(r)
+		}
+		return nil
 	}
 
 	if pool == nil {
