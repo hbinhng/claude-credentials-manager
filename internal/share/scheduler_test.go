@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"math/rand"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -28,121 +29,192 @@ func stubCaptureCredOKScheduler(t *testing.T) {
 	t.Cleanup(func() { captureCredFn = orig })
 }
 
-func TestComputeFeasibilityBothPresent(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "5h", Used: 50, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
-			{Name: "7d", Used: 20, ResetsAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
-		},
+func TestSecondsUntil(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+
+	t.Run("empty stamp", func(t *testing.T) {
+		got, ok := secondsUntil("", now)
+		if ok {
+			t.Errorf("ok = true for empty stamp, want false")
+		}
+		if got != 0 {
+			t.Errorf("got = %v, want 0 (sentinel) for empty stamp", got)
+		}
+	})
+
+	t.Run("RFC3339 valid", func(t *testing.T) {
+		stamp := now.Add(1234 * time.Second).Format(time.RFC3339)
+		got, ok := secondsUntil(stamp, now)
+		if !ok {
+			t.Errorf("ok = false for valid stamp %q", stamp)
+		}
+		if math.Abs(got-1234) > 1 {
+			t.Errorf("got = %v, want ~1234", got)
+		}
+	})
+
+	t.Run("RFC3339Nano fallback", func(t *testing.T) {
+		stamp := now.Add(time.Second).Format(time.RFC3339Nano)
+		got, ok := secondsUntil(stamp, now)
+		if !ok {
+			t.Errorf("ok = false for RFC3339Nano stamp")
+		}
+		if math.Abs(got-1) > 0.5 {
+			t.Errorf("got = %v, want ~1", got)
+		}
+	})
+
+	t.Run("garbage parse failure", func(t *testing.T) {
+		got, ok := secondsUntil("not-a-timestamp", now)
+		if ok {
+			t.Errorf("ok = true for unparseable stamp, want false")
+		}
+		if got != 0 {
+			t.Errorf("got = %v, want 0", got)
+		}
+	})
+}
+
+func TestFormatLifetime(t *testing.T) {
+	tests := []struct {
+		in   float64
+		want string
+	}{
+		{0, "0s"},
+		{1, "1s"},
+		{60, "1m0s"},
+		{3600, "1h0m0s"},
+		{9000, "2h30m0s"},
+		{604800, "168h0m0s"},
+		{math.Inf(1), "∞"},
 	}
-	got := computeFeasibility(info, now)
-	// left5h = 50, wait5h = 3600, left7d = 80, wait7d = 86400
-	// = 50/3600 + 0.7 * 80/86400
-	want := 50.0/3600 + 0.7*80.0/86400
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
+	for _, tt := range tests {
+		got := formatLifetime(tt.in)
+		if got != tt.want {
+			t.Errorf("formatLifetime(%v) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
-func TestComputeFeasibility5hMissing(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "7d", Used: 20, ResetsAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
-		},
+// TestExhaustionScenarios is the comprehensive table for the new
+// time-to-exhaustion formula. Rows mirror the spec's test data pool.
+func TestExhaustionScenarios(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+
+	in := func(used, wait float64) *oauth.Quota {
+		return &oauth.Quota{
+			Used:     used,
+			ResetsAt: now.Add(time.Duration(wait * float64(time.Second))).Format(time.RFC3339),
+		}
 	}
-	got := computeFeasibility(info, now)
-	// 5h falls back: left=100, wait=1; 7d normal
-	want := 100.0/1.0 + 0.7*80.0/86400
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
+	inEmptyStamp := func(used float64) *oauth.Quota {
+		return &oauth.Quota{Used: used, ResetsAt: ""}
+	}
+	inGarbageStamp := func(used float64) *oauth.Quota {
+		return &oauth.Quota{Used: used, ResetsAt: "not-a-timestamp"}
+	}
+
+	tests := []struct {
+		name   string
+		fiveH  *oauth.Quota
+		sevenD *oauth.Quota
+		want   float64
+	}{
+		{"both fresh", in(0, 18000), in(0, 604800), 18000},
+		{"both about to reset", in(0, 1), in(0, 1), 1},
+		{"uniform 50/50", in(50, 9000), in(50, 302400), 9000},
+		{"5h bottleneck, 7d light", in(50, 9000), in(10, 544320), 9000},
+		{"7d bottleneck heavy", in(10, 16200), in(99, 302400), 302400.0 / 99.0},
+		{"almost-exhausted 5h", in(99, 100), in(50, 302400), 100},
+		{"5h at 100", in(100, 1000), in(0, 604800), 0},
+		{"5h over-report 110", in(110, 1000), in(0, 604800), 0},
+		{"5h only", in(50, 9000), nil, 9000},
+		{"7d only", nil, in(50, 302400), 302400},
+		{"both missing", nil, nil, math.Inf(1)},
+		{"clock skew negative wait", in(50, -100), in(50, -100), 0},
+		{"wait > L", in(50, 18001), in(50, 604801), 18001},
+		{"5h empty stamp", inEmptyStamp(50), in(50, 302400), 302400},
+		{"5h garbage stamp", inGarbageStamp(50), in(50, 302400), 302400},
+		{"wait exactly zero", in(50, 0), in(50, 0), 0},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info := &oauth.UsageInfo{}
+			if tt.fiveH != nil {
+				info.Quotas = append(info.Quotas, oauth.Quota{
+					Name:     "5h",
+					Used:     tt.fiveH.Used,
+					ResetsAt: tt.fiveH.ResetsAt,
+				})
+			}
+			if tt.sevenD != nil {
+				info.Quotas = append(info.Quotas, oauth.Quota{
+					Name:     "7d",
+					Used:     tt.sevenD.Used,
+					ResetsAt: tt.sevenD.ResetsAt,
+				})
+			}
+			got := computeFeasibility(info, now)
+			if math.IsInf(tt.want, 1) {
+				if !math.IsInf(got, 1) {
+					t.Errorf("got = %v, want +Inf", got)
+				}
+				return
+			}
+			if math.Abs(got-tt.want) > 1e-6 {
+				t.Errorf("got = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 
-func TestComputeFeasibility7dMissing(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "5h", Used: 50, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
-		},
-	}
+// Scoped/extra-named quota windows (e.g. "1d", "seven_day_opus") are
+// not consumed by the formula — lookupQuota("5h") and lookupQuota("7d")
+// both return nil → both windowExhaustion calls return +Inf →
+// computeFeasibility returns +Inf. Replaces the regression guard
+// previously at TestComputeFeasibilityIgnoresModelExtras.
+func TestExhaustionIgnoresExtraScopedWindows(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{
+		{Name: "1d", Used: 50, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
+		{Name: "seven_day_opus", Used: 50, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
+	}}
 	got := computeFeasibility(info, now)
-	want := 50.0/3600 + 0.7*100.0/1.0
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
+	if !math.IsInf(got, 1) {
+		t.Errorf("got %v, want +Inf (only extra-named windows present)", got)
 	}
 }
 
-func TestComputeFeasibilityBothMissing(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{Quotas: nil}
-	got := computeFeasibility(info, now)
-	want := 100.0/1.0 + 0.7*100.0/1.0
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
+// Property: score is always >= 0 for any finite, sane input. Negative
+// outputs would indicate a missing edge-case guard.
+func TestExhaustionPropertyNonNegative(t *testing.T) {
+	now := time.Date(2026, 5, 6, 12, 0, 0, 0, time.UTC)
+	r := rand.New(rand.NewSource(0xc0ffee))
+	for i := 0; i < 1000; i++ {
+		u5h := r.Float64() * 120                     // allow over-100 over-report
+		w5h := r.Float64()*40000 - 5000              // allow some negative (clock skew)
+		u7d := r.Float64() * 120
+		w7d := r.Float64()*700000 - 50000
+		info := &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: u5h, ResetsAt: now.Add(time.Duration(w5h * float64(time.Second))).Format(time.RFC3339)},
+			{Name: "7d", Used: u7d, ResetsAt: now.Add(time.Duration(w7d * float64(time.Second))).Format(time.RFC3339)},
+		}}
+		got := computeFeasibility(info, now)
+		if got < 0 {
+			t.Errorf("got = %v < 0 for u5h=%v w5h=%v u7d=%v w7d=%v",
+				got, u5h, w5h, u7d, w7d)
+		}
 	}
 }
 
-func TestComputeFeasibilityUsedOver100(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "5h", Used: 150, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
-			{Name: "7d", Used: 0, ResetsAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
-		},
-	}
-	got := computeFeasibility(info, now)
-	// left5h clamps to 0
-	want := 0.0/3600 + 0.7*100.0/86400
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func TestComputeFeasibilityResetInPast(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "5h", Used: 50, ResetsAt: now.Add(-time.Hour).Format(time.RFC3339)},
-			{Name: "7d", Used: 20, ResetsAt: now.Add(-time.Hour).Format(time.RFC3339)},
-		},
-	}
-	got := computeFeasibility(info, now)
-	want := 50.0/1.0 + 0.7*80.0/1.0
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func TestComputeFeasibilityParseFailure(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "5h", Used: 50, ResetsAt: "not-a-timestamp"},
-			{Name: "7d", Used: 20, ResetsAt: ""},
-		},
-	}
-	got := computeFeasibility(info, now)
-	want := 50.0/1.0 + 0.7*80.0/1.0
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
-	}
-}
-
-func TestComputeFeasibilityIgnoresModelExtras(t *testing.T) {
-	now := time.Date(2026, 5, 5, 12, 0, 0, 0, time.UTC)
-	info := &oauth.UsageInfo{
-		Quotas: []oauth.Quota{
-			{Name: "7d/sonnet-4-5", Used: 10, ResetsAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
-			{Name: "7d/opus-4-7", Used: 5, ResetsAt: now.Add(24 * time.Hour).Format(time.RFC3339)},
-		},
-	}
-	got := computeFeasibility(info, now)
-	// Both unscoped windows missing → both fallbacks
-	want := 100.0/1.0 + 0.7*100.0/1.0
-	if math.Abs(got-want) > 1e-9 {
-		t.Errorf("got %v, want %v", got, want)
+// Sort comparator must handle +Inf vs +Inf (returns false → ID-lex
+// fallback). Confirm Go's > operator on float64 +Inf behaves as expected.
+func TestSortComparatorWithInf(t *testing.T) {
+	a := math.Inf(1)
+	b := math.Inf(1)
+	if a > b {
+		t.Fatalf("+Inf > +Inf returned true; sort would not fall through")
 	}
 }
 

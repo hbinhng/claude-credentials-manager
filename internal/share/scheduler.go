@@ -16,38 +16,88 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 )
 
-// computeFeasibility returns the rotation score for a single
-// credential's usage snapshot. See the design doc for the formula
-// and edge-case rules (clamps + missing-window fallbacks).
-func computeFeasibility(info *oauth.UsageInfo, now time.Time) float64 {
-	left5h, wait5h := windowInputs(lookupQuota(info.Quotas, "5h"), now)
-	left7d, wait7d := windowInputs(lookupQuota(info.Quotas, "7d"), now)
-	return left5h/wait5h + 0.7*left7d/wait7d
-}
-
-// windowInputs returns (left%, wait_seconds) for a single quota
-// window, applying clamps and best-case fallbacks for nil/missing.
-func windowInputs(q *oauth.Quota, now time.Time) (float64, float64) {
-	if q == nil {
-		return 100, 1
+// formatLifetime renders a time-to-exhaustion in operator-friendly
+// form. Finite seconds → time.Duration string (e.g. "2h30m0s"); +Inf → "∞".
+// Used in stderr log lines emitted by the scheduler and pool_builder.
+func formatLifetime(secs float64) string {
+	if math.IsInf(secs, 1) {
+		return "∞"
 	}
-	left := math.Max(0, math.Min(100, 100-q.Used))
-	wait := math.Max(1, secondsUntil(q.ResetsAt, now))
-	return left, wait
+	return time.Duration(secs * float64(time.Second)).Round(time.Second).String()
 }
 
-func secondsUntil(stamp string, now time.Time) float64 {
+// Window lengths (seconds) for the two Anthropic quota buckets.
+// Constants because the API exposes a fixed 5h and 7d window.
+const (
+	windowLength5h = 5 * 60 * 60      // 18000
+	windowLength7d = 7 * 24 * 60 * 60 // 604800
+)
+
+// computeFeasibility returns a credential's projected time-to-exhaustion
+// in seconds. Higher = longer expected lifetime → preferred for activation.
+//
+// The score is min(exhaustion_5h, exhaustion_7d) — whichever window
+// hits zero first kills the cred. Edge cases:
+//   - Missing or unparseable quota → that window contributes +Inf
+//     (no constraint); the other window decides.
+//   - Both windows missing → score is +Inf; existing ID-lex tie-break
+//     in the comparator orders ties deterministically.
+//   - Already exhausted (Used >= 100) or past reset (wait <= 0) →
+//     score 0 for that window; cred drops to bottom of ranking.
+//
+// See docs/superpowers/specs/2026-05-06-feasibility-formula-design.md
+// for the derivation and rationale.
+func computeFeasibility(info *oauth.UsageInfo, now time.Time) float64 {
+	e5h := windowExhaustion(lookupQuota(info.Quotas, "5h"), windowLength5h, now)
+	e7d := windowExhaustion(lookupQuota(info.Quotas, "7d"), windowLength7d, now)
+	return math.Min(e5h, e7d)
+}
+
+// windowExhaustion projects time-to-exhaustion (seconds) for a single
+// quota window. See computeFeasibility for the per-edge-case behavior.
+func windowExhaustion(q *oauth.Quota, L float64, now time.Time) float64 {
+	if q == nil {
+		return math.Inf(1)
+	}
+	wait, ok := secondsUntil(q.ResetsAt, now)
+	if !ok {
+		return math.Inf(1)
+	}
+	if wait <= 0 {
+		return 0
+	}
+	if q.Used <= 0 {
+		return wait
+	}
+	elapsed := L - wait
+	if elapsed <= 0 {
+		return wait
+	}
+	headroom := 100 - q.Used
+	if headroom <= 0 {
+		return 0
+	}
+	rate := q.Used / elapsed
+	return math.Min(headroom/rate, wait)
+}
+
+// secondsUntil parses an RFC3339(Nano) timestamp and returns
+// (seconds_from_now, ok). ok=false if the stamp is empty or
+// unparseable. Callers should treat ok=false as "no signal" rather
+// than substituting a default — the new feasibility formula needs
+// to distinguish "couldn't parse" from "valid 1s wait".
+func secondsUntil(stamp string, now time.Time) (float64, bool) {
 	if stamp == "" {
-		return 1
+		return 0, false
 	}
 	t, err := time.Parse(time.RFC3339, stamp)
 	if err != nil {
 		t, err = time.Parse(time.RFC3339Nano, stamp)
 		if err != nil {
-			return 1
+			return 0, false
 		}
 	}
-	return t.Sub(now).Seconds()
+	return t.Sub(now).Seconds(), true
 }
 
 func lookupQuota(qs []oauth.Quota, name string) *oauth.Quota {
@@ -355,9 +405,9 @@ func (s *scheduler) runOnce() {
 	// Lock released before stderr write.
 	switch pending.kind {
 	case "rotate":
-		fmt.Fprintf(errLog(), "ccm: rotated activated %s(%s) → %s(%s) (feasibility %.3f → %.3f)\n",
+		fmt.Fprintf(errLog(), "ccm: rotated activated %s(%s) → %s(%s) (lifetime %s → %s)\n",
 			pending.oldName, shortID(pending.oldID), pending.newName, shortID(pending.newID),
-			pending.oldFeasibility, pending.newFeasibility)
+			formatLifetime(pending.oldFeasibility), formatLifetime(pending.newFeasibility))
 	case "demote":
 		// Spec §"Logging" → "Pool empty": only this line, not the
 		// per-entry "degraded after 2 failures" wrapper (MarkProbe
