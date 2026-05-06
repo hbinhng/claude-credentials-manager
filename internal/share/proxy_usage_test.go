@@ -160,6 +160,44 @@ func TestProxy_SkipsUsageWhenContentEncodingSet(t *testing.T) {
 	}
 }
 
+func TestProxy_SkipsUsageOnNonMessagesPath(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		// Bogus "usage" block on a non-/v1/messages endpoint must not
+		// be recorded.
+		io.WriteString(w, `{"usage":{"input_tokens":99,"output_tokens":99}}`)
+	}))
+	defer upstream.Close()
+	prevBase := SetUpstreamBaseForTest(upstream.URL)
+	defer func() { upstreamBaseOverride = prevBase }()
+
+	tokens := &fakeTokenSource{token: "tok"}
+	proxy, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	defer proxy.Close()
+	proxy.markCaptured(http.Header{})
+	go proxy.Start()
+	proxy.Transition("tok", tokens, nil)
+
+	req, _ := http.NewRequest("POST", proxy.Addr()+"/v1/messages/count_tokens", strings.NewReader("{}"))
+	req.Header.Set("Authorization", "Bearer tok")
+	req.Header.Set("X-Claude-Code-Session-Id", validSID)
+	resp, _ := http.DefaultClient.Do(req)
+	io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	time.Sleep(50 * time.Millisecond)
+
+	path := filepath.Join(tmp, ".ccm", "usage", validSID+".ndjson")
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("usage file unexpectedly exists for /v1/messages/count_tokens (err=%v)", err)
+	}
+}
+
 func TestProxy_SkipsUsageWhenSessionIDInvalid(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)

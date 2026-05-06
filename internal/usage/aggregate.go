@@ -75,9 +75,9 @@ func LoadAggregate(f Filter, tz *time.Location) (*Aggregate, error) {
 	agg := &Aggregate{}
 	modelTokens := map[string]int64{}
 	dailyAll := map[string]int64{}
+	dailyInWindow := map[string]int64{}
 	allDayKeys := map[string]struct{}{}
 	rangeDayKeys := map[string]struct{}{}
-	mostActiveTokens := int64(-1)
 	sessions := 0
 
 	for sid, recs := range all {
@@ -101,11 +101,7 @@ func LoadAggregate(f Filter, tz *time.Location) (*Aggregate, error) {
 				agg.Total += rowTotal
 				modelTokens[NormalizeModelID(r.Model)] += rowTotal
 				rangeDayKeys[localDay] = struct{}{}
-				if rowTotal > mostActiveTokens {
-					mostActiveTokens = rowTotal
-					y, m, d := r.TS.In(tz).Date()
-					agg.MostActiveDay = time.Date(y, m, d, 0, 0, 0, 0, tz)
-				}
+				dailyInWindow[localDay] += rowTotal
 				contributedToWindow = true
 			}
 
@@ -119,10 +115,37 @@ func LoadAggregate(f Filter, tz *time.Location) (*Aggregate, error) {
 
 		if contributedToWindow {
 			sessions++
+		}
+		// LongestSession is a property of the entire session history,
+		// not the filter window — same rationale as streaks. Update
+		// across all sessions seen, regardless of whether they
+		// contributed to the window.
+		if !sessionMin.IsZero() && !sessionMax.IsZero() {
 			if span := sessionMax.Sub(sessionMin); span > agg.LongestSession {
 				agg.LongestSession = span
 			}
 		}
+	}
+
+	// MostActiveDay = day with highest *aggregate* tokens within the
+	// window. Compare per-day sums (not per-record). Tiebreak: earliest
+	// day wins (lexicographic order on YYYY-MM-DD == chronological).
+	var bestDay string
+	var bestTokens int64 = -1
+	keys := make([]string, 0, len(dailyInWindow))
+	for k := range dailyInWindow {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if dailyInWindow[k] > bestTokens {
+			bestTokens = dailyInWindow[k]
+			bestDay = k
+		}
+	}
+	if bestDay != "" {
+		d, _ := time.ParseInLocation("2006-01-02", bestDay, tz)
+		agg.MostActiveDay = d
 	}
 
 	agg.Sessions = sessions
