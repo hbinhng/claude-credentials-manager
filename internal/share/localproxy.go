@@ -124,17 +124,21 @@ func newLocalProxyInternal(tokens tokenSource, pool *credPool, debug bool) (*Loc
 		// SSE streaming to the child claude.
 		FlushInterval: -1,
 	}
-	if pool != nil {
-		// Pool mode: mirror share.Proxy's ModifyResponse hook so
-		// upstream-401 bumps the activated entry's consecutiveFail.
-		// The scheduler observes this on the next tick (preFail-aware
-		// path) and rotates / demotes accordingly.
-		p.rp.ModifyResponse = func(r *http.Response) error {
-			if r.StatusCode == http.StatusUnauthorized {
-				pool.SignalActivatedFailed()
-			}
-			return nil
+	// ModifyResponse is wired in all modes (single-cred and pool):
+	//   - Pool-only: 401 → SignalActivatedFailed (scheduler picks up
+	//     on the next tick via the preFail-aware path).
+	//   - All modes: 2xx → install the usage tee so ccm stats can
+	//     observe per-Claude-Code-session token consumption. Without
+	//     this, the most common path (`ccm launch <id>`) records
+	//     nothing.
+	p.rp.ModifyResponse = func(r *http.Response) error {
+		if pool != nil && r.StatusCode == http.StatusUnauthorized {
+			pool.SignalActivatedFailed()
 		}
+		if r.StatusCode >= 200 && r.StatusCode < 300 {
+			installUsageTee(r)
+		}
+		return nil
 	}
 
 	mux := http.NewServeMux()

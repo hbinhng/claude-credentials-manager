@@ -14,8 +14,6 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-func ptrFloat(f float64) *float64 { return &f }
-
 // stubCaptureCredOKScheduler installs a default captureCredFn that
 // returns canned headers for any cred. Used by scheduler tests
 // where rotation triggers capture but the test doesn't care about

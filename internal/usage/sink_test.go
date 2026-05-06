@@ -2,6 +2,7 @@ package usage
 
 import (
 	"bytes"
+	"compress/gzip"
 	"errors"
 	"io"
 	"net/http"
@@ -406,6 +407,128 @@ func TestTeeBody_ConcurrentReadAndCloseSafe(t *testing.T) {
 	go func() { defer wg.Done(); io.Copy(io.Discard, tee) }()
 	go func() { defer wg.Done(); time.Sleep(time.Millisecond); tee.Close() }()
 	wg.Wait()
+}
+
+// gzipBytes returns gzip-compressed bytes for a string. Used by
+// gzip-wrapper tests to feed real compressed input.
+func gzipBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	if _, err := gw.Write([]byte(s)); err != nil {
+		t.Fatal(err)
+	}
+	if err := gw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// SSE responses from Anthropic are gzip-compressed when the client
+// sent Accept-Encoding: gzip (Go's default transport does). The
+// gzipSink wraps an sseSink so the inner parser sees decompressed
+// bytes. Without this wrapper, ccm launch / ccm share record nothing
+// in real-world use.
+func TestGzipSink_StreamingSSEDecompresses(t *testing.T) {
+	stream := sseEvent("message_start",
+		`{"type":"message_start","message":{"model":"claude-opus-4-7-20251217","usage":{"input_tokens":42,"output_tokens":1}}}`,
+	) + sseEvent("message_delta", `{"usage":{"output_tokens":99}}`)
+	compressed := gzipBytes(t, stream)
+
+	inner := newSSESink()
+	g := NewGzipSink(inner)
+	if _, err := g.Write(compressed); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	rec := g.Finalize()
+	if rec == nil {
+		t.Fatalf("Finalize returned nil")
+	}
+	if rec.In != 42 || rec.Out != 99 {
+		t.Errorf("counters = in=%d out=%d, want 42/99", rec.In, rec.Out)
+	}
+	if rec.Model != "claude-opus-4-7-20251217" {
+		t.Errorf("model = %q", rec.Model)
+	}
+}
+
+// Multiple Write calls (chunked input, mirroring ReverseProxy reading
+// the upstream body in chunks) must still produce one Record.
+func TestGzipSink_ChunkedWrites(t *testing.T) {
+	stream := sseEvent("message_start",
+		`{"type":"message_start","message":{"model":"x","usage":{"input_tokens":3,"output_tokens":1}}}`,
+	) + sseEvent("message_delta", `{"usage":{"output_tokens":7}}`)
+	compressed := gzipBytes(t, stream)
+
+	inner := newSSESink()
+	g := NewGzipSink(inner)
+	for i := 0; i < len(compressed); i += 16 {
+		end := i + 16
+		if end > len(compressed) {
+			end = len(compressed)
+		}
+		if _, err := g.Write(compressed[i:end]); err != nil {
+			t.Fatalf("Write@%d: %v", i, err)
+		}
+	}
+	rec := g.Finalize()
+	if rec == nil || rec.In != 3 || rec.Out != 7 {
+		t.Fatalf("rec = %+v, want In=3 Out=7", rec)
+	}
+}
+
+// Malformed gzip must not panic; Finalize returns nil cleanly.
+func TestGzipSink_MalformedGzip(t *testing.T) {
+	inner := newSSESink()
+	g := NewGzipSink(inner)
+	g.Write([]byte("not actually gzip"))
+	if rec := g.Finalize(); rec != nil {
+		t.Fatalf("malformed gzip should return nil, got %+v", rec)
+	}
+}
+
+// Finalize is idempotent.
+func TestGzipSink_FinalizeIdempotent(t *testing.T) {
+	inner := newSSESink()
+	g := NewGzipSink(inner)
+	g.Write(gzipBytes(t, sseEvent("message_start",
+		`{"type":"message_start","message":{"model":"x","usage":{"input_tokens":1,"output_tokens":1}}}`,
+	)))
+	_ = g.Finalize()
+	// Second call must not panic, returns the same (now-cached) result
+	// — note: the inner sink's Finalize is also idempotent enough that
+	// two calls won't double-count.
+	_ = g.Finalize()
+}
+
+// JSON sink decompresses gzipped bodies via magic-byte detection.
+// Non-streaming /v1/messages responses are gzipped by Anthropic.
+func TestJSONSink_GzippedBody(t *testing.T) {
+	body := `{"model":"claude-haiku-4-5-20240920","usage":{"input_tokens":11,"output_tokens":22}}`
+	compressed := gzipBytes(t, body)
+	s := newJSONSink()
+	s.Write(compressed)
+	rec := s.Finalize()
+	if rec == nil {
+		t.Fatalf("Finalize returned nil for valid gzipped body")
+	}
+	if rec.In != 11 || rec.Out != 22 {
+		t.Errorf("counters = in=%d out=%d, want 11/22", rec.In, rec.Out)
+	}
+	if rec.Model != "claude-haiku-4-5-20240920" {
+		t.Errorf("model = %q", rec.Model)
+	}
+}
+
+// Truncated gzip body returns nil rather than panicking.
+func TestJSONSink_TruncatedGzipBody(t *testing.T) {
+	body := `{"model":"x","usage":{"input_tokens":1,"output_tokens":1}}`
+	compressed := gzipBytes(t, body)
+	s := newJSONSink()
+	s.Write(compressed[:5]) // gzip magic + a few bytes only
+	if rec := s.Finalize(); rec != nil {
+		t.Fatalf("truncated gzip should return nil, got %+v", rec)
+	}
 }
 
 func TestDebugLog_HonorsEnv(t *testing.T) {
