@@ -26,32 +26,59 @@ func formatLifetime(secs float64) string {
 	return time.Duration(secs * float64(time.Second)).Round(time.Second).String()
 }
 
-// computeFeasibility returns the rotation score for a single
-// credential's usage snapshot. See the design doc for the formula
-// and edge-case rules (clamps + missing-window fallbacks).
+// Window lengths (seconds) for the two Anthropic quota buckets.
+// Constants because the API exposes a fixed 5h and 7d window.
+const (
+	windowLength5h = 5 * 60 * 60      // 18000
+	windowLength7d = 7 * 24 * 60 * 60 // 604800
+)
+
+// computeFeasibility returns a credential's projected time-to-exhaustion
+// in seconds. Higher = longer expected lifetime → preferred for activation.
+//
+// The score is min(exhaustion_5h, exhaustion_7d) — whichever window
+// hits zero first kills the cred. Edge cases:
+//   - Missing or unparseable quota → that window contributes +Inf
+//     (no constraint); the other window decides.
+//   - Both windows missing → score is +Inf; existing ID-lex tie-break
+//     in the comparator orders ties deterministically.
+//   - Already exhausted (Used >= 100) or past reset (wait <= 0) →
+//     score 0 for that window; cred drops to bottom of ranking.
+//
+// See docs/superpowers/specs/2026-05-06-feasibility-formula-design.md
+// for the derivation and rationale.
 func computeFeasibility(info *oauth.UsageInfo, now time.Time) float64 {
-	left5h, wait5h := windowInputs(lookupQuota(info.Quotas, "5h"), now)
-	left7d, wait7d := windowInputs(lookupQuota(info.Quotas, "7d"), now)
-	return left5h/wait5h + 0.7*left7d/wait7d
+	e5h := windowExhaustion(lookupQuota(info.Quotas, "5h"), windowLength5h, now)
+	e7d := windowExhaustion(lookupQuota(info.Quotas, "7d"), windowLength7d, now)
+	return math.Min(e5h, e7d)
 }
 
-// windowInputs returns (left%, wait_seconds) for a single quota
-// window, applying clamps and best-case fallbacks for nil/missing.
-//
-// Temporary shim during the formula transition: preserves the old
-// "missing/unparseable stamp → wait=1" semantic so existing tests
-// keep passing. windowInputs is removed in the next commit.
-func windowInputs(q *oauth.Quota, now time.Time) (float64, float64) {
+// windowExhaustion projects time-to-exhaustion (seconds) for a single
+// quota window. See computeFeasibility for the per-edge-case behavior.
+func windowExhaustion(q *oauth.Quota, L float64, now time.Time) float64 {
 	if q == nil {
-		return 100, 1
+		return math.Inf(1)
 	}
-	left := math.Max(0, math.Min(100, 100-q.Used))
 	wait, ok := secondsUntil(q.ResetsAt, now)
 	if !ok {
-		wait = 1
+		return math.Inf(1)
 	}
-	wait = math.Max(1, wait)
-	return left, wait
+	if wait <= 0 {
+		return 0
+	}
+	if q.Used <= 0 {
+		return wait
+	}
+	elapsed := L - wait
+	if elapsed <= 0 {
+		return wait
+	}
+	headroom := 100 - q.Used
+	if headroom <= 0 {
+		return 0
+	}
+	rate := q.Used / elapsed
+	return math.Min(headroom/rate, wait)
 }
 
 // secondsUntil parses an RFC3339(Nano) timestamp and returns
