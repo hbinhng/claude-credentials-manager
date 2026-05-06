@@ -244,6 +244,34 @@ func TestAggregate_MostActiveDay(t *testing.T) {
 	}
 }
 
+// MostActiveDay must compare per-day SUMS, not per-record. A day with
+// many small records should beat a day with one large record.
+func TestAggregate_MostActiveDay_PerDaySumNotPerRecord(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	writeRecords(t, "5f2c8c4e-1234-4567-8abc-0000000000h2", []Record{
+		// Day 1: ten small records summing to 10000
+		{TS: dayAt(2026, 5, 1), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(1 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(2 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(3 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(4 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(5 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(6 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(7 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(8 * time.Hour), In: 1000},
+		{TS: dayAt(2026, 5, 1).Add(9 * time.Hour), In: 1000},
+		// Day 2: one large record (5000) — less than day 1's total
+		{TS: dayAt(2026, 5, 2), In: 5000},
+	})
+	agg, _ := LoadAggregate(FilterAll(), time.UTC)
+	want := dayAt(2026, 5, 1).Truncate(24 * time.Hour)
+	if !agg.MostActiveDay.Equal(want) {
+		t.Errorf("MostActiveDay = %v, want %v (day with higher SUM, not bigger single record)",
+			agg.MostActiveDay, want)
+	}
+}
+
 // LoadAggregate must surface a real ReadDir error (i.e. anything other
 // than "directory does not exist", which is the empty-state).
 func TestAggregate_ReadDirErrorPropagates(t *testing.T) {

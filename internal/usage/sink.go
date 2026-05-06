@@ -245,6 +245,8 @@ type teeBody struct {
 	sink      Sink
 	sessionID string
 	once      sync.Once
+	closeOnce sync.Once
+	closeErr  error
 }
 
 func (t *teeBody) Read(p []byte) (int, error) {
@@ -258,9 +260,15 @@ func (t *teeBody) Read(p []byte) (int, error) {
 	return n, err
 }
 
+// Close is idempotent. ReverseProxy.copyResponse closes the body
+// after copy, and we may also be called by the client; some
+// io.ReadCloser implementations are not safe to Close twice.
 func (t *teeBody) Close() error {
 	t.finalize()
-	return t.body.Close()
+	t.closeOnce.Do(func() {
+		t.closeErr = t.body.Close()
+	})
+	return t.closeErr
 }
 
 func (t *teeBody) safeWrite(p []byte) {
