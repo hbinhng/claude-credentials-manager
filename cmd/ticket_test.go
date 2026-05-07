@@ -1,10 +1,12 @@
 package cmd
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
+	"github.com/spf13/pflag"
 )
 
 func TestBuildTicket_HappyPath(t *testing.T) {
@@ -109,5 +111,73 @@ func TestBuildTicket_Validation(t *testing.T) {
 				t.Errorf("err = %v, want substring %q", err, c.errSubstr)
 			}
 		})
+	}
+}
+
+// resetTicketFlags clears the .Changed and stored value on every flag of
+// ticketCmd. Cobra's MarkFlagRequired checks flag.Changed, which sticks
+// across Execute() calls within the same process — without this reset,
+// a second invocation that omits a required flag would still satisfy
+// the requirement because the previous test set it.
+func resetTicketFlags(t *testing.T) {
+	t.Helper()
+	ticketCmd.Flags().VisitAll(func(f *pflag.Flag) {
+		_ = f.Value.Set(f.DefValue)
+		f.Changed = false
+	})
+}
+
+// TestTicketCmd_HappyPath runs the full Cobra plumbing and confirms a
+// single base64 line on stdout that decodes to the expected ticket.
+func TestTicketCmd_HappyPath(t *testing.T) {
+	resetTicketFlags(t)
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"ticket", "--from-endpoint", "https://abc.com", "--from-access-token", "tok"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+		resetTicketFlags(t)
+	})
+
+	if err := rootCmd.Execute(); err != nil {
+		t.Fatalf("Execute: %v (stderr=%s)", err, stderr.String())
+	}
+	out := strings.TrimRight(stdout.String(), "\n")
+	if strings.Contains(out, "\n") {
+		t.Errorf("stdout has multiple lines: %q", stdout.String())
+	}
+	dec, err := share.DecodeTicket(out)
+	if err != nil {
+		t.Fatalf("DecodeTicket(%q): %v", out, err)
+	}
+	want := share.Ticket{Scheme: "https", Host: "abc.com", Token: "tok"}
+	if dec != want {
+		t.Errorf("decoded = %+v, want %+v", dec, want)
+	}
+}
+
+// TestTicketCmd_MissingFlag confirms MarkFlagRequired is wired up.
+func TestTicketCmd_MissingFlag(t *testing.T) {
+	resetTicketFlags(t)
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"ticket", "--from-endpoint", "https://abc.com"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+		resetTicketFlags(t)
+	})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("Execute returned nil, want error for missing required flag")
+	}
+	if !strings.Contains(err.Error(), "from-access-token") {
+		t.Errorf("err = %v, want mention of from-access-token", err)
 	}
 }
