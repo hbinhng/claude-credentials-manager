@@ -159,6 +159,30 @@ func TestTicketCmd_HappyPath(t *testing.T) {
 	}
 }
 
+// TestTicketCmd_RunEErrorPropagates confirms that a validation error
+// from buildTicket is surfaced through the Cobra RunE return.
+func TestTicketCmd_RunEErrorPropagates(t *testing.T) {
+	resetTicketFlags(t)
+	var stdout, stderr bytes.Buffer
+	rootCmd.SetOut(&stdout)
+	rootCmd.SetErr(&stderr)
+	rootCmd.SetArgs([]string{"ticket", "--from-endpoint", "ftp://abc.com", "--from-access-token", "tok"})
+	t.Cleanup(func() {
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+		rootCmd.SetArgs(nil)
+		resetTicketFlags(t)
+	})
+
+	err := rootCmd.Execute()
+	if err == nil {
+		t.Fatalf("Execute returned nil, want validation error")
+	}
+	if !strings.Contains(err.Error(), "scheme must be http or https") {
+		t.Errorf("err = %v, want scheme validation message", err)
+	}
+}
+
 // TestTicketCmd_MissingFlag confirms MarkFlagRequired is wired up.
 func TestTicketCmd_MissingFlag(t *testing.T) {
 	resetTicketFlags(t)
