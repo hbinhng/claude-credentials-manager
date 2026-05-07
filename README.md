@@ -156,6 +156,17 @@ Does not require any ccm-managed credential on the local machine — the bearer 
 
 In both modes, any arguments after `--` are passed to `claude` verbatim.
 
+### `ccm ticket`
+
+Build a `ccm launch --via` ticket from an endpoint URL and access token. Offline utility — no credential store, no network, no proxy. Useful when you already have a tunnel and bearer in hand (terminated `ccm share`, hand-rolled `cloudflared`, dev proxy) and just need the encoded form.
+
+```bash
+ccm ticket --from-endpoint https://abc.trycloudflare.com \
+           --from-access-token <token>
+```
+
+Both flags required. The endpoint must be a full URL with `http`/`https` scheme and host only — no path, query, fragment, or userinfo. The token must consist only of unreserved URL bytes (`[A-Za-z0-9._~-]`); standard base64 (`+`, `/`, `=`) is rejected because those bytes do not survive userinfo encoding losslessly.
+
 ### `ccm serve`
 
 Run a local HTTP dashboard that manages multiple concurrent `ccm share` sessions in-process. Useful when you want to hand out tickets to several teammates (or several containers on the same host) without keeping multiple `ccm share` terminals open.
