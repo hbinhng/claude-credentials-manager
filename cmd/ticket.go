@@ -51,8 +51,6 @@ func buildTicket(endpoint, token string) (string, error) {
 	}
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		// defensive: url.Parse is permissive enough that hand-crafted
-		// inputs with control bytes are needed to trigger this branch.
 		return "", fmt.Errorf("--from-endpoint: %w", err)
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
