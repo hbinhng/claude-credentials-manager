@@ -304,6 +304,17 @@ must be on
 .BR PATH .
 .RE
 .TP
+.B ticket --from-endpoint=\fIurl\fR --from-access-token=\fItoken\fR
+Build a base64 ticket from a share endpoint URL and access token, then
+print it on a single line to stdout. Suitable for piping into
+.B "ccm launch --via" .
+Offline utility: no credential store, no network, no proxy.
+.IP
+The endpoint must be a full http:// or https:// URL with host only \(em
+no path, query, fragment, or userinfo. The token must consist only of
+RFC 3986 unreserved bytes (A-Z, a-z, 0-9, hyphen, dot, underscore,
+tilde); standard base64 padding/alphabet is rejected.
+.TP
 .B "serve [\-\-bind-host " \fIaddr\fR "] [\-\-bind-port " \fIport\fR "]"
 Run a local HTTP dashboard for managing
 .B "ccm share"
