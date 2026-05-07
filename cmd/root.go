@@ -29,7 +29,7 @@ var rootCmd = &cobra.Command{
 func syncSkipFor(cmd *cobra.Command) bool {
 	for c := cmd; c != nil; c = c.Parent() {
 		switch c.Name() {
-		case "completion", "version", "help", "__complete", "__completeNoDesc":
+		case "completion", "version", "help", "ticket", "__complete", "__completeNoDesc":
 			return true
 		}
 	}
