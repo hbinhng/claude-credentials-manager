@@ -85,6 +85,7 @@ func TestBuildTicket_Validation(t *testing.T) {
 		errSubstr string
 	}{
 		{"empty endpoint", "", "tok", "--from-endpoint is required"},
+		{"unparseable url", "https://%zz.com", "tok", "invalid URL escape"},
 		{"non-http scheme", "ftp://abc.com", "tok", "scheme must be http or https"},
 		{"missing host", "https://", "tok", "missing host"},
 		{"trailing slash path", "https://abc.com/", "tok", "path not allowed"},
