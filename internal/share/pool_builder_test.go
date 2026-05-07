@@ -181,15 +181,23 @@ func TestBuildPoolAllRejectedFatal(t *testing.T) {
 	// old explicit-only-fatal rule was relaxed: a partial probe
 	// failure on explicit args drops the bad cred but keeps the
 	// session alive on the survivors.
+	//
+	// Uses 2 creds because the singleton path skips Pass B (the usage
+	// probe) — see pool_builder.go's `if len(passA) > 1` branch. We
+	// need >1 cred to enter the probe, otherwise the lone cred is
+	// admitted unconditionally and the rejection-by-probe scenario
+	// can't be exercised.
 	setupFakeHome(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	b := makeCredWithExpiry(t, "22222222-2222-2222-2222-222222222222", "bob", 6*time.Hour)
 	writeCredToFile(t, a)
+	writeCredToFile(t, b)
 
 	withFakeUsage(t, func(token string) *oauth.UsageInfo {
 		return &oauth.UsageInfo{Error: "HTTP 403"}
 	})
 
-	_, _, err := BuildPool([]string{"alice"}, "", false)
+	_, _, err := BuildPool([]string{"alice", "bob"}, "", false)
 	if err == nil {
 		t.Fatal("BuildPool succeeded with zero usable creds")
 	}
