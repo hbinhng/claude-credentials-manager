@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +34,11 @@ func wrapPinnedTokenErr(err error) error {
 	return err
 }
 
+var (
+	shareModelAliases   []string
+	shareMaxConcurrency int
+)
+
 func init() {
 	rootCmd.AddCommand(shareCmd)
 	shareCmd.Flags().String("prompt", share.DefaultCapturePrompt, "prompt passed to `claude -p` during identity capture")
@@ -39,6 +46,10 @@ func init() {
 	shareCmd.Flags().Int("bind-port", 0, "pinned TCP port for the proxy listener (default: OS-assigned); works with or without --bind-host")
 	shareCmd.Flags().Bool("load-balance", false, "pool every credential and rotate every --rebalance-interval based on quota feasibility")
 	shareCmd.Flags().Duration("rebalance-interval", 5*time.Minute, "tick interval for load-balance rotation (min 30s, max 1h); only meaningful with --load-balance")
+	shareCmd.Flags().StringArrayVar(&shareModelAliases, "model-alias", nil,
+		"model alias rule like 'claude-opus-*=gpt-5-codex' (repeatable)")
+	shareCmd.Flags().IntVar(&shareMaxConcurrency, "max-concurrency", 3,
+		"per-credential in-flight request limit (0 = no limit)")
 	shareCmd.PreRunE = requireOnline
 }
 
@@ -121,6 +132,11 @@ The share session stays alive until you press Ctrl-C.`,
 		loadBalance, _ := cmd.Flags().GetBool("load-balance")
 		rebalanceInterval, _ := cmd.Flags().GetDuration("rebalance-interval")
 
+		aliasMap, err := alias.Parse(shareModelAliases)
+		if err != nil {
+			return fmt.Errorf("parse --model-alias: %w", err)
+		}
+
 		pinnedToken := readPinnedTokenFromEnv()
 
 		if loadBalance {
@@ -134,6 +150,8 @@ The share session stays alive until you press Ctrl-C.`,
 				Debug:             os.Getenv("CCM_SHARE_DEBUG") == "1",
 				RebalanceInterval: rebalanceInterval,
 				PinnedAccessToken: pinnedToken,
+				AliasMap:          aliasMap,
+				MaxConcurrency:    shareMaxConcurrency,
 			})
 		}
 
@@ -147,13 +165,23 @@ The share session stays alive until you press Ctrl-C.`,
 			CapturePrompt:     prompt,
 			Debug:             os.Getenv("CCM_SHARE_DEBUG") == "1",
 			PinnedAccessToken: pinnedToken,
+			AliasMap:          aliasMap,
+			MaxConcurrency:    shareMaxConcurrency,
 		})
 	},
 }
 
 func runShareSingle(cred *store.Credential, opts share.Options) error {
-	if cred.ProviderName() != "claude" {
-		return fmt.Errorf("ccm share is claude-only in v1.17 (got provider: %s)", cred.ProviderName())
+	// Codex provider: hard-fail with install hint when codex CLI is
+	// absent. Capture is impossible without it (the CLI is spawned to
+	// record its identity headers). This check runs before any session
+	// setup so the error is immediate and actionable.
+	if cred.ProviderName() == "codex" {
+		if _, err := exec.LookPath("codex"); err != nil {
+			return fmt.Errorf("codex CLI is required for this command. " +
+				"Install it from https://github.com/openai/codex; ccm uses it " +
+				"to capture identity headers for the codex backend")
+		}
 	}
 
 	// Pre-flight refresh: rotate access token if expiring soon. Routes

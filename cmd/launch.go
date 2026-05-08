@@ -10,15 +10,20 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
+
+var launchModelAliases []string
 
 func init() {
 	rootCmd.AddCommand(launchCmd)
 	launchCmd.Flags().String("via", "", "ticket emitted by `ccm share` on the host side (remote mode)")
 	launchCmd.Flags().Bool("load-balance", false, "pool every credential and rotate every --rebalance-interval based on quota feasibility")
 	launchCmd.Flags().Duration("rebalance-interval", 5*time.Minute, "tick interval for load-balance rotation (min 30s, max 1h); only meaningful with --load-balance")
+	launchCmd.Flags().StringArrayVar(&launchModelAliases, "model-alias", nil,
+		"model alias rule like 'claude-opus-*=gpt-5-codex' (repeatable)")
 	launchCmd.Args = validateLaunchArgs
 	launchCmd.PreRunE = requireOnline
 }
@@ -142,8 +147,24 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 	if err != nil {
 		return err
 	}
-	if cred.ProviderName() != "claude" {
-		return fmt.Errorf("ccm launch is claude-only in v1.17 (got provider: %s)", cred.ProviderName())
+
+	// Codex provider: hard-fail with install hint when codex CLI is
+	// absent. Capture is impossible without it (the CLI is spawned to
+	// record its identity headers). This check runs before any session
+	// setup so the error is immediate and actionable.
+	if cred.ProviderName() == "codex" {
+		if _, err := exec.LookPath("codex"); err != nil {
+			return fmt.Errorf("codex CLI is required for this command. " +
+				"Install it from https://github.com/openai/codex; ccm uses it " +
+				"to capture identity headers for the codex backend")
+		}
+	}
+
+	// Parse --model-alias flag values into an alias map. Boot-time
+	// conflict detection in alias.Parse rejects overlapping patterns.
+	aliasMap, err := alias.Parse(launchModelAliases)
+	if err != nil {
+		return fmt.Errorf("parse --model-alias: %w", err)
 	}
 
 	// Pre-flight refresh: rotate access token if expiring soon. Routes
@@ -166,6 +187,7 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 	if err != nil {
 		return fmt.Errorf("start local proxy: %w", err)
 	}
+	proxy.SetAliasMap(aliasMap)
 	defer proxy.Close()
 
 	proxyErrC := make(chan error, 1)

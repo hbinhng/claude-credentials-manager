@@ -37,16 +37,58 @@ func saveCodexCred(t *testing.T, id, name string) *store.Credential {
 	return cred
 }
 
-func TestLaunchCommand_RejectsCodexCred(t *testing.T) {
+// TestLaunchCommand_CodexCredRequiresCodexCLI verifies that runLaunchLocal
+// hard-fails with a useful install hint when the credential is a codex
+// credential and the codex CLI is not on PATH. The test uses an empty
+// PATH so exec.LookPath never succeeds.
+func TestLaunchCommand_CodexCredRequiresCodexCLI(t *testing.T) {
+	t.Setenv("PATH", t.TempDir()) // empty dir — no binaries present
 	setupHomeWithCcm(t)
 	saveCodexCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "codex-test")
 
 	err := runLaunchLocal("codex-test", nil)
 	if err == nil {
-		t.Fatal("runLaunchLocal: nil err, want rejection for codex cred")
+		t.Fatal("runLaunchLocal: nil err, want hard-fail for missing codex CLI")
 	}
-	if !strings.Contains(err.Error(), "claude-only") {
-		t.Errorf("err = %v; want 'claude-only' in message", err)
+	if !strings.Contains(err.Error(), "codex CLI is required") {
+		t.Errorf("err = %v; want 'codex CLI is required' in message", err)
+	}
+}
+
+// TestLaunchCommand_ModelAliasConflictRejected verifies that conflicting
+// --model-alias patterns (overlapping source globs) cause runLaunchLocal
+// to return an error at parse time, before any subprocess is spawned.
+func TestLaunchCommand_ModelAliasConflictRejected(t *testing.T) {
+	// Override the package-level flag var for this test only.
+	orig := launchModelAliases
+	launchModelAliases = []string{"claude-*=gpt-5", "claude-opus-*=gpt-4"}
+	t.Cleanup(func() { launchModelAliases = orig })
+
+	setupHomeWithCcm(t)
+	saveCodexCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaab", "codex-alias-test")
+	// Use a claude credential — the alias parse check fires before the
+	// codex-CLI check, so provider does not matter.
+	cred := &store.Credential{
+		ID:   "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+		Name: "claude-alias-test",
+		ClaudeAiOauth: store.OAuthTokens{
+			AccessToken:  "at",
+			RefreshToken: "rt",
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
+		},
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+	}
+	if err := store.Save(cred); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+
+	err := runLaunchLocal(cred.ID, nil)
+	if err == nil {
+		t.Fatal("runLaunchLocal: nil err, want error for conflicting --model-alias")
+	}
+	if !strings.Contains(err.Error(), "parse --model-alias") {
+		t.Errorf("err = %v; want 'parse --model-alias' in message", err)
 	}
 }
 

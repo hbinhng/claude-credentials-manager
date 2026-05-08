@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -55,8 +57,9 @@ type LocalProxy struct {
 	upstream *url.URL
 	rp       *httputil.ReverseProxy
 
-	tokens tokenSource // wired by NewLocalProxy / NewLocalProxyWithPool
-	pool   *credPool   // nil in single-cred mode
+	tokens   tokenSource // wired by NewLocalProxy / NewLocalProxyWithPool
+	pool     *credPool   // nil in single-cred mode
+	aliasMap *alias.Map  // model alias rewrite rules; nil = no rewrite
 
 	debug bool
 
@@ -160,6 +163,16 @@ func (p *LocalProxy) Addr() string {
 	return "http://" + p.listener.Addr().String()
 }
 
+// SetAliasMap installs model alias rewrite rules. Must be called before Start.
+// A nil argument is a no-op. When non-nil, each inbound request's model
+// field in the JSON body is rewritten according to the alias rules before
+// forwarding to the upstream.
+func (p *LocalProxy) SetAliasMap(m *alias.Map) {
+	if m != nil {
+		p.aliasMap = m
+	}
+}
+
 // Done returns a channel that closes when Close is called. Used by
 // StartPoolBackground to tie scheduler/timer lifetimes to the proxy.
 func (p *LocalProxy) Done() <-chan struct{} { return p.done }
@@ -221,8 +234,24 @@ func (p *LocalProxy) refreshLoop() {
 }
 
 // handle forwards any inbound request to api.anthropic.com with a
-// freshly minted OAuth bearer.
+// freshly minted OAuth bearer. If an alias map is installed, it
+// applies the model alias rewrite via the shared AliasRewrite
+// middleware before obtaining the bearer.
 func (p *LocalProxy) handle(w http.ResponseWriter, r *http.Request) {
+	// Apply model alias rewrite when an alias map is configured.
+	// The rewrite is lightweight (body read + single JSON field swap)
+	// and is a no-op when the alias map is empty.
+	if p.aliasMap != nil {
+		middleware.NewAliasRewrite(p.aliasMap).Apply(http.HandlerFunc(p.serveWithToken)).ServeHTTP(w, r)
+		return
+	}
+	p.serveWithToken(w, r)
+}
+
+// serveWithToken obtains a fresh OAuth bearer and proxies the request
+// upstream. Extracted from handle so the alias rewrite middleware can
+// wrap it.
+func (p *LocalProxy) serveWithToken(w http.ResponseWriter, r *http.Request) {
 	realToken, err := p.getFreshToken()
 	if err != nil {
 		if errors.Is(err, errNoActivated) {
