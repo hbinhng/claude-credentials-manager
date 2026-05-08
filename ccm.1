@@ -79,10 +79,7 @@ List all credentials in a table with columns: ID (8-char prefix), NAME,
 PROVIDER (claude or codex), TIER (e.g.
 .IR "Claude Max 20x" ),
 STATUS (valid/expiring soon/expired), EXPIRES (relative time), and an ACTIVE
-marker (*). Above the table, two summary lines show the currently-active
-credential for each provider (or
-.RI "(none)"
-when no credential is active for that provider). For each non-expired claude
+marker (*). For each non-expired claude
 credential, one line per quota window is printed underneath showing remaining
 percentage and reset time (e.g.
 .IR "5h: 75% (resets in 1h12m)" ).

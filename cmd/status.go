@@ -96,8 +96,6 @@ var statusCmd = &cobra.Command{
 		// JSON mode always emits a valid empty envelope so scripts can
 		// consume it unconditionally.
 		if len(creds) == 0 && output == "table" {
-			fmt.Fprintf(cmd.OutOrStdout(), "Claude: %s\n", describeActive("claude", creds))
-			fmt.Fprintf(cmd.OutOrStdout(), "Codex:  %s\n", describeActive("codex", creds))
 			fmt.Fprintln(cmd.OutOrStdout(), "No credentials found. Use `ccm login` to add one.")
 			return nil
 		}
@@ -118,8 +116,6 @@ var statusCmd = &cobra.Command{
 			return writeStatusJSON(cmd.OutOrStdout(), report)
 		}
 
-		fmt.Fprintf(cmd.OutOrStdout(), "Claude: %s\n", describeActive("claude", creds))
-		fmt.Fprintf(cmd.OutOrStdout(), "Codex:  %s\n", describeActive("codex", creds))
 		return renderStatusTable(cmd, report)
 	},
 }
@@ -316,40 +312,6 @@ func renderStatusTable(cmd *cobra.Command, report StatusReport) error {
 		}
 	}
 	return w.Flush()
-}
-
-// describeActive returns a human-readable summary of the active credential
-// for the given provider. creds is used for name lookup so we avoid a
-// second store.Load call when we already have the full list.
-func describeActive(provider string, creds []*store.Credential) string {
-	var id string
-	switch provider {
-	case "claude":
-		id = claude.ActiveID()
-	case "codex":
-		id = codex.ActiveID()
-	}
-	if id == "" {
-		return "(none)"
-	}
-	// Fast path: search the already-loaded list.
-	for _, c := range creds {
-		if c.ID == id {
-			short := id
-			if len(short) > 8 {
-				short = short[:8]
-			}
-			return fmt.Sprintf("%s (%s)", c.Name, short)
-		}
-	}
-	// Fallback: credential in store but not in current list (defensive;
-	// unreachable in practice because store.List and ActiveID read the
-	// same directory with no intervening write). coverage: unreachable.
-	short := id
-	if len(short) > 8 {
-		short = short[:8]
-	}
-	return short
 }
 
 // relativeExpires renders an RFC3339 ExpiresAt as a short relative
