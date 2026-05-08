@@ -1,8 +1,13 @@
 // Package capture spins up a local capture-mode HTTP listener, runs
-// `codex "say hi" --config openai_base_url=<local>` once, and records
-// the codex CLI's outbound headers + body fields. The recorded bundle
-// is replayed verbatim across all subsequent translated requests in
-// the same share/launch session.
+// `codex exec "say hi" --config openai_base_url=<local>` once, and
+// records the codex CLI's outbound headers + body fields. The recorded
+// bundle is replayed verbatim across all subsequent translated requests
+// in the same share/launch session.
+//
+// `codex exec` (rather than bare `codex "prompt"`) is required because
+// the bare invocation expects a TTY for its interactive REPL and exits
+// non-zero in non-interactive environments. `codex exec` is the
+// headless one-shot mode.
 //
 // See spec §7.1, §7.2.
 package capture
@@ -188,8 +193,12 @@ func Run(ctx context.Context, opts Options) (*Result, error) {
 	defer cancel()
 
 	localURL := srv.URL + "/v1"
+	// `codex exec` is the headless invocation; bare `codex "prompt"` requires
+	// a TTY (stdin must be a terminal) and exits non-zero in non-interactive
+	// environments — including ours, since we capture in a child process
+	// without a controlling terminal.
 	//nolint:gosec // codexBin comes from exec.LookPath; args are controlled.
-	cmd := exec.Command(codexBin, "say hi", "--config", "openai_base_url="+localURL)
+	cmd := exec.Command(codexBin, "exec", "say hi", "--config", "openai_base_url="+localURL)
 	// setSysProcAttr sets Setpgid=true on Unix so we can kill the entire
 	// process group (including children like curl or sleep spawned by shell
 	// stubs). This is a no-op on Windows (see capture_windows.go).
