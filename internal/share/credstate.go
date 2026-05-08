@@ -3,11 +3,10 @@ package share
 import (
 	"fmt"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -22,19 +21,18 @@ type credState struct {
 }
 
 func newCredState(cred *store.Credential) (*credState, error) {
-	if cred.ProviderName() != "claude" {
-		return nil, fmt.Errorf("share: %s credential is %s; ccm share is claude-only", cred.Name, cred.ProviderName())
-	}
+	// Provider guard removed: both providers are first-class. The
+	// per-provider field divergence is hidden behind cred.AccessToken() /
+	// cred.ExpiresAtMillis() / cred.SetTokens() (see store.Credential
+	// accessors added in Task 2).
 	return &credState{cred: cred}, nil
 }
 
 // Fresh returns the current access token. Cheap path: if the in-memory
-// credential is still valid and the on-disk file has not been written
-// by a peer since we last looked, return the in-memory access token.
-// If the token is expired or expiring soon, an exclusive cross-process
-// flock is acquired before refreshing. After acquiring the lock a
-// double-check reload is performed — a peer may have already refreshed
-// while we were blocked, in which case we skip the OAuth call entirely.
+// cred isn't expired and a peer hasn't written, return immediately.
+// Slow path: delegate to credflow, which takes its own cross-process
+// flock and dispatches per provider (claude / codex). Codex's rotating
+// refresh-token model is handled inside credflow.
 func (s *credState) Fresh() (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -42,50 +40,18 @@ func (s *credState) Fresh() (string, error) {
 	s.reloadIfPeerWrote()
 
 	if !s.cred.IsExpired() && !s.cred.IsExpiringSoon() {
-		return s.cred.ClaudeAiOauth.AccessToken, nil
+		return s.cred.AccessToken(), nil
 	}
 
-	err := withLock(s.cred.ID, func() error {
-		// Double-check after acquiring the lock: a peer may have
-		// refreshed while we were blocked. If the reloaded credential
-		// is now fresh, skip our own OAuth call entirely.
-		s.reloadIfPeerWrote()
-		if !s.cred.IsExpired() && !s.cred.IsExpiringSoon() {
-			return nil
-		}
-		return s.refreshLocked()
-	})
+	fresh, err := credflow.RefreshFn(s.cred.ID)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("refresh: %w", err)
 	}
-	return s.cred.ClaudeAiOauth.AccessToken, nil
-}
-
-// refreshLocked runs the OAuth refresh round-trip and persists the new
-// tokens. Caller must hold s.mu and the cross-process flock (via
-// withLock).
-func (s *credState) refreshLocked() error {
-	tokens, err := oauth.Refresh(s.cred.ClaudeAiOauth.RefreshToken)
-	if err != nil {
-		return fmt.Errorf("refresh: %w", err)
-	}
-	s.cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
-	if tokens.RefreshToken != "" {
-		s.cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
-	}
-	s.cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
-	if scopes := strings.Fields(tokens.Scope); len(scopes) > 0 {
-		s.cred.ClaudeAiOauth.Scopes = scopes
-	}
-	s.cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := store.Save(s.cred); err != nil {
-		fmt.Fprintf(errLog(), "ccm: warning: failed to persist refreshed credential: %v\n", err)
-		return nil
-	}
-	if info, err := os.Stat(store.CredPath(s.cred.ID)); err == nil {
+	s.cred = fresh
+	if info, statErr := os.Stat(store.CredPath(s.cred.ID)); statErr == nil {
 		s.mtime = info.ModTime()
 	}
-	return nil
+	return s.cred.AccessToken(), nil
 }
 
 // reloadIfPeerWrote re-reads the credential from disk if the file's
@@ -119,5 +85,5 @@ var _ poolEntryState = (*credState)(nil)
 
 func (s *credState) credID() string             { return s.cred.ID }
 func (s *credState) credName() string           { return s.cred.Name }
-func (s *credState) credExpiresAt() time.Time   { return time.UnixMilli(s.cred.ClaudeAiOauth.ExpiresAt) }
+func (s *credState) credExpiresAt() time.Time   { return time.UnixMilli(s.cred.ExpiresAtMillis()) }
 func (s *credState) credPtr() *store.Credential { return s.cred }
