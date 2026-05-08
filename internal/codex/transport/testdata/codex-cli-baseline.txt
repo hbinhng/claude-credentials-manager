@@ -1,0 +1,3 @@
+# Codex CLI 0.129.0 baseline TLS+HTTP/2 fingerprint
+# Captured: 2026-05-09 (prior tcpdump session, recorded in MUX2.md §13.2)
+# JA3 hash: 27718d56688425cd36a401c66147c4ee

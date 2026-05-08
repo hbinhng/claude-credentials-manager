@@ -1,6 +1,6 @@
 module github.com/hbinhng/claude-credentials-manager
 
-go 1.24.0
+go 1.24.1
 
 require (
 	github.com/danieljoos/wincred v1.2.3
@@ -8,7 +8,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/sys v0.27.0
+	golang.org/x/sys v0.39.0
 )
 
 require (
