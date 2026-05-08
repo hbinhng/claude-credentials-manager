@@ -52,7 +52,156 @@
 // a closer or exact match becomes available. See spec §7.4.
 package transport
 
+import (
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"time"
+
+	fhttp "github.com/bogdanfinn/fhttp"
+	tls_client "github.com/bogdanfinn/tls-client"
+	"github.com/bogdanfinn/tls-client/profiles"
+)
+
 // Default is the bogdanfinn/tls-client profile name used by the codex
 // transport when no explicit override is supplied. See package doc for the
 // verification rationale.
 const Default = "Firefox_135"
+
+// Options configures Transport.
+type Options struct {
+	// ProfileName selects the bogdanfinn TLS profile. Use Default unless
+	// re-verification has identified a different match.
+	ProfileName string
+
+	// Timeout caps total request duration. Defaults to 600s when zero
+	// (codex SSE streams can run minutes).
+	Timeout time.Duration
+
+	// InsecureSkipVerify is for httptest-driven tests only; production
+	// callers leave it false.
+	InsecureSkipVerify bool
+}
+
+// Transport wraps a bogdanfinn HTTP client. bogdanfinn's HttpClient.Do
+// uses bogdanfinn/fhttp types internally; we translate to/from stdlib
+// types around the call so the rest of ccm stays on stdlib.
+type Transport struct {
+	client tls_client.HttpClient
+}
+
+// New constructs a Transport.
+func New(opts Options) (*Transport, error) {
+	if opts.ProfileName == "" {
+		opts.ProfileName = Default
+	}
+	if opts.Timeout == 0 {
+		opts.Timeout = 600 * time.Second
+	}
+
+	profile, ok := lookupProfile(opts.ProfileName)
+	if !ok {
+		return nil, fmt.Errorf("transport: unknown profile %q", opts.ProfileName)
+	}
+
+	// opts.Timeout is always ≥1s here: the zero-value guard above sets it to
+	// 600s, and callers that supply a positive Duration are unchanged.
+	timeoutSecs := int(opts.Timeout.Seconds())
+	clientOpts := []tls_client.HttpClientOption{
+		tls_client.WithClientProfile(profile),
+		tls_client.WithTimeoutSeconds(timeoutSecs),
+	}
+	if opts.InsecureSkipVerify {
+		clientOpts = append(clientOpts, tls_client.WithInsecureSkipVerify())
+	}
+
+	// NewHttpClient only errors on invalid config combinations (e.g. protocol
+	// racing + HTTP/3 disabled, or cert pinning + InsecureSkipVerify). None of
+	// those are reachable through our Options surface, so this branch is
+	// untestable without mocking the bogdanfinn internals.
+	c, err := tls_client.NewHttpClient(tls_client.NewNoopLogger(), clientOpts...)
+	if err != nil {
+		return nil, fmt.Errorf("transport: build client: %w", err)
+	}
+	return &Transport{client: c}, nil
+}
+
+// Do executes req via the bogdanfinn TLS client and returns a stdlib
+// *http.Response. Internally we convert stdlib types to bogdanfinn's
+// fhttp types around the call. Streaming bodies and context cancellation
+// work transparently.
+func (t *Transport) Do(req *http.Request) (*http.Response, error) {
+	// Defensive nil guard. New always sets client; this branch is only
+	// reachable if a caller constructs Transport{} directly (unsupported).
+	if t == nil || t.client == nil {
+		return nil, errors.New("transport: nil client")
+	}
+
+	// Convert stdlib *http.Request → fhttp.Request.
+	var bodyReader io.Reader
+	if req.Body != nil {
+		bodyReader = req.Body
+	}
+	freq, err := fhttp.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), bodyReader)
+	if err != nil {
+		return nil, fmt.Errorf("transport: build fhttp request: %w", err)
+	}
+	// Copy headers verbatim. fhttp.Header is map[string][]string just like stdlib.
+	for k, vs := range req.Header {
+		for _, v := range vs {
+			freq.Header.Add(k, v)
+		}
+	}
+	if req.Host != "" {
+		freq.Host = req.Host
+	}
+
+	fresp, err := t.client.Do(freq)
+	if err != nil {
+		return nil, fmt.Errorf("transport: do: %w", err)
+	}
+
+	// Convert fhttp.Response → stdlib *http.Response.
+	resp := &http.Response{
+		Status:        fresp.Status,
+		StatusCode:    fresp.StatusCode,
+		Proto:         fresp.Proto,
+		ProtoMajor:    fresp.ProtoMajor,
+		ProtoMinor:    fresp.ProtoMinor,
+		Header:        http.Header{},
+		Body:          fresp.Body,
+		ContentLength: fresp.ContentLength,
+		Request:       req,
+	}
+	for k, vs := range fresp.Header {
+		for _, v := range vs {
+			resp.Header.Add(k, v)
+		}
+	}
+	return resp, nil
+}
+
+// lookupProfile maps a profile name to a bogdanfinn ClientProfile.
+// The list below covers the candidates Task 1's verification gate considers,
+// plus Firefox_135 which is pinned as Default. Extend as new profiles become
+// relevant. Unknown names return ok=false.
+func lookupProfile(name string) (profiles.ClientProfile, bool) {
+	switch name {
+	case "Chrome_120":
+		return profiles.Chrome_120, true
+	case "Chrome_131":
+		return profiles.Chrome_131, true
+	case "Chrome_133":
+		return profiles.Chrome_133, true
+	case "Firefox_120":
+		return profiles.Firefox_120, true
+	case "Firefox_123":
+		return profiles.Firefox_123, true
+	case "Firefox_132":
+		return profiles.Firefox_132, true
+	case "Firefox_135":
+		return profiles.Firefox_135, true
+	}
+	return profiles.ClientProfile{}, false
+}
