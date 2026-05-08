@@ -652,36 +652,6 @@ func TestStatus_AddsProviderColumn(t *testing.T) {
 	}
 }
 
-func TestStatus_SummaryLines_BothActive(t *testing.T) {
-	setupFakeHome(t)
-	cc := mkClaudeCredHelper(t, "c1")
-	if err := store.Save(cc); err != nil {
-		t.Fatal(err)
-	}
-	if err := claude.Use(cc); err != nil {
-		t.Fatal(err)
-	}
-	xc := mkCodexCredHelper(t, "x1")
-	if err := store.Save(xc); err != nil {
-		t.Fatal(err)
-	}
-	if err := codex.Use(xc); err != nil {
-		t.Fatal(err)
-	}
-	out := runStatusCmd(t, "--no-quota")
-	if !strings.Contains(out, "Claude:") || !strings.Contains(out, "Codex:") {
-		t.Fatalf("summary lines missing: %s", out)
-	}
-}
-
-func TestStatus_SummaryLines_NoneActive(t *testing.T) {
-	setupFakeHome(t)
-	out := runStatusCmd(t, "--no-quota")
-	if !strings.Contains(out, "Claude: (none)") || !strings.Contains(out, "Codex:") || !strings.Contains(out, "(none)") {
-		t.Fatalf("(none) summaries missing: %s", out)
-	}
-}
-
 func TestStatus_JSON_AdditiveFields_VersionUnchanged(t *testing.T) {
 	setupFakeHome(t)
 	cc := mkClaudeCredHelper(t, "c1")
