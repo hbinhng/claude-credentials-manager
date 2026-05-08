@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
+	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -180,5 +182,145 @@ func TestRefreshCredential_DoRefreshError(t *testing.T) {
 
 	if err := refreshCredential("active"); err == nil || !strings.Contains(err.Error(), "inner boom") {
 		t.Errorf("err=%v, want inner boom", err)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Codex cmd-layer tests (Task 19)
+// ---------------------------------------------------------------------------
+
+// TestRefreshCmd_Codex_HappyPath verifies that refreshCredential round-trips
+// correctly for a codex credential end-to-end (store → credflow → store).
+func TestRefreshCmd_Codex_HappyPath(t *testing.T) {
+	setupFakeHome(t)
+	cred := mkCodexCredHelper(t, "id-codex")
+	if err := store.Save(cred); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := credflow.SeamCodexRefresh(func(string) (*codexoauth.TokenResponse, error) {
+		return &codexoauth.TokenResponse{
+			AccessToken:  "new_a",
+			RefreshToken: "new_r",
+			IDToken:      "new_i",
+		}, nil
+	})
+	defer cleanup()
+
+	// refreshCredential uses fmt.Printf internally, so capture real stdout.
+	out := captureStdout(t, func() {
+		if err := refreshCredential(cred.ID); err != nil {
+			t.Fatalf("refreshCredential: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Refreshed") {
+		t.Fatalf("output should mention Refreshed: %s", out)
+	}
+
+	got, err := store.Load(cred.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tokens.AccessToken != "new_a" || got.Tokens.RefreshToken != "new_r" {
+		t.Fatalf("rotation not persisted: %+v", got.Tokens)
+	}
+}
+
+// TestRefreshCmd_Codex_BrickedRefreshToken_FriendlyError checks that when the
+// codex refresh token has been rotated away, the cmd layer surfaces a friendly
+// error message directing the user to re-authenticate.
+func TestRefreshCmd_Codex_BrickedRefreshToken_FriendlyError(t *testing.T) {
+	setupFakeHome(t)
+	cred := mkCodexCredHelper(t, "id-bricked")
+	if err := store.Save(cred); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := credflow.SeamCodexRefresh(func(string) (*codexoauth.TokenResponse, error) {
+		return nil, codexoauth.ErrRefreshRotated
+	})
+	defer cleanup()
+
+	err := refreshCredential(cred.ID)
+	if err == nil || !strings.Contains(err.Error(), "ccm login codex") {
+		t.Fatalf("want bricked error mentioning ccm login codex; got %v", err)
+	}
+}
+
+// TestRefreshAll_MixedProviders_OneCodexFailureDoesNotBlockClaude confirms that
+// when --all is used with mixed providers, a codex failure does not prevent the
+// claude credential from refreshing.
+func TestRefreshAll_MixedProviders_OneCodexFailureDoesNotBlockClaude(t *testing.T) {
+	setupFakeHome(t)
+	claudeCred := mkClaudeCredHelper(t, "claude1")
+	if err := store.Save(claudeCred); err != nil {
+		t.Fatal(err)
+	}
+	codexCred := mkCodexCredHelper(t, "codex1")
+	if err := store.Save(codexCred); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stub refreshCredentialFn to dispatch by provider: codex fails, claude succeeds.
+	restore := stubRefreshFn(func(id string) (*store.Credential, error) {
+		c, err := store.Load(id)
+		if err != nil {
+			return nil, err
+		}
+		if c.ProviderName() == "codex" {
+			return nil, codexoauth.ErrTokenEndpoint
+		}
+		// claude: return a refreshed copy.
+		c.ClaudeAiOauth.AccessToken = "refreshed_claude"
+		c.ClaudeAiOauth.ExpiresAt = time.Now().Add(time.Hour).UnixMilli()
+		return c, nil
+	})
+	defer restore()
+
+	// Also stub claudeSyncFn to avoid touching real ~/.claude.
+	origSync := claudeSyncFn
+	claudeSyncFn = func() (bool, error) { return false, nil }
+	defer func() { claudeSyncFn = origSync }()
+
+	out := captureStdout(t, func() {
+		// refreshAllCredentials() ignores partial failures in its return value
+		// only when all fail. Here it returns an error (1 of 2 failed) but we
+		// still want to check that both creds appeared in the output.
+		_ = refreshAllCredentials()
+	})
+
+	if !strings.Contains(out, "claude1") {
+		t.Fatalf("expected mention of claude1 in output: %s", out)
+	}
+	if !strings.Contains(out, "codex1") {
+		t.Fatalf("expected mention of codex1 in output: %s", out)
+	}
+}
+
+// TestRefreshAll_AllCodex_FullySupported verifies that --all works when all
+// credentials are codex-provider.
+func TestRefreshAll_AllCodex_FullySupported(t *testing.T) {
+	setupFakeHome(t)
+	x1 := mkCodexCredHelper(t, "x1")
+	if err := store.Save(x1); err != nil {
+		t.Fatal(err)
+	}
+	x2 := mkCodexCredHelper(t, "x2")
+	if err := store.Save(x2); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanup := credflow.SeamCodexRefresh(func(string) (*codexoauth.TokenResponse, error) {
+		return &codexoauth.TokenResponse{AccessToken: "a", RefreshToken: "r", IDToken: "i"}, nil
+	})
+	defer cleanup()
+
+	out := captureStdout(t, func() {
+		if err := refreshAllCredentials(); err != nil {
+			t.Fatalf("refreshAllCredentials: %v", err)
+		}
+	})
+	if !strings.Contains(out, "x1") || !strings.Contains(out, "x2") {
+		t.Fatalf("expected both codex creds in output: %s", out)
 	}
 }
