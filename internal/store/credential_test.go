@@ -89,3 +89,20 @@ func TestCredential_SetTokens_CodexNilTokens(t *testing.T) {
 		t.Errorf("AccessToken = %q", c.Tokens.AccessToken)
 	}
 }
+
+// TestCredential_AccessToken_UnknownProvider exercises the fallthrough
+// branch in AccessToken/RefreshToken/SetTokens. Defensive: keeps the
+// switch's default arm covered so silent regressions don't slip through.
+func TestCredential_AccessToken_UnknownProvider(t *testing.T) {
+	c := &Credential{Provider: "unknown"}
+	if got := c.AccessToken(); got != "" {
+		t.Errorf("AccessToken(unknown) = %q, want empty", got)
+	}
+	if got := c.RefreshToken(); got != "" {
+		t.Errorf("RefreshToken(unknown) = %q, want empty", got)
+	}
+	c.SetTokens("a", "r", 42) // exercises the no-op switch path
+	if c.expiresAtMillis != 42 {
+		t.Errorf("expiresAtMillis cache = %d, want 42 (cache updates regardless of provider)", c.expiresAtMillis)
+	}
+}
