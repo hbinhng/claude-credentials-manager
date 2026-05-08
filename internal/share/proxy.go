@@ -16,6 +16,9 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/pipeline"
 )
 
 // identityHeaderAllowlist enumerates the request headers that identify a
@@ -127,6 +130,15 @@ type Proxy struct {
 	// once without panicking.
 	done     chan struct{}
 	doneOnce sync.Once
+
+	// Pipeline assembly fields. Setters (SetSharedSecret, SetAliasMap,
+	// SetMaxConcurrency, SetBearerSource) must be called before Start.
+	// aliasMap is eagerly initialised in NewProxy to avoid a lazy-init
+	// race; other fields default to their zero values (no-op behaviour).
+	sharedSecret   string
+	aliasMap       *alias.Map
+	maxConcurrency int
+	bearerSrc      middleware.BearerSource // non-nil → UpstreamAuthReplace step is added
 }
 
 // ctxKey is used to thread per-request state from the outer handler into
@@ -196,6 +208,11 @@ func NewProxy(bindAddr string) (*Proxy, error) {
 		done:     make(chan struct{}),
 		debug:    os.Getenv("CCM_SHARE_DEBUG") == "1",
 	}
+	// Eagerly initialise the alias map so request-time pipeline
+	// assembly never races with a concurrent SetAliasMap call.
+	emptyMap, _ := alias.Parse(nil)
+	p.aliasMap = emptyMap
+
 	p.rp = &httputil.ReverseProxy{
 		Director:     p.director,
 		ErrorHandler: p.onUpstreamError,
@@ -221,12 +238,73 @@ func NewProxy(bindAddr string) (*Proxy, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ccm-share/healthz", p.handleHealth)
-	mux.HandleFunc("/", p.handle)
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		// Pipeline composes pre-built Steps cheaply per request. Setters
+		// (SetAliasMap, SetSharedSecret, etc.) must complete before Start
+		// — there is no concurrent write race because Start blocks on
+		// Serve and setters run on the construction goroutine.
+		terminal := p.terminalForProvider()
+		p.pipelineHandler(terminal).ServeHTTP(w, r)
+	})
 	p.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 15 * time.Second,
 	}
 	return p, nil
+}
+
+// SetSharedSecret pins the bearer expected on inbound requests. Empty =
+// no auth (launch mode). Must be called before Start.
+func (p *Proxy) SetSharedSecret(s string) { p.sharedSecret = s }
+
+// SetAliasMap installs the model alias map. Must be called before Start.
+// A nil argument is ignored (the empty map set in NewProxy is kept).
+func (p *Proxy) SetAliasMap(m *alias.Map) {
+	if m != nil {
+		p.aliasMap = m
+	}
+}
+
+// SetMaxConcurrency sets the per-cred semaphore capacity. 0 = no-op.
+// Must be called before Start.
+func (p *Proxy) SetMaxConcurrency(n int) { p.maxConcurrency = n }
+
+// SetBearerSource installs the credential bearer accessor (typically a
+// *credState). When non-nil, an UpstreamAuthReplace step is added to the
+// pipeline. Must be called before Start.
+func (p *Proxy) SetBearerSource(src middleware.BearerSource) { p.bearerSrc = src }
+
+// terminalForProvider returns the terminal http.Handler for the current
+// provider. For Task 8 (claude-only) this is always p.handle.
+// Task 16 extends this with a codex case.
+func (p *Proxy) terminalForProvider() http.Handler {
+	// Task 16 extends this with a "codex" case.
+	return http.HandlerFunc(p.handle)
+}
+
+// pipelineHandler builds the request-handling pipeline using the common
+// middleware steps. The terminal handler is provider-specific (see
+// terminalForProvider). Pipeline is cheap to assemble per request
+// because each Step implementation is stateless or reads only
+// immutable fields set before Start.
+//
+// Note: UpstreamAuthReplace is only added when bearerSrc is non-nil.
+// For the claude path (Task 8) bearerSrc stays nil: the existing
+// handleServe already calls getFreshToken() and passes the token via
+// ctxKeyRealToken → director, so a second bearer-replace step would
+// incorrectly overwrite the inbound access-token check in handleServe.
+// Task 16 will wire bearerSrc for the codex terminal, which delegates
+// auth to the pipeline rather than handling it inline.
+func (p *Proxy) pipelineHandler(terminal http.Handler) http.Handler {
+	steps := []pipeline.Step{
+		middleware.NewDownstreamAuth(p.sharedSecret),
+		middleware.NewAliasRewrite(p.aliasMap),
+		middleware.NewCredSemaphore(p.maxConcurrency),
+	}
+	if p.bearerSrc != nil {
+		steps = append(steps, middleware.NewUpstreamAuthReplace(p.bearerSrc))
+	}
+	return pipeline.New(steps...).Handler(terminal)
 }
 
 // Addr returns the loopback URL the proxy is listening on,
