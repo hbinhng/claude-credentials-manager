@@ -7,12 +7,16 @@ import (
 	"strings"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
 
 // logoutRestoreFn is the seam tests override; production points at claude.Restore.
 var logoutRestoreFn = claude.Restore
+
+// logoutRestoreCodexFn is the seam tests override; production points at codex.Restore.
+var logoutRestoreCodexFn = codex.Restore
 
 func init() {
 	logoutCmd.Flags().BoolP("force", "f", false, "Skip confirmation for active credential")
@@ -30,7 +34,14 @@ var logoutCmd = &cobra.Command{
 			return err
 		}
 		force, _ := cmd.Flags().GetBool("force")
-		if claude.IsActive(cred.ID) && !force {
+		isActive := false
+		switch cred.ProviderName() {
+		case "claude":
+			isActive = claude.IsActive(cred.ID)
+		case "codex":
+			isActive = codex.IsActive(cred.ID)
+		}
+		if isActive && !force {
 			fmt.Printf("Credential %s (%s) is currently active.\n", cred.Name, cred.ID[:8])
 			fmt.Print("Remove anyway? [y/N] ")
 			reader := bufio.NewReader(os.Stdin)
@@ -52,9 +63,21 @@ var logoutCmd = &cobra.Command{
 // one, Restore is called first (best-effort: restore failure is logged
 // but does not abort the delete — the user can `ccm restore` manually).
 func doLogout(id string) error {
-	if claude.IsActive(id) {
-		if err := logoutRestoreFn(); err != nil {
-			fmt.Fprintf(os.Stderr, "ccm: restore failed: %v\n", err)
+	cred, err := store.Load(id)
+	if err == nil {
+		switch cred.ProviderName() {
+		case "claude":
+			if claude.IsActive(id) {
+				if err := logoutRestoreFn(); err != nil {
+					fmt.Fprintf(os.Stderr, "ccm: restore failed: %v\n", err)
+				}
+			}
+		case "codex":
+			if codex.IsActive(id) {
+				if err := logoutRestoreCodexFn(); err != nil {
+					fmt.Fprintf(os.Stderr, "ccm: codex restore failed: %v\n", err)
+				}
+			}
 		}
 	}
 	if err := store.Delete(id); err != nil {
