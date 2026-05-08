@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -13,6 +14,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -259,6 +263,21 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		}
 		tokens = state
 	}
+
+	// Codex provider: run identity capture and wire the Terminal before
+	// Transition. capture.Run spawns `codex "say hi"` against a local
+	// HTTP server, records its outbound headers and body fields, and
+	// forwards the request to chatgpt.com so codex exits cleanly. The
+	// resulting bundle is replayed on every translated request.
+	if cred != nil && cred.ProviderName() == "codex" {
+		tr, trErr := codexCaptureFn(cred)
+		if trErr != nil {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("codex identity capture: %w", trErr)
+		}
+		proxy.SetCodexHandlers(tr)
+	}
+
 	if err := proxy.Transition(accessToken, tokens, opts.Pool); err != nil {
 		_ = proxy.Close()
 		// coverage: unreachable — Transition errors only when capture has
@@ -620,4 +639,52 @@ func SetLaunchExecFnForTest(fn LaunchExec) func() {
 	orig := launchExecFn
 	launchExecFn = fn
 	return func() { launchExecFn = orig }
+}
+
+// codexCaptureFn is the production implementation of the codex identity
+// capture step. It builds a bogdanfinn transport, spawns `codex "say hi"`
+// against a local intercepting server, records the CLI's outbound headers
+// and JSON fields, and returns a wired CodexHandlers ready for
+// proxy.SetCodexHandlers. Overridable in tests via
+// SetCodexCaptureFnForTest.
+//
+// coverage: unreachable — always overridden by codexCaptureFn in tests.
+// Wraps real subprocess + network I/O; real behaviour is exercised by
+// manual smoke tests and by cmd/share and cmd/launch at runtime.
+var codexCaptureFn = func(cred *store.Credential) (CodexHandlers, error) {
+	return runCodexCapture(cred)
+}
+
+// runCodexCapture is the real production implementation.
+func runCodexCapture(cred *store.Credential) (CodexHandlers, error) {
+	tr, err := transport.New(transport.Options{ProfileName: transport.Default})
+	if err != nil {
+		return CodexHandlers{}, fmt.Errorf("build codex transport: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	res, err := capture.Run(ctx, capture.Options{
+		Cred:      cred,
+		Transport: tr,
+		Stdout:    io.Discard,
+		Stderr:    os.Stderr,
+	})
+	if err != nil {
+		return CodexHandlers{}, fmt.Errorf("capture codex identity: %w", err)
+	}
+	bundle := identity.New(res.HeaderBundle)
+	return CodexHandlers{
+		Cred:      cred,
+		Bundle:    bundle,
+		Capture:   res,
+		Transport: tr,
+	}, nil
+}
+
+// SetCodexCaptureFnForTest overrides codexCaptureFn for the duration
+// of a test. Returns a restorer the caller can defer.
+func SetCodexCaptureFnForTest(fn func(*store.Credential) (CodexHandlers, error)) func() {
+	orig := codexCaptureFn
+	codexCaptureFn = fn
+	return func() { codexCaptureFn = orig }
 }
