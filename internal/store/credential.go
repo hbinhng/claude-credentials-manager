@@ -200,6 +200,62 @@ func (c *Credential) expiry() int64 {
 	return c.expiresAtMillis
 }
 
+// AccessToken returns the credential's current OAuth access token,
+// dispatching on provider.
+func (c *Credential) AccessToken() string {
+	switch c.ProviderName() {
+	case "claude":
+		return c.ClaudeAiOauth.AccessToken
+	case "codex":
+		if c.Tokens == nil {
+			return ""
+		}
+		return c.Tokens.AccessToken
+	}
+	return ""
+}
+
+// RefreshToken returns the credential's current OAuth refresh token.
+func (c *Credential) RefreshToken() string {
+	switch c.ProviderName() {
+	case "claude":
+		return c.ClaudeAiOauth.RefreshToken
+	case "codex":
+		if c.Tokens == nil {
+			return ""
+		}
+		return c.Tokens.RefreshToken
+	}
+	return ""
+}
+
+// ExpiresAtMillis returns the credential's effective expiry timestamp in
+// Unix milliseconds. For claude this is the OAuth response's expiresAt;
+// for codex this is the JWT exp claim cached at unmarshal time.
+func (c *Credential) ExpiresAtMillis() int64 {
+	return c.expiry()
+}
+
+// SetTokens writes new access+refresh tokens and an expiry timestamp.
+// Dispatches on provider. For codex, initializes Tokens if nil and
+// preserves AccountID. The expiresAtMillis cache is updated for both
+// providers so IsExpired reflects the new value immediately.
+func (c *Credential) SetTokens(access, refresh string, expiresAtMillis int64) {
+	switch c.ProviderName() {
+	case "claude":
+		c.ClaudeAiOauth.AccessToken = access
+		c.ClaudeAiOauth.RefreshToken = refresh
+		c.ClaudeAiOauth.ExpiresAt = expiresAtMillis
+	case "codex":
+		if c.Tokens == nil {
+			c.Tokens = &CodexTokens{}
+		}
+		c.Tokens.AccessToken = access
+		c.Tokens.RefreshToken = refresh
+	}
+	c.expiresAtMillis = expiresAtMillis
+}
+
 func (c *Credential) IsExpired() bool {
 	return time.Now().UnixMilli() >= c.expiry()
 }
