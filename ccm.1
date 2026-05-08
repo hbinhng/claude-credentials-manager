@@ -79,11 +79,12 @@ List all credentials in a table with columns: ID (8-char prefix), NAME,
 PROVIDER (claude or codex), TIER (e.g.
 .IR "Claude Max 20x" ),
 STATUS (valid/expiring soon/expired), EXPIRES (relative time), and an ACTIVE
-marker (*). For each non-expired claude
-credential, one line per quota window is printed underneath showing remaining
-percentage and reset time (e.g.
+marker (*). For each non-expired credential, one line per quota window is
+printed underneath showing remaining percentage and reset time (e.g.
 .IR "5h: 75% (resets in 1h12m)" ).
-Usage data is fetched from non-expired claude credentials concurrently by default; pass
+Claude usage is fetched from api.anthropic.com/api/oauth/usage; codex
+usage from chatgpt.com/backend-api/wham/usage. Both run concurrently.
+Pass
 .B \-\-no\-quota
 to skip the fetch entirely (faster, offline-safe).
 .RS
