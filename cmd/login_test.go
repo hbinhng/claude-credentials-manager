@@ -208,7 +208,7 @@ func (e *errReader) Read(p []byte) (int, error) { return 0, e.err }
 func TestLoginCodex_HappyPath(t *testing.T) {
 	setupLoginFakeHome(t)
 	called := false
-	cleanup := SeamCodexLogin(func(ctx context.Context) (*store.Credential, error) {
+	cleanup := SeamCodexLogin(func(ctx context.Context, w io.Writer, r io.Reader) (*store.Credential, error) {
 		called = true
 		return &store.Credential{
 			ID:              "01HZZZ-test-uuid",
@@ -239,7 +239,7 @@ func TestLoginCodex_HappyPath(t *testing.T) {
 
 func TestLoginCodex_LoginError_Propagates(t *testing.T) {
 	setupLoginFakeHome(t)
-	cleanup := SeamCodexLogin(func(ctx context.Context) (*store.Credential, error) {
+	cleanup := SeamCodexLogin(func(ctx context.Context, w io.Writer, r io.Reader) (*store.Credential, error) {
 		return nil, errors.New("user canceled")
 	})
 	defer cleanup()
@@ -251,7 +251,7 @@ func TestLoginCodex_LoginError_Propagates(t *testing.T) {
 
 func TestLoginCodex_ShortIDPath(t *testing.T) {
 	setupLoginFakeHome(t)
-	cleanup := SeamCodexLogin(func(ctx context.Context) (*store.Credential, error) {
+	cleanup := SeamCodexLogin(func(ctx context.Context, w io.Writer, r io.Reader) (*store.Credential, error) {
 		return &store.Credential{
 			ID:       "shortid",
 			Name:     "u",
@@ -282,7 +282,7 @@ func TestLoginCodex_SaveError_Propagates(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(ccmDir, 0700) }) //nolint:errcheck
 
-	cleanup := SeamCodexLogin(func(ctx context.Context) (*store.Credential, error) {
+	cleanup := SeamCodexLogin(func(ctx context.Context, w io.Writer, r io.Reader) (*store.Credential, error) {
 		return &store.Credential{
 			ID:       "some-long-uuid-xxxx",
 			Name:     "u",

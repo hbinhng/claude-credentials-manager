@@ -11,6 +11,11 @@ const ClientID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const AuthorizeURL = "https://auth.openai.com/oauth/authorize"
 const Scopes = "openid profile email offline_access api.connectors.read api.connectors.invoke"
 
+// DefaultRedirectURI matches what's registered on the OpenAI OAuth app.
+// ccm does not listen on this port — the user copies the full redirect
+// URL from their browser's address bar after the browser fails to load it.
+const DefaultRedirectURI = "http://localhost:1455/auth/callback"
+
 type PKCEParams struct {
 	Verifier  string
 	Challenge string
