@@ -288,6 +288,14 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 			return nil, fmt.Errorf("codex identity capture: %w", trErr)
 		}
 		proxy.SetCodexHandlers(tr)
+		// Wire the bearer source so the codex terminal can trigger a
+		// credential refresh on 401 and so the pipeline
+		// UpstreamAuthReplace step injects fresh tokens. Do NOT call
+		// SetBearerSource for the claude path: handleServe already
+		// injects the token via ctxKeyRealToken → director, and adding
+		// UpstreamAuthReplace on that path would clobber the inbound
+		// access-token check.
+		proxy.SetBearerSource(tokens)
 	}
 
 	if err := proxy.Transition(accessToken, tokens, opts.Pool); err != nil {
