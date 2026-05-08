@@ -1,54 +1,30 @@
 package cmd
 
 import (
-	"bufio"
-	"fmt"
-	"os"
-	"strings"
+	"errors"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/spf13/cobra"
 )
 
 func init() {
 	rootCmd.AddCommand(loginCmd)
-	loginCmd.PreRunE = requireOnline
+	loginCmd.AddCommand(loginClaudeCmd)
+	loginCmd.AddCommand(loginCodexCmd)
+	// requireOnline applies to both login flows — they hit
+	// auth.anthropic.com and auth.openai.com respectively.
+	loginClaudeCmd.PreRunE = requireOnline
+	loginCodexCmd.PreRunE = requireOnline
 }
 
 var loginCmd = &cobra.Command{
 	Use:   "login",
-	Short: "Authenticate a new Claude account via OAuth",
+	Short: "Capture a new OAuth credential",
+	Long: `Capture a new OAuth credential. Specify a provider:
+
+  ccm login claude   for Anthropic OAuth (Claude Code)
+  ccm login codex    for OpenAI/ChatGPT OAuth (codex CLI)`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		hs, err := credflow.BeginLogin()
-		if err != nil {
-			return err
-		}
-
-		fmt.Println("\nOpen this URL in your browser to authenticate:")
-		fmt.Printf("\n  %s\n\n", hs.AuthorizeURL)
-		tryOpenBrowserFn(hs.AuthorizeURL)
-
-		fmt.Print("Paste the code here: ")
-		reader := bufio.NewReader(os.Stdin)
-		raw, err := reader.ReadString('\n')
-		if err != nil {
-			return fmt.Errorf("read code: %w", err)
-		}
-		code := strings.TrimSpace(raw)
-		if code == "" {
-			return fmt.Errorf("no code provided")
-		}
-
-		fmt.Println("Exchanging code for tokens...")
-		cred, err := credflow.CompleteLogin(hs, code)
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("\nLogged in as %s\n", cred.Name)
-		if cred.Name == cred.ID {
-			fmt.Printf("Use `ccm rename %s <name>` to set a friendly name.\n", cred.ID[:8])
-		}
-		return nil
+		_ = cmd.Help()
+		return errors.New("specify a provider: ccm login claude | ccm login codex")
 	},
 }
