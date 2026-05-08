@@ -75,14 +75,18 @@ a
 marker. If the token is expired, prompts to refresh before activation.
 .TP
 .B status
-List all credentials in a table with columns: ID (8-char prefix), NAME, TIER
-(e.g.
+List all credentials in a table with columns: ID (8-char prefix), NAME,
+PROVIDER (claude or codex), TIER (e.g.
 .IR "Claude Max 20x" ),
 STATUS (valid/expiring soon/expired), EXPIRES (relative time), and an ACTIVE
-marker (*). For each non-expired credential, one line per quota window is
-printed underneath showing remaining percentage and reset time (e.g.
+marker (*). Above the table, two summary lines show the currently-active
+credential for each provider (or
+.RI "(none)"
+when no credential is active for that provider). For each non-expired claude
+credential, one line per quota window is printed underneath showing remaining
+percentage and reset time (e.g.
 .IR "5h: 75% (resets in 1h12m)" ).
-Usage data is fetched from all credentials concurrently by default; pass
+Usage data is fetched from non-expired claude credentials concurrently by default; pass
 .B \-\-no\-quota
 to skip the fetch entirely (faster, offline-safe).
 .RS
@@ -99,10 +103,12 @@ the command emits a stable JSON envelope on stdout of the form
 {
   "version": 1,
   "activeId": "<uuid>",
+  "activeCodexId": "<uuid>",
   "credentials": [
     {
       "id": "<uuid>",
       "name": "<friendly name>",
+      "provider": "claude",
       "tier": "Claude Max 20x",
       "status": "valid",
       "active": true,
@@ -154,6 +160,16 @@ over-utilization); consumers that want "remaining" can compute
 .B resetsAt
 is the raw upstream RFC3339 timestamp (the table renderer turns it into a
 relative string; JSON consumers get the unmodified value).
+.PP
+Additional fields added in v1.17.0 (version stays 1; no breaking change):
+.IP "activeCodexId" 4
+The unique ID of the credential currently active for the codex CLI.
+Omitted from JSON output (not emitted as a key) when no codex credential
+is active.
+.IP "credentials[].provider" 4
+The provider this credential targets:
+.BR \(dqclaude\(dq " or " \(dqcodex\(dq .
+Always present in every entry.
 .PP
 The envelope is emitted as minified JSON (no indentation, one trailing
 newline) to keep pipelines compact; pipe through
