@@ -17,6 +17,7 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
+	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -88,6 +89,15 @@ type Options struct {
 	// Empty (zero value) preserves today's behavior: a fresh
 	// crypto/rand-derived token is minted per session.
 	PinnedAccessToken string
+
+	// AliasMap, when non-nil, installs model alias rewrite rules on the
+	// proxy pipeline. Parsed from --model-alias flag values by the cmd
+	// layer; nil is a no-op (the empty map set in NewProxy is kept).
+	AliasMap *alias.Map
+
+	// MaxConcurrency sets the per-credential in-flight request cap on
+	// the proxy semaphore. 0 = no limit. Parsed from --max-concurrency.
+	MaxConcurrency int
 }
 
 // SessionStarter abstracts StartSession for tests and for consumers
@@ -210,6 +220,8 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 	if err != nil {
 		return nil, fmt.Errorf("new proxy: %w", err)
 	}
+	proxy.SetAliasMap(opts.AliasMap)
+	proxy.SetMaxConcurrency(opts.MaxConcurrency)
 
 	proxyErrC := make(chan error, 1)
 	go func() { proxyErrC <- proxy.Start() }()
