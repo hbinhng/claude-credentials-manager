@@ -10,8 +10,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
@@ -847,6 +849,110 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ── TestTerminal_QuotaCacheWired ─────────────────────────────────────────────
+
+// fakeUsageCacheT is a test-local UsageCache implementation.
+type fakeUsageCacheT struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeUsageCacheT) Update(_ string, _ float64, _ time.Time) {
+	f.mu.Lock()
+	f.calls++
+	f.mu.Unlock()
+}
+
+func TestTerminal_QuotaCacheWired(t *testing.T) {
+	// Upstream returns codex quota headers on 2xx.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reset := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+		w.Header().Set("x-codex-5h-used", "0.25")
+		w.Header().Set("x-codex-5h-resets-at", reset)
+		w.Header().Set("x-codex-7d-used", "0.50")
+		w.Header().Set("x-codex-7d-resets-at", reset)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cache := &fakeUsageCacheT{}
+	qc := codexmw.NewQuotaCache(cache)
+
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        minimalCred("tok"),
+		Transport:   newTransport(t),
+		Capture:     minimalCapture(),
+		Bundle:      identity.New(http.Header{}),
+		UpstreamURL: upstream.URL,
+		QuotaCache:  qc,
+	})
+
+	req := httptest.NewRequest("POST", "/v1/messages",
+		bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
+	rr := httptest.NewRecorder()
+
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	cache.mu.Lock()
+	got := cache.calls
+	cache.mu.Unlock()
+	if got != 2 {
+		t.Errorf("QuotaCache.Update called %d times, want 2 (5h + 7d)", got)
+	}
+}
+
+// ── TestTerminal_UsageTeeWired ────────────────────────────────────────────────
+
+func TestTerminal_UsageTeeWired(t *testing.T) {
+	// Upstream sends a complete SSE stream with usage.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	tee := codexmw.NewUsageTee(8)
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        minimalCred("tok"),
+		Transport:   newTransport(t),
+		Capture:     minimalCapture(),
+		Bundle:      identity.New(http.Header{}),
+		UpstreamURL: upstream.URL,
+		UsageTee:    tee,
+	})
+
+	req := httptest.NewRequest("POST", "/v1/messages",
+		bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
+	rr := httptest.NewRecorder()
+
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	snap := tee.Snapshot()
+	if len(snap) != 1 {
+		t.Fatalf("tee snapshot len = %d, want 1", len(snap))
+	}
+	if snap[0].InputTokens != 7 || snap[0].OutputTokens != 3 {
+		t.Errorf("usage event = %+v, want InputTokens=7 OutputTokens=3", snap[0])
+	}
 }
 
 // ── TestTerminal_PromptCacheKeyFromHeader ─────────────────────────────────────
