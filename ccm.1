@@ -290,6 +290,17 @@ OS pick. Works with or without
 in the default tunnel mode it just pins the loopback port the tunnel
 forwards to; in bind-host mode it pins the LAN-reachable port the
 remote side connects to.
+.PP
+.BR \-\-model\-alias " " \fIsource\fR = \fItarget\fR
+(codex only, repeatable) Maps inbound model names to upstream codex
+model names. Source patterns may use
+.B *
+as a wildcard; targets are literal. Boot-time validation rejects
+overlapping patterns.
+.PP
+.BR \-\-max\-concurrency " " \fIn\fR
+(codex only) Maximum concurrent requests for this credential
+(default: 3).
 .RE
 .TP
 .B "launch {" id-or-name " | \-\-via " ticket "} [\-\- " "claude args" ]
@@ -343,6 +354,13 @@ for a one-shot query) and
 .B claude
 must be on
 .BR PATH .
+.PP
+.BR \-\-model\-alias " " \fIsource\fR = \fItarget\fR
+(codex only, repeatable) Maps inbound model names to upstream codex
+model names. Source patterns may use
+.B *
+as a wildcard; targets are literal. Boot-time validation rejects
+overlapping patterns.
 .RE
 .TP
 .B ticket --from-endpoint=\fIurl\fR --from-access-token=\fItoken\fR
@@ -632,6 +650,29 @@ mints a fresh random token as usual. Invalid charset rejects startup
 with a non-zero exit. Ignored by
 .BR "ccm serve" ;
 serve sessions are pinned via the web UI instead.
+.SH CODEX UPSTREAM
+To use a codex (ChatGPT) credential with
+.BR "ccm launch" " or " "ccm share" ,
+the
+.B codex
+CLI utility must be installed and on
+.BR PATH .
+The codex CLI is used to capture the local installation's identity
+headers (User-Agent, X-Stainless-*, etc.) for injection into upstream
+requests. Install it from
+.UR https://github.com/openai/codex
+https://github.com/openai/codex
+.UE .
+.PP
+Use
+.B \-\-model\-alias
+to map Claude model names to codex model names:
+.PP
+.RS
+.nf
+ccm launch codex-cred --model-alias 'claude-opus-*=gpt-5-codex'
+.fi
+.RE
 .SH EXAMPLES
 Authenticate a new account (credential is named after the account email):
 .PP
