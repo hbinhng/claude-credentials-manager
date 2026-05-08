@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -735,4 +737,60 @@ func TestOAuthTokens_UnmarshalGarbage(t *testing.T) {
 	if err := json.Unmarshal([]byte("not json"), &tok); err == nil {
 		t.Error("expected error on garbage input")
 	}
+}
+
+func TestUnmarshal_ClaudeFileWithoutProvider_DefaultsToClaude(t *testing.T) {
+	raw := []byte(`{
+		"id": "abc-123",
+		"name": "personal",
+		"claudeAiOauth": {"accessToken":"a","refreshToken":"r","expiresAt":9999999999000,"scopes":["s"]},
+		"subscription": {"tier": "max"},
+		"createdAt": "2026-01-01T00:00:00Z",
+		"lastRefreshedAt": "2026-01-01T00:00:00Z"
+	}`)
+	var c Credential
+	if err := json.Unmarshal(raw, &c); err != nil { t.Fatalf("unmarshal: %v", err) }
+	if c.ProviderName() != "claude" { t.Fatalf("provider: got %q", c.ProviderName()) }
+	if c.ClaudeAiOauth.AccessToken != "a" { t.Fatalf("claudeAiOauth not populated") }
+	if c.Tokens != nil { t.Fatalf("codex Tokens unexpectedly populated") }
+}
+
+func TestMarshal_ClaudeNeverEmitsCodexFields(t *testing.T) {
+	c := &Credential{
+		ID: "abc", Name: "x",
+		ClaudeAiOauth: OAuthTokens{AccessToken: "a", RefreshToken: "r", ExpiresAt: 1, Scopes: []string{"s"}},
+		Subscription:  Subscription{Tier: "max"},
+		CreatedAt:     "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+	}
+	b, err := json.Marshal(c)
+	if err != nil { t.Fatal(err) }
+	for _, banned := range []string{`"auth_mode"`, `"OPENAI_API_KEY"`, `"tokens"`, `"last_refresh"`, `"provider"`} {
+		if strings.Contains(string(b), banned) {
+			t.Fatalf("claude credential JSON must not contain %s; got %s", banned, b)
+		}
+	}
+}
+
+func TestRoundTrip_ClaudeFile_KeySetUnchanged(t *testing.T) {
+	raw := []byte(`{"id":"abc","name":"x","claudeAiOauth":{"accessToken":"a","refreshToken":"r","expiresAt":1,"scopes":["s"]},"subscription":{"tier":"max"},"createdAt":"t","lastRefreshedAt":"t"}`)
+	var c Credential
+	if err := json.Unmarshal(raw, &c); err != nil { t.Fatal(err) }
+	out, err := json.Marshal(&c)
+	if err != nil { t.Fatal(err) }
+	want := jsonTopLevelKeys(t, raw)
+	got := jsonTopLevelKeys(t, out)
+	if !reflect.DeepEqual(want, got) {
+		t.Fatalf("key set drift: want %v, got %v", want, got)
+	}
+}
+
+func jsonTopLevelKeys(t *testing.T, b []byte) []string {
+	t.Helper()
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil { t.Fatal(err) }
+	keys := make([]string, 0, len(m))
+	for k := range m { keys = append(keys, k) }
+	sort.Strings(keys)
+	return keys
 }
