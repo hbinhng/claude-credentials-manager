@@ -59,6 +59,7 @@ type Quota struct {
 
 type UsageInfo struct {
 	Quotas []Quota
+	Tier   string // optional: provider-supplied subscription tier (codex sets this; claude leaves empty)
 	Error  string // non-empty if fetch failed
 }
 

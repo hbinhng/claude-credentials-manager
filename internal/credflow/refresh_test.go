@@ -493,3 +493,134 @@ func TestRefreshCredential_LockLoadError(t *testing.T) {
 		t.Fatal("expected error when credential file deleted inside lock")
 	}
 }
+
+func TestRefreshCredential_Codex_UpdatesTierFromUsage(t *testing.T) {
+	setupFakeHome(t, "abc")
+	cred := &store.Credential{
+		ID:       "abc",
+		Name:     "n",
+		Provider: "codex",
+		AuthMode: "chatgpt",
+		Tokens: &store.CodexTokens{
+			IDToken:      "i_old",
+			AccessToken:  "a_old",
+			RefreshToken: "r_old",
+			AccountID:    "acct",
+		},
+		LastRefresh:     "old",
+		LastRefreshedAt: "old",
+		CreatedAt:       "t",
+	}
+	if err := store.Save(cred); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupRefresh := SeamCodexRefresh(func(string) (*codexoauth.TokenResponse, error) {
+		return &codexoauth.TokenResponse{
+			AccessToken:  "a_new",
+			RefreshToken: "r_new",
+			IDToken:      "i_new",
+		}, nil
+	})
+	defer cleanupRefresh()
+
+	cleanupUsage := SeamCodexUsage(func(at, acct string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Tier: "Pro", Quotas: []oauth.Quota{{Name: "5h", Used: 10}}}
+	})
+	defer cleanupUsage()
+
+	out, err := RefreshCredential("abc")
+	if err != nil {
+		t.Fatalf("RefreshCredential: %v", err)
+	}
+	if out.Subscription.Tier != "Pro" {
+		t.Errorf("Tier = %q, want Pro", out.Subscription.Tier)
+	}
+	// Verify persisted to disk.
+	reloaded, err := store.Load("abc")
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if reloaded.Subscription.Tier != "Pro" {
+		t.Errorf("on-disk Tier = %q, want Pro", reloaded.Subscription.Tier)
+	}
+}
+
+func TestRefreshCredential_Codex_UsageFailure_RefreshStillSucceeds(t *testing.T) {
+	setupFakeHome(t, "abc")
+	cred := &store.Credential{
+		ID:       "abc",
+		Name:     "n",
+		Provider: "codex",
+		AuthMode: "chatgpt",
+		Tokens: &store.CodexTokens{
+			IDToken:      "i_old",
+			AccessToken:  "a_old",
+			RefreshToken: "r_old",
+			AccountID:    "acct",
+		},
+		Subscription:    store.Subscription{Tier: "OldTier"},
+		LastRefresh:     "old",
+		LastRefreshedAt: "old",
+		CreatedAt:       "t",
+	}
+	if err := store.Save(cred); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupRefresh := SeamCodexRefresh(func(string) (*codexoauth.TokenResponse, error) {
+		return &codexoauth.TokenResponse{AccessToken: "a_new", RefreshToken: "r_new"}, nil
+	})
+	defer cleanupRefresh()
+
+	// Usage fetch fails — error non-empty, Tier empty.
+	cleanupUsage := SeamCodexUsage(func(at, acct string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Error: "HTTP 503"}
+	})
+	defer cleanupUsage()
+
+	out, err := RefreshCredential("abc")
+	if err != nil {
+		t.Fatalf("RefreshCredential should succeed even when usage fails: %v", err)
+	}
+	if out.Tokens.AccessToken != "a_new" {
+		t.Errorf("AccessToken = %q, want a_new", out.Tokens.AccessToken)
+	}
+	// Tier not updated when usage has empty Tier.
+	if out.Subscription.Tier != "OldTier" {
+		t.Errorf("Tier = %q, want OldTier preserved", out.Subscription.Tier)
+	}
+}
+
+func TestRefreshCredential_Codex_UsageNil_RefreshStillSucceeds(t *testing.T) {
+	setupFakeHome(t, "abc")
+	cred := &store.Credential{
+		ID:       "abc",
+		Provider: "codex",
+		AuthMode: "chatgpt",
+		Tokens:   &store.CodexTokens{AccessToken: "a_old", RefreshToken: "r_old"},
+		CreatedAt: "t", LastRefreshedAt: "t",
+	}
+	if err := store.Save(cred); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupRefresh := SeamCodexRefresh(func(string) (*codexoauth.TokenResponse, error) {
+		return &codexoauth.TokenResponse{AccessToken: "a_new", RefreshToken: "r_new"}, nil
+	})
+	defer cleanupRefresh()
+
+	// Usage returns nil (should not panic).
+	cleanupUsage := SeamCodexUsage(func(at, acct string) *oauth.UsageInfo {
+		return nil
+	})
+	defer cleanupUsage()
+
+	out, err := RefreshCredential("abc")
+	if err != nil {
+		t.Fatalf("RefreshCredential should succeed even when usage returns nil: %v", err)
+	}
+	if out.Tokens.AccessToken != "a_new" {
+		t.Errorf("AccessToken = %q, want a_new", out.Tokens.AccessToken)
+	}
+}

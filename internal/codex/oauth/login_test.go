@@ -16,6 +16,7 @@ import (
 	"time"
 
 	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
+	oauth_pkg "github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -320,5 +321,60 @@ func TestParseCallbackURL_BadURL_Errors(t *testing.T) {
 	_, _, err := codexoauth.ExportedParseCallbackURL("not://a valid url with spaces")
 	if err == nil {
 		t.Fatal("expected parse error")
+	}
+}
+
+func TestLogin_PopulatesTierFromUsage(t *testing.T) {
+	srv := tokenServer(t, "user@example.com", "acct-tier")
+	defer srv.Close()
+	setTokenURLStr(t, srv.URL)
+
+	// Stub the usage seam to return a canned tier.
+	restore := codexoauth.SeamLoginUsage(func(at, acct string) *oauth_pkg.UsageInfo {
+		return &oauth_pkg.UsageInfo{Tier: "Pro"}
+	})
+	defer restore()
+
+	credCh, errCh := loginAsync(t, func(state string) string {
+		return "http://localhost:1455/auth/callback?code=THE_CODE&state=" + state + "\n"
+	})
+
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	cred := <-credCh
+	if cred == nil {
+		t.Fatal("expected credential, got nil")
+	}
+	if cred.Subscription.Tier != "Pro" {
+		t.Fatalf("Subscription.Tier = %q, want Pro", cred.Subscription.Tier)
+	}
+}
+
+func TestLogin_UsageFailure_TierEmpty(t *testing.T) {
+	srv := tokenServer(t, "user@example.com", "acct-err")
+	defer srv.Close()
+	setTokenURLStr(t, srv.URL)
+
+	// Stub usage to return error (tier should remain empty).
+	restore := codexoauth.SeamLoginUsage(func(at, acct string) *oauth_pkg.UsageInfo {
+		return &oauth_pkg.UsageInfo{Error: "HTTP 503"}
+	})
+	defer restore()
+
+	credCh, errCh := loginAsync(t, func(state string) string {
+		return "http://localhost:1455/auth/callback?code=c&state=" + state + "\n"
+	})
+
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+	cred := <-credCh
+	if cred == nil {
+		t.Fatal("expected credential, got nil")
+	}
+	// Empty Tier because usage Tier field is empty (error case).
+	if cred.Subscription.Tier != "" {
+		t.Fatalf("Subscription.Tier = %q, want empty when usage fails", cred.Subscription.Tier)
 	}
 }

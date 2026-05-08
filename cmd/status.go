@@ -176,19 +176,16 @@ func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, cla
 		var tier *string
 		var detail string
 		if provider == "codex" {
-			// For codex creds, parse JWT claims for plan/email display.
-			// Tier stays nil in JSON (no Anthropic subscription tier).
-			// Detail holds "<plan_type> <email>" for the table renderer.
-			if c.Tokens != nil {
-				if claims, err := codexoauth.ParseClaims(c.Tokens.IDToken); err == nil {
-					parts := []string{}
-					if claims.PlanType != "" {
-						parts = append(parts, claims.PlanType)
-					}
-					if claims.Email != "" {
-						parts = append(parts, claims.Email)
-					}
-					detail = strings.Join(parts, " ")
+			// Use persisted Subscription.Tier when available (populated by
+			// FetchUsage during login and refresh). Fall back to the JWT-parsed
+			// plan_type so the column is never blank on a freshly-imported cred.
+			if c.Subscription.Tier != "" {
+				t := c.Subscription.Tier
+				tier = &t
+				detail = c.Subscription.Tier
+			} else if c.Tokens != nil {
+				if claims, err := codexoauth.ParseClaims(c.Tokens.IDToken); err == nil && claims.PlanType != "" {
+					detail = claims.PlanType
 				}
 			}
 		} else {

@@ -109,6 +109,9 @@ func (c *Credential) MarshalJSON() ([]byte, error) {
 		if c.OpenAIAPIKey != nil { out["OPENAI_API_KEY"] = *c.OpenAIAPIKey } else { out["OPENAI_API_KEY"] = nil }
 		if c.Tokens != nil { out["tokens"] = c.Tokens } else { out["tokens"] = CodexTokens{} }
 		out["last_refresh"] = c.LastRefresh
+		if c.Subscription.Tier != "" {
+			out["subscription"] = c.Subscription
+		}
 	default:
 		return nil, fmt.Errorf("store: unknown provider %q", c.Provider)
 	}
@@ -161,6 +164,9 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 			if err := json.Unmarshal(v, c.Tokens); err != nil { return err }
 		}
 		if c.LastRefresh, err = getString("last_refresh"); err != nil { return err }
+		if v, ok := raw["subscription"]; ok {
+			if err := json.Unmarshal(v, &c.Subscription); err != nil { return err }
+		}
 		if c.Tokens != nil {
 			c.expiresAtMillis = parseJWTExpMillis(c.Tokens.AccessToken)
 		}
