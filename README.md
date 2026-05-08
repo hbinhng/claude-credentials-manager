@@ -200,6 +200,58 @@ All commands accepting `<id-or-name>` resolve the argument in order:
 2. Exact name match
 3. UUID prefix match (minimum 4 characters); an ambiguous prefix errors out with the list of matches
 
+## Codex upstream (single-account)
+
+ccm v1.18+ supports using a codex (ChatGPT) credential as the upstream
+for Claude Code via translation. Claude Code remains the only
+downstream consumer; the proxy translates its `/v1/messages` requests
+to OpenAI Responses API and reshapes the SSE response back to
+Anthropic shape.
+
+### Requirements
+
+- A logged-in codex credential (`ccm login codex`)
+- `codex` CLI on PATH — used for per-session identity capture. Install
+  from <https://github.com/openai/codex>.
+
+### Quick start
+
+```bash
+# Launch Claude Code against a codex credential
+ccm launch <codex-cred-name> --model-alias 'claude-opus-*=gpt-5-codex'
+
+# Share a codex credential as a tunnel
+ccm share <codex-cred-name> \
+  --model-alias 'claude-opus-*=gpt-5-codex' \
+  --max-concurrency 3
+```
+
+### --model-alias
+
+Repeatable. Maps inbound model names (what Claude Code asks for) to
+upstream model names (what codex serves). Source patterns may use `*`
+as a wildcard; targets are literal. Boot-time validation rejects any
+two patterns whose match-sets overlap.
+
+```
+--model-alias 'claude-opus-*=gpt-5-codex'      # all opus variants → gpt-5-codex
+--model-alias 'claude-haiku-*=gpt-5-mini'      # all haiku variants → gpt-5-mini
+```
+
+A request whose model matches none of the alias rules is forwarded
+with the original model name. If the upstream rejects it
+(`model_not_found`), the share/launch session terminates cleanly with
+a logged reason.
+
+### Limitations
+
+- Anthropic's `redacted_thinking` content blocks are not supported by
+  codex; they are dropped on request and not emitted on response.
+- Codex's prompt cache is purely prefix-based; Anthropic's per-block
+  `cache_control: ephemeral` markers are dropped.
+- Mixed-provider pools (claude + codex creds in one `--load-balance`
+  set) are not yet supported; targeted for v1.19.
+
 ## Environment
 
 - **`CCM_PROXY`** — route all outbound ccm traffic through an HTTP(S) or SOCKS5 proxy (e.g. `socks5://user:pass@proxy.example:1080`). Applies to `ccm login`, `ccm refresh`, `ccm status`, `ccm backup`, and the reverse-proxy forwarding of `ccm share` and `ccm launch`. `ccm use` is deliberately excluded — activation is local, and the opportunistic token refresh it does on expired credentials runs direct. The stdlib `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` variables are **not** consulted; only `CCM_PROXY` is respected. Does not affect `cloudflared`'s own connections — set `HTTPS_PROXY` in the shell for those.
