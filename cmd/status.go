@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -12,6 +11,8 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex"
+	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -29,9 +30,10 @@ func init() {
 // anyone piping `jq` at our output, so do NOT rename without bumping
 // Version and announcing the break. See docs/ccm.1 for details.
 type StatusReport struct {
-	Version     int           `json:"version"`
-	ActiveID    string        `json:"activeId,omitempty"`
-	Credentials []StatusEntry `json:"credentials"`
+	Version       int           `json:"version"`
+	ActiveID      string        `json:"activeId,omitempty"`
+	ActiveCodexID string        `json:"activeCodexId,omitempty"`
+	Credentials   []StatusEntry `json:"credentials"`
 }
 
 // StatusEntry describes a single credential in the report. Timestamps
@@ -40,6 +42,7 @@ type StatusReport struct {
 type StatusEntry struct {
 	ID              string      `json:"id"`
 	Name            string      `json:"name"`
+	Provider        string      `json:"provider"`
 	Tier            *string     `json:"tier"`
 	Status          string      `json:"status"` // "valid" | "expiring_soon" | "expired"
 	Active          bool        `json:"active"`
@@ -47,6 +50,10 @@ type StatusEntry struct {
 	CreatedAt       string      `json:"createdAt"`
 	LastRefreshedAt string      `json:"lastRefreshedAt"`
 	Quota           QuotaStatus `json:"quota"`
+	// Detail holds provider-specific display info for the table renderer.
+	// It is not serialized to JSON — the JSON tier field holds structured
+	// tier data while Detail is a formatted presentation string.
+	Detail string `json:"-"`
 }
 
 // QuotaStatus carries per-credential quota state in three distinct
@@ -89,11 +96,14 @@ var statusCmd = &cobra.Command{
 		// JSON mode always emits a valid empty envelope so scripts can
 		// consume it unconditionally.
 		if len(creds) == 0 && output == "table" {
-			fmt.Println("No credentials found. Use `ccm login` to add one.")
+			fmt.Fprintf(cmd.OutOrStdout(), "Claude: %s\n", describeActive("claude", creds))
+			fmt.Fprintf(cmd.OutOrStdout(), "Codex:  %s\n", describeActive("codex", creds))
+			fmt.Fprintln(cmd.OutOrStdout(), "No credentials found. Use `ccm login` to add one.")
 			return nil
 		}
 
-		activeID := claude.ActiveID()
+		claudeActiveID := claude.ActiveID()
+		codexActiveID := codex.ActiveID()
 
 		var usages []*oauth.UsageInfo
 		if !noQuota {
@@ -102,25 +112,30 @@ var statusCmd = &cobra.Command{
 			usages = make([]*oauth.UsageInfo, len(creds))
 		}
 
-		report := buildStatusReport(creds, usages, activeID, noQuota)
+		report := buildStatusReport(creds, usages, claudeActiveID, codexActiveID, noQuota)
 
 		if output == "json" {
-			return writeStatusJSON(os.Stdout, report)
+			return writeStatusJSON(cmd.OutOrStdout(), report)
 		}
-		return renderStatusTable(report)
+
+		fmt.Fprintf(cmd.OutOrStdout(), "Claude: %s\n", describeActive("claude", creds))
+		fmt.Fprintf(cmd.OutOrStdout(), "Codex:  %s\n", describeActive("codex", creds))
+		return renderStatusTable(cmd, report)
 	},
 }
 
-// fetchUsagesParallel fetches quota usage for each non-expired
+// fetchUsagesParallel fetches quota usage for each non-expired claude
 // credential concurrently via oauth.FetchUsageFn. Returns a slice
-// aligned by index with creds; entries for expired credentials
-// are left nil. The seam lets tests and the upcoming ccm serve
-// web handler inject a fake FetchUsageFn without HTTP round-trips.
+// aligned by index with creds; entries for expired credentials and
+// non-claude credentials are left nil. The seam lets tests and the
+// upcoming ccm serve web handler inject a fake FetchUsageFn without
+// HTTP round-trips. Codex credentials use a different quota system
+// and are not fetched here.
 func fetchUsagesParallel(creds []*store.Credential) []*oauth.UsageInfo {
 	usages := make([]*oauth.UsageInfo, len(creds))
 	var wg sync.WaitGroup
 	for i, c := range creds {
-		if c.IsExpired() {
+		if c.IsExpired() || c.ProviderName() != "claude" {
 			continue
 		}
 		wg.Add(1)
@@ -145,22 +160,67 @@ func writeStatusJSON(w io.Writer, r StatusReport) error {
 // into a stable, serialization-ready StatusReport. It is pure — no I/O,
 // no clock calls beyond what store.Credential exposes — so it can be
 // tested directly without spinning up cobra.
-func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, activeID string, noQuota bool) StatusReport {
+func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, claudeActiveID, codexActiveID string, noQuota bool) StatusReport {
 	entries := make([]StatusEntry, 0, len(creds))
 	for i, c := range creds {
+		provider := c.ProviderName()
+
 		var tier *string
-		if c.Subscription.Tier != "" {
-			t := c.Subscription.Tier
-			tier = &t
+		var detail string
+		if provider == "codex" {
+			// For codex creds, parse JWT claims for plan/email display.
+			// Tier stays nil in JSON (no Anthropic subscription tier).
+			// Detail holds "<plan_type> <email>" for the table renderer.
+			if c.Tokens != nil {
+				if claims, err := codexoauth.ParseClaims(c.Tokens.IDToken); err == nil {
+					parts := []string{}
+					if claims.PlanType != "" {
+						parts = append(parts, claims.PlanType)
+					}
+					if claims.Email != "" {
+						parts = append(parts, claims.Email)
+					}
+					detail = strings.Join(parts, " ")
+				}
+			}
+		} else {
+			if c.Subscription.Tier != "" {
+				t := c.Subscription.Tier
+				tier = &t
+			}
+			detail = ""
+		}
+
+		// Determine active status based on provider.
+		var isActive bool
+		switch provider {
+		case "codex":
+			isActive = codexActiveID != "" && c.ID == codexActiveID
+		default:
+			isActive = claudeActiveID != "" && c.ID == claudeActiveID
+		}
+
+		// Compute ExpiresAt in a provider-aware way.
+		// For claude: ClaudeAiOauth.ExpiresAt is the canonical ms timestamp.
+		// For codex: parse the access token JWT exp claim (seconds → ms).
+		var expiresAtMillis int64
+		if provider == "codex" && c.Tokens != nil {
+			if claims, err := codexoauth.ParseClaims(c.Tokens.AccessToken); err == nil {
+				expiresAtMillis = claims.ExpUnixSeconds * 1000
+			}
+		} else {
+			expiresAtMillis = c.ClaudeAiOauth.ExpiresAt
 		}
 
 		entry := StatusEntry{
 			ID:              c.ID,
 			Name:            c.Name,
+			Provider:        provider,
 			Tier:            tier,
+			Detail:          detail,
 			Status:          strings.ReplaceAll(c.Status(), " ", "_"),
-			Active:          activeID != "" && c.ID == activeID,
-			ExpiresAt:       time.UnixMilli(c.ClaudeAiOauth.ExpiresAt).UTC().Format(time.RFC3339),
+			Active:          isActive,
+			ExpiresAt:       time.UnixMilli(expiresAtMillis).UTC().Format(time.RFC3339),
 			CreatedAt:       c.CreatedAt,
 			LastRefreshedAt: c.LastRefreshedAt,
 		}
@@ -189,9 +249,10 @@ func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, act
 	}
 
 	return StatusReport{
-		Version:     1,
-		ActiveID:    activeID,
-		Credentials: entries,
+		Version:       1,
+		ActiveID:      claudeActiveID,
+		ActiveCodexID: codexActiveID,
+		Credentials:   entries,
 	}
 }
 
@@ -200,9 +261,10 @@ func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, act
 // above it. Presentation-only transforms (8-char ID prefix, "-" for
 // missing tier, relative reset strings, spaced "expiring soon") happen
 // here, not in the JSON schema.
-func renderStatusTable(report StatusReport) error {
-	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
-	fmt.Fprintln(w, "ID\tNAME\tTIER\tSTATUS\tEXPIRES\tACTIVE")
+func renderStatusTable(cmd *cobra.Command, report StatusReport) error {
+	out := cmd.OutOrStdout()
+	w := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "ID\tNAME\tPROVIDER\tTIER\tSTATUS\tEXPIRES\tACTIVE")
 	for _, e := range report.Credentials {
 		active := ""
 		if e.Active {
@@ -212,15 +274,20 @@ func renderStatusTable(report StatusReport) error {
 		if displayName == e.ID {
 			displayName = e.ID[:8] + "..."
 		}
+		// For the table, show Detail (plan+email for codex) if set,
+		// otherwise fall back to the Tier field (claude), or "-" if nil.
 		tier := "-"
-		if e.Tier != nil {
+		if e.Detail != "" {
+			tier = e.Detail
+		} else if e.Tier != nil {
 			tier = *e.Tier
 		}
 		status := strings.ReplaceAll(e.Status, "_", " ")
 
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			e.ID[:8],
 			displayName,
+			e.Provider,
 			tier,
 			status,
 			relativeExpires(e.ExpiresAt),
@@ -231,7 +298,7 @@ func renderStatusTable(report StatusReport) error {
 			continue
 		}
 		if e.Quota.Error != "" {
-			fmt.Fprintf(w, "\t\t\tquota: error\t\t\n")
+			fmt.Fprintf(w, "\t\t\t\tquota: error\t\t\n")
 			continue
 		}
 		for _, q := range e.Quota.Windows {
@@ -245,10 +312,44 @@ func renderStatusTable(report StatusReport) error {
 			if remaining < 0 {
 				remaining = 0
 			}
-			fmt.Fprintf(w, "\t\t\t%s: %.0f%%%s\t\t\n", q.Name, remaining, reset)
+			fmt.Fprintf(w, "\t\t\t\t%s: %.0f%%%s\t\t\n", q.Name, remaining, reset)
 		}
 	}
 	return w.Flush()
+}
+
+// describeActive returns a human-readable summary of the active credential
+// for the given provider. creds is used for name lookup so we avoid a
+// second store.Load call when we already have the full list.
+func describeActive(provider string, creds []*store.Credential) string {
+	var id string
+	switch provider {
+	case "claude":
+		id = claude.ActiveID()
+	case "codex":
+		id = codex.ActiveID()
+	}
+	if id == "" {
+		return "(none)"
+	}
+	// Fast path: search the already-loaded list.
+	for _, c := range creds {
+		if c.ID == id {
+			short := id
+			if len(short) > 8 {
+				short = short[:8]
+			}
+			return fmt.Sprintf("%s (%s)", c.Name, short)
+		}
+	}
+	// Fallback: credential in store but not in current list (defensive;
+	// unreachable in practice because store.List and ActiveID read the
+	// same directory with no intervening write). coverage: unreachable.
+	short := id
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return short
 }
 
 // relativeExpires renders an RFC3339 ExpiresAt as a short relative
