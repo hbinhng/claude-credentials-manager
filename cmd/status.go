@@ -120,25 +120,37 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-// fetchUsagesParallel fetches quota usage for each non-expired claude
-// credential concurrently via oauth.FetchUsageFn. Returns a slice
-// aligned by index with creds; entries for expired credentials and
-// non-claude credentials are left nil. The seam lets tests and the
+// fetchUsagesParallel fetches quota usage for each non-expired credential
+// concurrently. Returns a slice aligned by index with creds; entries for
+// expired credentials are left nil. Each provider's quota is fetched via
+// its own endpoint (claude: anthropic.com/api/oauth/usage; codex:
+// chatgpt.com/backend-api/wham/usage). The seam lets tests and the
 // upcoming ccm serve web handler inject a fake FetchUsageFn without
-// HTTP round-trips. Codex credentials use a different quota system
-// and are not fetched here.
+// HTTP round-trips.
 func fetchUsagesParallel(creds []*store.Credential) []*oauth.UsageInfo {
 	usages := make([]*oauth.UsageInfo, len(creds))
 	var wg sync.WaitGroup
 	for i, c := range creds {
-		if c.IsExpired() || c.ProviderName() != "claude" {
+		if c.IsExpired() {
 			continue
 		}
-		wg.Add(1)
-		go func(i int, token string) {
-			defer wg.Done()
-			usages[i] = oauth.FetchUsageFn(token)
-		}(i, c.ClaudeAiOauth.AccessToken)
+		switch c.ProviderName() {
+		case "claude":
+			wg.Add(1)
+			go func(i int, at string) {
+				defer wg.Done()
+				usages[i] = oauth.FetchUsageFn(at)
+			}(i, c.ClaudeAiOauth.AccessToken)
+		case "codex":
+			if c.Tokens == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(i int, at, acct string) {
+				defer wg.Done()
+				usages[i] = codexoauth.FetchUsageFn(at, acct)
+			}(i, c.Tokens.AccessToken, c.Tokens.AccountID)
+		}
 	}
 	wg.Wait()
 	return usages

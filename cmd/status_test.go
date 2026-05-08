@@ -15,6 +15,7 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex"
+	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -620,6 +621,12 @@ func runStatusCmd(t *testing.T, args ...string) string {
 	claudeSyncFn = func() (bool, error) { return false, nil }
 	t.Cleanup(func() { claudeSyncFn = origSync })
 
+	// Reset statusCmd flags to their defaults before each run so that a
+	// previous test passing --no-quota does not bleed into subsequent tests
+	// that omit the flag.
+	_ = statusCmd.Flags().Set("no-quota", "false")
+	_ = statusCmd.Flags().Set("output", "table")
+
 	var stdout, stderr bytes.Buffer
 	rootCmd.SetOut(&stdout)
 	rootCmd.SetErr(&stderr)
@@ -649,6 +656,70 @@ func TestStatus_AddsProviderColumn(t *testing.T) {
 	}
 	if !strings.Contains(out, "claude") || !strings.Contains(out, "codex") {
 		t.Fatalf("provider values missing: %s", out)
+	}
+}
+
+func TestStatus_CodexQuota_RendersInTable(t *testing.T) {
+	setupFakeHome(t)
+	xc := mkCodexCredHelper(t, "x1")
+	if err := store.Save(xc); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stub codex usage fetcher.
+	prev := codexoauth.FetchUsageFn
+	codexoauth.FetchUsageFn = func(at, acct string) *oauth.UsageInfo {
+		future := time.Now().Add(2 * time.Hour).UTC().Format(time.RFC3339)
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 12.5, ResetsAt: future},
+			{Name: "7d", Used: 47.0, ResetsAt: future},
+		}}
+	}
+	defer func() { codexoauth.FetchUsageFn = prev }()
+
+	out := runStatusCmd(t)
+	// Table renders remaining percentage (100 - used): 100-12.5=87.5→88%, 100-47=53%.
+	if !strings.Contains(out, "5h") || !strings.Contains(out, "88%") || !strings.Contains(out, "7d") || !strings.Contains(out, "53%") {
+		t.Fatalf("codex quota lines missing: %s", out)
+	}
+}
+
+func TestStatus_CodexQuota_NoQuotaFlag_Skipped(t *testing.T) {
+	setupFakeHome(t)
+	xc := mkCodexCredHelper(t, "x1")
+	if err := store.Save(xc); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	prev := codexoauth.FetchUsageFn
+	codexoauth.FetchUsageFn = func(at, acct string) *oauth.UsageInfo {
+		called = true
+		return nil
+	}
+	defer func() { codexoauth.FetchUsageFn = prev }()
+
+	_ = runStatusCmd(t, "--no-quota")
+	if called {
+		t.Fatal("FetchUsageFn called despite --no-quota")
+	}
+}
+
+func TestStatus_CodexQuota_FetchError_RendersError(t *testing.T) {
+	setupFakeHome(t)
+	xc := mkCodexCredHelper(t, "x1")
+	if err := store.Save(xc); err != nil {
+		t.Fatal(err)
+	}
+	prev := codexoauth.FetchUsageFn
+	codexoauth.FetchUsageFn = func(at, acct string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Error: "HTTP 503"}
+	}
+	defer func() { codexoauth.FetchUsageFn = prev }()
+
+	out := runStatusCmd(t)
+	// Table renders fetch errors as "quota: error" (not the raw message).
+	if !strings.Contains(out, "quota: error") {
+		t.Fatalf("expected quota error surfaced: %s", out)
 	}
 }
 
