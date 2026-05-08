@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.7","system":"You are a helpful assistant.","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}

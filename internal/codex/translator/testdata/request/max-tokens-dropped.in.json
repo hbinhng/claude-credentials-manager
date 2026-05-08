@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.7","max_tokens":4096,"temperature":0.7,"top_p":0.9,"top_k":40,"stop_sequences":["STOP"],"metadata":{"user_id":"u1"},"messages":[{"role":"user","content":[{"type":"text","text":"hello"}]}]}

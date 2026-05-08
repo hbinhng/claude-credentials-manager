@@ -1,0 +1,1 @@
+{"model":"gpt-5-codex","stream":true,"store":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"search for cats"}]}],"tools":[{"type":"function","name":"search","description":"Search the web","parameters":{"type":"object","properties":{"query":{"type":"string"}}}}],"tool_choice":{"type":"function","name":"search"}}

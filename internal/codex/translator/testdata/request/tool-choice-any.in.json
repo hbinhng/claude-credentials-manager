@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.7","tools":[{"name":"calc","description":"Calculate","input_schema":{"type":"object","properties":{}}}],"tool_choice":{"type":"any"},"messages":[{"role":"user","content":[{"type":"text","text":"calculate 2+2"}]}]}

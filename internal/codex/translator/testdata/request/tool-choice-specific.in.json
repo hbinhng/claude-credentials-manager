@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.7","tools":[{"name":"search","description":"Search the web","input_schema":{"type":"object","properties":{"query":{"type":"string"}}}}],"tool_choice":{"type":"tool","name":"search"},"messages":[{"role":"user","content":[{"type":"text","text":"search for cats"}]}]}
