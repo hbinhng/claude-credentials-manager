@@ -21,8 +21,11 @@ type credState struct {
 	mtime time.Time // zero until Fresh() primes it from disk on first reload check
 }
 
-func newCredState(cred *store.Credential) *credState {
-	return &credState{cred: cred}
+func newCredState(cred *store.Credential) (*credState, error) {
+	if cred.ProviderName() != "claude" {
+		return nil, fmt.Errorf("share: %s credential is %s; ccm share is claude-only", cred.Name, cred.ProviderName())
+	}
+	return &credState{cred: cred}, nil
 }
 
 // Fresh returns the current access token. Cheap path: if the in-memory

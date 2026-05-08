@@ -62,6 +62,10 @@ func runBackup() error {
 
 	if id, present := claude.Active(); present {
 		if cred, err := store.Load(id); err == nil {
+			if cred.ProviderName() != "claude" {
+				fmt.Fprintf(os.Stderr, "ccm: skipping %s (provider=%s; backup is claude-only)\n", cred.Name, cred.ProviderName())
+				return nil
+			}
 			fmt.Printf("Syncing credentials for %s (%s)...\n", cred.Name, id[:min(8, len(id))])
 			changed, syncErr := backupSyncFn()
 			if syncErr != nil {

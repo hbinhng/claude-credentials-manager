@@ -29,6 +29,9 @@ func Sync() (bool, error) {
 	if err != nil {
 		return false, nil
 	}
+	if cred.ProviderName() != "claude" {
+		return false, nil
+	}
 
 	if claudeTokens.ExpiresAt <= cred.ClaudeAiOauth.ExpiresAt {
 		return false, nil

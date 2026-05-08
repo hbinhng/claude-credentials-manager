@@ -142,6 +142,9 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 	if err != nil {
 		return err
 	}
+	if cred.ProviderName() != "claude" {
+		return fmt.Errorf("ccm launch is claude-only in v1.17 (got provider: %s)", cred.ProviderName())
+	}
 
 	// Refresh up front so the very first forwarded request doesn't
 	// have to block on an OAuth roundtrip.

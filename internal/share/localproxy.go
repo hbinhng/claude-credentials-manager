@@ -74,7 +74,11 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	if cred == nil {
 		return nil, errors.New("NewLocalProxy: nil credential")
 	}
-	return newLocalProxyInternal(newCredState(cred), nil, os.Getenv("CCM_LAUNCH_DEBUG") == "1")
+	state, err := newCredState(cred)
+	if err != nil {
+		return nil, err
+	}
+	return newLocalProxyInternal(state, nil, os.Getenv("CCM_LAUNCH_DEBUG") == "1")
 }
 
 // NewLocalProxyWithPool builds a load-balance LocalProxy. The

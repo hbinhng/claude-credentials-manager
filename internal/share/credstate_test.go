@@ -1,12 +1,15 @@
 package share
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -52,7 +55,10 @@ func TestCredStateCheapPath(t *testing.T) {
 	setupFakeHome(t)
 	cred := makeCred(t, "11111111-1111-1111-1111-111111111111", "access-1")
 
-	s := newCredState(cred)
+	s, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
 	got, err := s.Fresh()
 	if err != nil {
 		t.Fatalf("Fresh: %v", err)
@@ -66,7 +72,10 @@ func TestCredStatePeerWriteReload(t *testing.T) {
 	setupFakeHome(t)
 	cred := makeCred(t, "22222222-2222-2222-2222-222222222222", "access-old")
 
-	s := newCredState(cred)
+	s, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
 	// Prime mtime by calling Fresh once.
 	if _, err := s.Fresh(); err != nil {
 		t.Fatalf("Fresh (prime): %v", err)
@@ -134,7 +143,10 @@ func TestCredStateRefreshOnExpiry(t *testing.T) {
 	srv, hits := stubTokenServer(t, "access-new", "refresh-new", 3600)
 	withTokenURL(t, srv.URL)
 
-	s := newCredState(cred)
+	s, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
 	got, err := s.Fresh()
 	if err != nil {
 		t.Fatalf("Fresh: %v", err)
@@ -196,7 +208,10 @@ func TestCredStateFlockExclusive(t *testing.T) {
 		close(release)
 	})
 
-	s := newCredState(cred)
+	s, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
 	start := time.Now()
 	got, err := s.Fresh()
 	elapsed := time.Since(start)
@@ -255,7 +270,10 @@ func TestCredStateDoubleCheckSkipsRedundantRefresh(t *testing.T) {
 		_ = peerFd.Close()
 	})
 
-	s := newCredState(cred)
+	s, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
 	got, err := s.Fresh()
 	if err != nil {
 		t.Fatalf("Fresh: %v", err)
@@ -272,6 +290,39 @@ func TestCredStateDoubleCheckSkipsRedundantRefresh(t *testing.T) {
 // file can no longer be read (permissions revoked mid-session, for
 // example), Fresh falls back to the in-memory copy rather than
 // failing the request.
+// mkCodexCred builds a minimal codex credential for tests that need a
+// non-claude provider.
+func mkCodexCred(t *testing.T, id string) *store.Credential {
+	t.Helper()
+	exp := time.Now().Add(time.Hour).Unix()
+	h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	p := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"email":"u@x.com","exp":` + strconv.FormatInt(exp, 10) + `,"https://api.openai.com/auth":{"chatgpt_account_id":"acct"}}`,
+	))
+	s := base64.RawURLEncoding.EncodeToString([]byte("sig"))
+	tok := h + "." + p + "." + s
+	return &store.Credential{
+		ID: id, Name: "codex-test", Provider: "codex",
+		AuthMode: "chatgpt", OpenAIAPIKey: nil,
+		Tokens:          &store.CodexTokens{IDToken: tok, AccessToken: tok, RefreshToken: "rt_a.b", AccountID: "acct"},
+		LastRefresh:     "2026-05-08T00:00:00Z",
+		CreatedAt:       "2026-05-08T00:00:00Z",
+		LastRefreshedAt: "2026-05-08T00:00:00Z",
+	}
+}
+
+func TestCredStateNew_RejectsCodexCred(t *testing.T) {
+	setupFakeHome(t)
+	cred := mkCodexCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	_, err := newCredState(cred)
+	if err == nil {
+		t.Fatal("newCredState: nil err, want rejection for codex cred")
+	}
+	if !strings.Contains(err.Error(), "claude-only") {
+		t.Errorf("err = %v; want 'claude-only' in message", err)
+	}
+}
+
 func TestCredStateReloadErrorFallsBack(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root bypasses file-mode permission checks")
@@ -279,7 +330,10 @@ func TestCredStateReloadErrorFallsBack(t *testing.T) {
 	setupFakeHome(t)
 	cred := makeCred(t, "66666666-6666-6666-6666-666666666666", "access-held")
 
-	s := newCredState(cred)
+	s, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
 	// Prime mtime.
 	if _, err := s.Fresh(); err != nil {
 		t.Fatalf("Fresh (prime): %v", err)

@@ -561,6 +561,57 @@ func TestBuildPool_Singleton_SkipsUsageProbe(t *testing.T) {
 	}
 }
 
+func TestBuildPool_StoreListBranch_SkipsCodex(t *testing.T) {
+	// When no args are given, store.List() is used. Codex creds in the
+	// store should be skipped silently so the session proceeds on the
+	// claude-only creds.
+	setupFakeHome(t)
+	stubCaptureCredOK(t)
+	claude := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
+	codex := mkCodexCred(t, "22222222-2222-2222-2222-222222222222")
+	writeCredToFile(t, claude)
+	writeCredToFile(t, codex)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{}
+	})
+
+	pool, initial, err := BuildPool(nil, "", false)
+	if err != nil {
+		t.Fatalf("BuildPool: %v (want nil — codex cred should be skipped, not fatal)", err)
+	}
+	if initial == nil {
+		t.Fatal("initial cred is nil")
+	}
+	if initial.ID != claude.ID {
+		t.Errorf("initial = %s, want alice (codex should be skipped)", initial.ID)
+	}
+	// Codex cred must not appear in the pool.
+	if _, present := pool.entries[codex.ID]; present {
+		t.Errorf("codex cred appeared in pool.entries — should have been skipped")
+	}
+}
+
+func TestBuildPool_PerArg_RejectsCodex(t *testing.T) {
+	// When a codex cred is named explicitly as a CLI arg, BuildPool must
+	// return a hard error instead of silently skipping it.
+	setupFakeHome(t)
+	codex := mkCodexCred(t, "33333333-3333-3333-3333-333333333333")
+	writeCredToFile(t, codex)
+
+	withFakeUsage(t, func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{}
+	})
+
+	_, _, err := BuildPool([]string{"codex-test"}, "", false)
+	if err == nil {
+		t.Fatal("BuildPool: nil err, want error when codex cred is named explicitly")
+	}
+	if !strings.Contains(err.Error(), "claude-only") {
+		t.Errorf("err = %v; want 'claude-only' in message", err)
+	}
+}
+
 func TestBuildPool_MultiCred_StillProbes(t *testing.T) {
 	setupFakeHome(t)
 	a := makeCredWithExpiry(t, "11111111-1111-1111-1111-111111111111", "alice", 6*time.Hour)
