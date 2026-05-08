@@ -24,6 +24,20 @@ var (
 	oauthFetchProfileFn = oauth.FetchProfile
 )
 
+// RefreshFn is the indirection point that production callers and tests
+// override. By default it points to RefreshCredential. Tests use
+// SetRefreshFnForTest to swap in a stub.
+var RefreshFn = RefreshCredential
+
+// SetRefreshFnForTest swaps RefreshFn for the duration of a test and
+// returns a restore function. Mirrors the test-seam pattern in
+// internal/oauth and internal/codex/oauth.
+func SetRefreshFnForTest(fn func(id string) (*store.Credential, error)) (restore func()) {
+	prev := RefreshFn
+	RefreshFn = fn
+	return func() { RefreshFn = prev }
+}
+
 // SeamBetweenResolveAndLock fires after store.Resolve and before lock
 // acquisition. Tests use it to simulate cross-process rotation during
 // that window. Production: nil (no-op).

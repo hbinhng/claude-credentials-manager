@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -146,22 +146,19 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 		return fmt.Errorf("ccm launch is claude-only in v1.17 (got provider: %s)", cred.ProviderName())
 	}
 
-	// Refresh up front so the very first forwarded request doesn't
-	// have to block on an OAuth roundtrip.
+	// Pre-flight refresh: rotate access token if expiring soon. Routes
+	// through credflow which dispatches per-provider (claude / codex) and
+	// handles codex's rotating refresh-token model with file locking.
 	if cred.IsExpired() || cred.IsExpiringSoon() {
 		fmt.Fprintln(os.Stderr, "Credential is expired or expiring soon — refreshing...")
-		tokens, err := oauth.Refresh(cred.ClaudeAiOauth.RefreshToken)
+		refreshed, err := credflow.RefreshFn(cred.ID)
 		if err != nil {
-			return fmt.Errorf("refresh: %w", err)
-		}
-		cred.ClaudeAiOauth.AccessToken = tokens.AccessToken
-		if tokens.RefreshToken != "" {
-			cred.ClaudeAiOauth.RefreshToken = tokens.RefreshToken
-		}
-		cred.ClaudeAiOauth.ExpiresAt = time.Now().UnixMilli() + tokens.ExpiresIn*1000
-		cred.LastRefreshedAt = time.Now().UTC().Format(time.RFC3339)
-		if err := store.Save(cred); err != nil {
-			return fmt.Errorf("save refreshed credential: %w", err)
+			// Non-fatal: continue with the existing token. Subsequent
+			// in-session refresh in credstate.go will retry. But surface
+			// the error to the user for diagnosis.
+			fmt.Fprintf(os.Stderr, "warning: pre-flight refresh failed: %v\n", err)
+		} else {
+			cred = refreshed
 		}
 	}
 
