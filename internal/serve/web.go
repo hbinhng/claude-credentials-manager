@@ -5,13 +5,18 @@ import (
 	"embed"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html/template"
 	"io"
 	"io/fs"
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/google/uuid"
+	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
@@ -25,6 +30,125 @@ var (
 	loginBeginFn    = credflow.BeginLogin
 	loginCompleteFn = credflow.CompleteLogin
 )
+
+// codexLoginBeginFn returns a fresh authorize URL and the full PKCE
+// params (verifier + challenge + state). The handler stores the PKCE
+// params and returns the URL + State to the SPA. Tests replace this
+// seam to avoid real crypto/rand calls.
+//
+// codexLoginFinishFn parses the pasted redirect URL, validates state,
+// exchanges the code, builds and persists a credential. Tests replace
+// this seam to avoid real HTTP round-trips.
+var (
+	codexLoginBeginFn  = codexLoginBegin
+	codexLoginFinishFn = codexLoginFinish
+)
+
+// codexPKCEEntry holds in-flight PKCE params for a codex login.
+type codexPKCEEntry struct {
+	pkce      *codexoauth.PKCEParams
+	createdAt time.Time
+}
+
+// codexHandshakeMap is an in-process registry of in-flight codex login
+// handshakes keyed by State. loginHandshakeTTL from loginflow.go is
+// reused for eviction.
+type codexHandshakeMap struct {
+	mu      sync.Mutex
+	entries map[string]*codexPKCEEntry
+}
+
+func newCodexHandshakeMap() *codexHandshakeMap {
+	return &codexHandshakeMap{entries: make(map[string]*codexPKCEEntry)}
+}
+
+func (m *codexHandshakeMap) put(pkce *codexoauth.PKCEParams) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.entries[pkce.State] = &codexPKCEEntry{pkce: pkce, createdAt: time.Now()}
+}
+
+// take removes and returns the PKCE params keyed by state. Returns
+// (nil, false) if not found or the entry has exceeded loginHandshakeTTL.
+func (m *codexHandshakeMap) take(state string) (*codexoauth.PKCEParams, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.entries[state]
+	if !ok {
+		return nil, false
+	}
+	if time.Since(e.createdAt) > loginHandshakeTTL {
+		delete(m.entries, state)
+		return nil, false
+	}
+	delete(m.entries, state)
+	return e.pkce, true
+}
+
+// codexLoginBegin generates a PKCE pair and returns the authorize URL
+// plus the full PKCEParams (Verifier, Challenge, State). The handler
+// stores PKCEParams so the finish step can use the Verifier.
+func codexLoginBegin() (authorizeURL string, pkce *codexoauth.PKCEParams, err error) {
+	pkce, err = codexoauth.GeneratePKCE()
+	if err != nil { // untestable: crypto/rand.Read panics (Go 1.20+)
+		return "", nil, fmt.Errorf("codex: generate pkce: %w", err)
+	}
+	return codexoauth.BuildAuthorizeURL(pkce, codexoauth.DefaultRedirectURI), pkce, nil
+}
+
+// codexLoginFinish parses the redirect URL the user pasted, validates
+// the state, exchanges the code for tokens, builds and persists a
+// credential. Returns an error whose message starts with
+// "save credentials" if the persist step fails (same convention as the
+// claude flow in credflow.CompleteLogin).
+func codexLoginFinish(redirectURL string, pkce *codexoauth.PKCEParams) (*store.Credential, error) {
+	code, state, err := codexoauth.ExportedParseCallbackURL(redirectURL)
+	if err != nil {
+		return nil, err
+	}
+	if state != pkce.State {
+		return nil, codexoauth.ErrStateMismatch
+	}
+	tr, err := codexoauth.ExchangeCode(code, pkce.Verifier, codexoauth.DefaultRedirectURI)
+	if err != nil {
+		return nil, err
+	}
+
+	claims, _ := codexoauth.ParseClaims(tr.IDToken)
+	name := claims.Email
+	if name == "" {
+		name = uuid.NewString()[:8]
+	}
+
+	// Best-effort tier fetch. Failure is silent — credential is still valid.
+	var tier string
+	if u := codexoauth.FetchUsageFn(tr.AccessToken, claims.AccountID); u != nil {
+		tier = u.Tier
+	}
+
+	now := time.Now().UTC()
+	cred := &store.Credential{
+		ID:              uuid.NewString(),
+		Name:            name,
+		Provider:        "codex",
+		CreatedAt:       now.Format(time.RFC3339),
+		LastRefreshedAt: now.Format(time.RFC3339),
+		AuthMode:        "chatgpt",
+		OpenAIAPIKey:    nil,
+		Tokens: &store.CodexTokens{
+			IDToken:      tr.IDToken,
+			AccessToken:  tr.AccessToken,
+			RefreshToken: tr.RefreshToken,
+			AccountID:    claims.AccountID,
+		},
+		LastRefresh:  now.Format(time.RFC3339Nano),
+		Subscription: store.Subscription{Tier: tier},
+	}
+	if err := store.Save(cred); err != nil {
+		return nil, fmt.Errorf("save credentials: %w", err)
+	}
+	return cred, nil
+}
 
 //go:embed templates/*.html
 var templatesFS embed.FS
@@ -107,7 +231,12 @@ func NewHandler(cfg ServerConfig) (http.Handler, error) {
 	if err != nil {
 		return nil, err
 	}
-	h := &handler{cfg: cfg, pages: tpls, handshakes: newHandshakeStore()}
+	h := &handler{
+		cfg:            cfg,
+		pages:          tpls,
+		handshakes:     newHandshakeStore(),
+		codexHandshakes: newCodexHandshakeMap(),
+	}
 
 	mux := http.NewServeMux()
 	// Public endpoints: health probe + login form.
@@ -123,12 +252,16 @@ func NewHandler(cfg ServerConfig) (http.Handler, error) {
 	mux.HandleFunc("DELETE /api/credentials/{id}", h.protected(h.apiStopSession))
 	mux.HandleFunc("POST /api/credentials/{id}/refresh", h.protected(h.apiRefreshCredential))
 
-	// Authenticated OAuth-add-credential flow. Distinct from /login
-	// (the dashboard token form) — these endpoints drive the in-app
-	// "+" button that runs the same PKCE flow `ccm login` does on
-	// the CLI.
+	// Authenticated OAuth-add-credential flow (Claude). Distinct from
+	// /login (the dashboard token form) — these endpoints drive the
+	// in-app "+" button that runs the same PKCE flow `ccm login` does
+	// on the CLI.
 	mux.HandleFunc("POST /api/login/start", h.protected(h.apiLoginStart))
 	mux.HandleFunc("POST /api/login/finish", h.protected(h.apiLoginFinish))
+
+	// Authenticated OAuth-add-credential flow (Codex / OpenAI).
+	mux.HandleFunc("POST /api/login/codex/start", h.protected(h.apiLoginCodexStart))
+	mux.HandleFunc("POST /api/login/codex/finish", h.protected(h.apiLoginCodexFinish))
 
 	// SPA shell — the catch-all. Any unmatched GET returns the app
 	// page so hard reloads of a client-only route still boot the
@@ -141,10 +274,11 @@ func NewHandler(cfg ServerConfig) (http.Handler, error) {
 }
 
 type handler struct {
-	cfg        ServerConfig
-	pages      *pages
-	handshakes *handshakeStore
-	mux        *http.ServeMux
+	cfg             ServerConfig
+	pages           *pages
+	handshakes      *handshakeStore
+	codexHandshakes *codexHandshakeMap
+	mux             *http.ServeMux
 }
 
 // ServeHTTP delegates to the routing mux assembled in NewHandler.
@@ -260,8 +394,8 @@ func (h *handler) appShell(w http.ResponseWriter, _ *http.Request) {
 
 // APIListResponse is the body of GET /api/credentials.
 type APIListResponse struct {
-	Version     int              `json:"version"`
-	Credentials []APICredential  `json:"credentials"`
+	Version     int             `json:"version"`
+	Credentials []APICredential `json:"credentials"`
 }
 
 // APICredential is one entry in the list response. It intentionally
@@ -270,9 +404,9 @@ type APIListResponse struct {
 type APICredential struct {
 	ID         string      `json:"id"`
 	Name       string      `json:"name"`
-	Tier       string      `json:"tier"`        // empty string when missing
-	CredStatus string      `json:"credStatus"`  // "valid" | "expiring_soon" | "expired"
-	Session    *APISession `json:"session"`     // null when idle
+	Tier       string      `json:"tier"`       // empty string when missing
+	CredStatus string      `json:"credStatus"` // "valid" | "expiring_soon" | "expired"
+	Session    *APISession `json:"session"`    // null when idle
 }
 
 // APISession is the projection of a live share.Session returned to
@@ -531,6 +665,77 @@ func (h *handler) apiLoginFinish(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// ---- Codex login endpoints ---------------------------------------
+
+// APILoginCodexStartResponse is the body of POST /api/login/codex/start.
+// The SPA opens AuthorizeURL in a new tab and stores State for the
+// subsequent /api/login/codex/finish call.
+type APILoginCodexStartResponse struct {
+	Version      int    `json:"version"`
+	State        string `json:"state"`
+	AuthorizeURL string `json:"authorizeUrl"`
+}
+
+// APILoginCodexFinishRequest is the body of POST /api/login/codex/finish.
+// RedirectURL is the full URL the browser was redirected to after
+// the user authorized (the page fails to load — the user copies it).
+type APILoginCodexFinishRequest struct {
+	State       string `json:"state"`
+	RedirectURL string `json:"redirectUrl"`
+}
+
+// apiLoginCodexStart generates a codex PKCE pair and returns the
+// authorize URL. The full PKCEParams (including Verifier) are stashed
+// in codexHandshakes keyed by State; /codex/finish retrieves them by
+// the State the SPA echoes back.
+func (h *handler) apiLoginCodexStart(w http.ResponseWriter, _ *http.Request) {
+	authorizeURL, pkce, err := codexLoginBeginFn()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "begin codex login: " + err.Error()})
+		return
+	}
+	h.codexHandshakes.put(pkce)
+	writeJSON(w, http.StatusOK, APILoginCodexStartResponse{
+		Version:      APIVersion,
+		State:        pkce.State,
+		AuthorizeURL: authorizeURL,
+	})
+}
+
+// apiLoginCodexFinish validates the pasted redirect URL, exchanges the
+// code for tokens, and persists a new codex credential.
+func (h *handler) apiLoginCodexFinish(w http.ResponseWriter, r *http.Request) {
+	var body APILoginCodexFinishRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json: " + err.Error()})
+		return
+	}
+	redirectURL := strings.TrimSpace(body.RedirectURL)
+	if redirectURL == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "redirectUrl is required"})
+		return
+	}
+	pkce, ok := h.codexHandshakes.take(body.State)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "login session expired — start over"})
+		return
+	}
+	cred, err := codexLoginFinishFn(redirectURL, pkce)
+	if err != nil {
+		if strings.Contains(err.Error(), "save credentials") {
+			// Code is spent; no point keeping the PKCE (already consumed by take).
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, APILoginFinishResponse{
+		Version:    APIVersion,
+		Credential: toAPICredential(cred, h.cfg.Manager),
+	})
+}
+
 // toAPICredential projects a store.Credential plus manager state
 // into the list-response shape.
 func toAPICredential(c *store.Credential, mgr *Manager) APICredential {
@@ -565,13 +770,24 @@ func toAPISession(sess share.Session) *APISession {
 const rfc3339 = "2006-01-02T15:04:05Z07:00"
 
 // fetchQuota runs the single-credential equivalent of
-// fetchUsagesParallel: one synchronous FetchUsageFn call when the
-// credential is valid, or a "not fetched" stub when it's expired.
+// fetchUsagesParallel: one synchronous fetch when the credential is
+// valid, or a "not fetched" stub when it's expired. Dispatches on
+// c.ProviderName() so claude and codex each call their own endpoint.
 func fetchQuota(c *store.Credential) APIQuota {
 	if c.IsExpired() {
 		return APIQuota{Fetched: false}
 	}
-	u := oauth.FetchUsageFn(c.ClaudeAiOauth.AccessToken)
+	var u *oauth.UsageInfo
+	switch c.ProviderName() {
+	case "codex":
+		var accountID string
+		if c.Tokens != nil {
+			accountID = c.Tokens.AccountID
+		}
+		u = codexoauth.FetchUsageFn(c.AccessToken(), accountID)
+	default: // "claude" and anything else falls through to claude path
+		u = oauth.FetchUsageFn(c.AccessToken())
+	}
 	out := APIQuota{Fetched: true}
 	if u == nil || u.Error != "" {
 		if u != nil {

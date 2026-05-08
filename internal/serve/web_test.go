@@ -13,6 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
@@ -1215,7 +1216,12 @@ func TestAPILoginEndpoints_ProtectedByToken(t *testing.T) {
 		Token:   "the-secret-1234567890",
 	})
 
-	for _, path := range []string{"/api/login/start", "/api/login/finish"} {
+	for _, path := range []string{
+		"/api/login/start",
+		"/api/login/finish",
+		"/api/login/codex/start",
+		"/api/login/codex/finish",
+	} {
 		client := redirectBlocker()
 		req, _ := http.NewRequest(http.MethodPost, srv.URL+path, strings.NewReader("{}"))
 		req.Header.Set("Accept", "application/json")
@@ -1241,6 +1247,317 @@ func TestNewHandler_Close(t *testing.T) {
 	}
 	if err := closer.Close(); err != nil {
 		t.Errorf("Close: %v", err)
+	}
+}
+
+// ---- POST /api/login/codex/{start,finish} ------------------------
+
+// stubCodexLoginFns swaps codexLoginBeginFn / codexLoginFinishFn for
+// the duration of a test. Either arg may be nil to leave that seam at
+// its default. Returns a restore closure.
+func stubCodexLoginFns(
+	begin func() (string, *codexoauth.PKCEParams, error),
+	finish func(string, *codexoauth.PKCEParams) (*store.Credential, error),
+) func() {
+	origBegin, origFinish := codexLoginBeginFn, codexLoginFinishFn
+	if begin != nil {
+		codexLoginBeginFn = begin
+	}
+	if finish != nil {
+		codexLoginFinishFn = finish
+	}
+	return func() {
+		codexLoginBeginFn = origBegin
+		codexLoginFinishFn = origFinish
+	}
+}
+
+// stubCodexUsage replaces codexoauth.FetchUsageFn for the duration of
+// a test. The codex usage function takes (token, accountID string).
+func stubCodexUsage(t *testing.T, fn func(string, string) *oauth.UsageInfo) func() {
+	t.Helper()
+	orig := codexoauth.FetchUsageFn
+	codexoauth.FetchUsageFn = fn
+	return func() { codexoauth.FetchUsageFn = orig }
+}
+
+// fakeCodexCred builds a minimal codex credential that is not expired.
+// The Tokens.AccessToken carries a JWT-shaped string whose exp claim
+// is one hour from now. Rather than generating a real JWT in tests we
+// use the store.Credential.ExpiresAtMillis field via a synthetic
+// credential whose expiresAtMillis is set by round-tripping through
+// SetTokens. We can also just set ClaudeAiOauth.ExpiresAt to a future
+// value and leave Provider as "codex" — the Credential.expiry() logic
+// falls back to ClaudeAiOauth.ExpiresAt only for claude. For codex,
+// expiry comes from the JWT. Instead we build a bare credential and
+// manually set the internal cache via the SetTokens accessor.
+func fakeCodexCred(id, name, tier string) *store.Credential {
+	c := &store.Credential{
+		ID:       id,
+		Name:     name,
+		Provider: "codex",
+		Tokens: &store.CodexTokens{
+			AccessToken:  "codex-tok-" + id,
+			RefreshToken: "codex-ref-" + id,
+			AccountID:    "acct-" + id,
+		},
+		Subscription: store.Subscription{Tier: tier},
+	}
+	// SetTokens caches the expiry on the internal field; pass a future millis.
+	c.SetTokens("codex-tok-"+id, "codex-ref-"+id, time.Now().Add(1*time.Hour).UnixMilli())
+	return c
+}
+
+func TestAPILoginCodexStart_ReturnsAuthorizeURL(t *testing.T) {
+	fakePKCE := &codexoauth.PKCEParams{
+		Verifier:  "fake-verifier",
+		Challenge: "fake-challenge",
+		State:     "fake-state-123",
+	}
+	defer stubCodexLoginFns(
+		func() (string, *codexoauth.PKCEParams, error) {
+			return "https://auth.openai.com/oauth/authorize?state=fake-state-123", fakePKCE, nil
+		},
+		nil,
+	)()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/login/codex/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("status=%d, want 200", resp.StatusCode)
+	}
+	var body APILoginCodexStartResponse
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.HasPrefix(body.AuthorizeURL, "https://auth.openai.com/oauth/authorize") {
+		t.Errorf("AuthorizeURL=%q, want prefix https://auth.openai.com/oauth/authorize", body.AuthorizeURL)
+	}
+	if body.State != "fake-state-123" {
+		t.Errorf("State=%q, want fake-state-123", body.State)
+	}
+	if body.Version != APIVersion {
+		t.Errorf("Version=%d, want %d", body.Version, APIVersion)
+	}
+}
+
+func TestAPILoginCodexStart_BeginError(t *testing.T) {
+	defer stubCodexLoginFns(
+		func() (string, *codexoauth.PKCEParams, error) {
+			return "", nil, errors.New("rng down")
+		},
+		nil,
+	)()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/login/codex/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", resp.StatusCode)
+	}
+	var body map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if !strings.Contains(body["error"], "begin codex login") {
+		t.Errorf("error=%q, want 'begin codex login' wrap", body["error"])
+	}
+}
+
+func TestAPILoginCodexFinish_HappyPath(t *testing.T) {
+	fakePKCE := &codexoauth.PKCEParams{
+		Verifier:  "fake-verifier",
+		Challenge: "fake-challenge",
+		State:     "state-happy",
+	}
+	defer stubCodexLoginFns(
+		func() (string, *codexoauth.PKCEParams, error) {
+			return "https://auth.openai.com/oauth/authorize?state=state-happy", fakePKCE, nil
+		},
+		func(redirectURL string, pkce *codexoauth.PKCEParams) (*store.Credential, error) {
+			if pkce.State != "state-happy" {
+				t.Errorf("finish got state=%q, want state-happy", pkce.State)
+			}
+			if redirectURL != "http://localhost:1455/auth/callback?code=abc&state=state-happy" {
+				t.Errorf("finish got redirectURL=%q", redirectURL)
+			}
+			return fakeCodexCred("codex-new", "user@openai.com", "Pro"), nil
+		},
+	)()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+
+	// /start to seed the codex handshake map.
+	startResp, err := http.Post(srv.URL+"/api/login/codex/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /start: %v", err)
+	}
+	startResp.Body.Close()
+
+	body, _ := json.Marshal(APILoginCodexFinishRequest{
+		State:       "state-happy",
+		RedirectURL: "http://localhost:1455/auth/callback?code=abc&state=state-happy",
+	})
+	resp, err := http.Post(srv.URL+"/api/login/codex/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /finish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Errorf("status=%d, want 201", resp.StatusCode)
+	}
+	var got APILoginFinishResponse
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Credential.ID != "codex-new" {
+		t.Errorf("Credential.ID=%q, want codex-new", got.Credential.ID)
+	}
+	if got.Credential.Name != "user@openai.com" {
+		t.Errorf("Credential.Name=%q, want user@openai.com", got.Credential.Name)
+	}
+}
+
+func TestAPILoginCodexFinish_UnknownState(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	body, _ := json.Marshal(APILoginCodexFinishRequest{State: "ghost", RedirectURL: "http://localhost:1455/auth/callback?code=x&state=ghost"})
+	resp, err := http.Post(srv.URL+"/api/login/codex/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("status=%d, want 404", resp.StatusCode)
+	}
+	var b map[string]string
+	_ = json.NewDecoder(resp.Body).Decode(&b)
+	if !strings.Contains(b["error"], "expired") {
+		t.Errorf("error=%q, want to contain 'expired'", b["error"])
+	}
+}
+
+func TestAPILoginCodexFinish_BadJSON(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Post(srv.URL+"/api/login/codex/finish", "application/json", strings.NewReader("not-json"))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPILoginCodexFinish_EmptyRedirectURL(t *testing.T) {
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	body, _ := json.Marshal(APILoginCodexFinishRequest{State: "s", RedirectURL: "   "})
+	resp, err := http.Post(srv.URL+"/api/login/codex/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status=%d, want 400", resp.StatusCode)
+	}
+}
+
+func TestAPILoginCodexFinish_ExchangeError_Returns502(t *testing.T) {
+	fakePKCE := &codexoauth.PKCEParams{State: "state-ex-err", Verifier: "v", Challenge: "c"}
+	defer stubCodexLoginFns(
+		func() (string, *codexoauth.PKCEParams, error) {
+			return "https://auth.openai.com/oauth/authorize", fakePKCE, nil
+		},
+		func(string, *codexoauth.PKCEParams) (*store.Credential, error) {
+			return nil, errors.New("token exchange failed (HTTP 400): bad code")
+		},
+	)()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+
+	startResp, err := http.Post(srv.URL+"/api/login/codex/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /start: %v", err)
+	}
+	startResp.Body.Close()
+
+	body, _ := json.Marshal(APILoginCodexFinishRequest{State: "state-ex-err", RedirectURL: "http://localhost:1455/auth/callback?code=x&state=state-ex-err"})
+	resp, err := http.Post(srv.URL+"/api/login/codex/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /finish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status=%d, want 502", resp.StatusCode)
+	}
+}
+
+func TestAPILoginCodexFinish_SaveError_Returns500(t *testing.T) {
+	fakePKCE := &codexoauth.PKCEParams{State: "state-save-err", Verifier: "v", Challenge: "c"}
+	defer stubCodexLoginFns(
+		func() (string, *codexoauth.PKCEParams, error) {
+			return "https://auth.openai.com/oauth/authorize", fakePKCE, nil
+		},
+		func(string, *codexoauth.PKCEParams) (*store.Credential, error) {
+			return nil, errors.New("save credentials: disk full")
+		},
+	)()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+
+	startResp, err := http.Post(srv.URL+"/api/login/codex/start", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /start: %v", err)
+	}
+	startResp.Body.Close()
+
+	body, _ := json.Marshal(APILoginCodexFinishRequest{State: "state-save-err", RedirectURL: "http://localhost:1455/auth/callback?code=x&state=state-save-err"})
+	resp, err := http.Post(srv.URL+"/api/login/codex/finish", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /finish: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Errorf("status=%d, want 500", resp.StatusCode)
+	}
+}
+
+// ---- fetchQuota codex branch -------------------------------------
+
+func TestFetchQuota_CodexProviderDispatch(t *testing.T) {
+	cred := fakeCodexCred("cq-1", "codex-user", "Pro")
+	defer stubStore(t, []*store.Credential{cred}, nil)()
+	defer stubCodexUsage(t, func(tok, accountID string) *oauth.UsageInfo {
+		if tok != "codex-tok-cq-1" {
+			t.Errorf("FetchUsageFn got token %q, want codex-tok-cq-1", tok)
+		}
+		if accountID != "acct-cq-1" {
+			t.Errorf("FetchUsageFn got accountID %q, want acct-cq-1", accountID)
+		}
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 50, ResetsAt: time.Now().Add(2 * time.Hour).Format(time.RFC3339)},
+		}}
+	})()
+
+	srv := newTestServer(t, ServerConfig{Manager: NewManager(&fakeStarter{}, nil), Loopback: true})
+	resp, err := http.Get(srv.URL + "/api/credentials/cq-1")
+	if err != nil {
+		t.Fatalf("GET: %v", err)
+	}
+	defer resp.Body.Close()
+	var d APICredentialDetail
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !d.Quota.Fetched {
+		t.Errorf("Quota.Fetched=false, want true")
+	}
+	if len(d.Quota.Windows) != 1 || d.Quota.Windows[0].Name != "5h" {
+		t.Errorf("Quota.Windows=%+v, want one 5h window", d.Quota.Windows)
 	}
 }
 

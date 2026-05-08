@@ -272,26 +272,57 @@
 
   /* ---- add-credential dialog -------------------------------------- */
 
-  // openLoginDialog drives the two-step OAuth-add-credential flow:
-  // step 1 calls /api/login/start to mint a server-side PKCE handshake;
-  // step 2 swaps the dialog body to show the authorize URL + paste field
-  // and posts to /api/login/finish on submit.
+  // openLoginDialog shows a provider picker (Claude / Codex) and then
+  // drives the two-step OAuth flow for whichever provider is chosen.
+  //   Claude: /api/login/start → paste code → /api/login/finish
+  //   Codex:  /api/login/codex/start → paste redirect URL → /api/login/codex/finish
   function openLoginDialog() {
     var dlg = dialog({
-      title: "Add Claude credential",
-      description: "Generating login URL…",
-      body: '<p class="muted">Contacting Claude…</p>',
-      footer: [{ label: "Cancel", ghost: true, action: "close" }],
+      title: "Add credential",
+      description: "Choose a provider to authenticate with.",
+      body:
+        '<label class="field-label" for="login-provider">Provider</label>' +
+        '<select class="input" id="login-provider">' +
+          '<option value="claude">Claude</option>' +
+          '<option value="codex">Codex (ChatGPT)</option>' +
+        '</select>',
+      footer: [
+        { label: "Cancel", ghost: true, action: "close" },
+        { label: "Continue", primary: true, action: "submit" },
+      ],
     });
     dlg.addEventListener("close", function () { dlg.remove(); });
 
-    postJSON("/api/login/start", null)
-      .then(function (resp) { renderLoginStep2(dlg, resp); })
-      .catch(function (err) { renderLoginError(dlg, err); });
+    var select = dlg.querySelector("#login-provider");
+    dlg.querySelector('[data-dialog-action="submit"]').addEventListener("click", function () {
+      var provider = select.value;
+      if (provider === "codex") {
+        renderLoginLoading(dlg, "Contacting OpenAI…");
+        postJSON("/api/login/codex/start", null)
+          .then(function (resp) { renderCodexLoginStep2(dlg, resp); })
+          .catch(function (err) { renderLoginError(dlg, err, provider); });
+      } else {
+        renderLoginLoading(dlg, "Contacting Claude…");
+        postJSON("/api/login/start", null)
+          .then(function (resp) { renderLoginStep2(dlg, resp); })
+          .catch(function (err) { renderLoginError(dlg, err, provider); });
+      }
+    });
+  }
+
+  // renderLoginLoading swaps the dialog body to a loading message
+  // and hides the footer buttons while the start request is in flight.
+  function renderLoginLoading(dlg, msg) {
+    var bodyEl = dlg.querySelector(".dialog-body");
+    bodyEl.innerHTML = '<p class="muted">' + escapeHTML(msg) + '</p>';
+    var footer = dlg.querySelector(".dialog-footer");
+    footer.innerHTML = '<button class="btn ghost" type="button" data-dialog-action="close">Cancel</button>';
+    footer.querySelector('[data-dialog-action="close"]')
+      .addEventListener("click", function () { dlg.close(); });
   }
 
   // renderLoginStep2 swaps the dialog body to the authorize-URL +
-  // paste-code form once the handshake is in hand.
+  // paste-code form (Claude flow) once the handshake is in hand.
   function renderLoginStep2(dlg, start) {
     var bodyEl = dlg.querySelector(".dialog-body");
     bodyEl.innerHTML =
@@ -363,12 +394,89 @@
     setTimeout(function () { input.focus(); }, 0);
   }
 
+  // renderCodexLoginStep2 swaps the dialog body to the authorize-URL +
+  // paste-redirect-URL form (Codex flow) once the PKCE handshake is ready.
+  function renderCodexLoginStep2(dlg, start) {
+    var bodyEl = dlg.querySelector(".dialog-body");
+    bodyEl.innerHTML =
+      fieldBlock("Authorize URL", start.authorizeUrl, "auth-url") +
+      '<div>' +
+      '  <a class="btn primary" id="login-open-link" href="' + attr(start.authorizeUrl) + '" target="_blank" rel="noopener noreferrer">Open authorize page ↗</a>' +
+      '</div>' +
+      '<label class="field-label" for="login-redirect">Paste redirect URL</label>' +
+      '<input class="input" id="login-redirect" autocomplete="off" spellcheck="false" placeholder="http://localhost:1455/auth/callback?code=…">' +
+      '<div id="login-error" class="quota-error" style="display:none"></div>';
+
+    var copyFields = bodyEl.querySelectorAll(".copy-field");
+    for (var i = 0; i < copyFields.length; i++) { bindCopyField(copyFields[i]); }
+
+    var footer = dlg.querySelector(".dialog-footer");
+    footer.innerHTML =
+      '<button class="btn ghost" type="button" data-dialog-action="close">Cancel</button>' +
+      '<button class="btn primary" type="button" id="login-submit">Submit</button>';
+    footer.querySelector('[data-dialog-action="close"]')
+      .addEventListener("click", function () { dlg.close(); });
+
+    var input = bodyEl.querySelector("#login-redirect");
+    var errBox = bodyEl.querySelector("#login-error");
+    var submit = footer.querySelector("#login-submit");
+    var openLink = bodyEl.querySelector("#login-open-link");
+
+    openLink.addEventListener("click", function () {
+      setTimeout(function () { input.focus(); }, 0);
+    });
+
+    function go() {
+      var redirectURL = input.value.trim();
+      if (!redirectURL) {
+        toast("Redirect URL required", "Paste the full redirect URL from the browser address bar.", "destructive");
+        input.focus();
+        return;
+      }
+      submit.disabled = true;
+      input.disabled = true;
+      errBox.style.display = "none";
+      errBox.textContent = "";
+      postJSON("/api/login/codex/finish", { state: start.state, redirectUrl: redirectURL })
+        .then(function (resp) {
+          dlg.close();
+          var name = (resp && resp.credential && (resp.credential.name || resp.credential.id)) || "new credential";
+          toast("Logged in", "Logged in as " + name + ".", "success");
+          pollOnce();
+        })
+        .catch(function (err) {
+          var msg = err && err.message ? err.message : "unknown error";
+          errBox.textContent = msg;
+          errBox.style.display = "";
+          if (/expired|start over/i.test(msg)) {
+            // PKCE state is gone; force the user back to the (+) button.
+            submit.disabled = true;
+            input.disabled = true;
+          } else {
+            submit.disabled = false;
+            input.disabled = false;
+            input.focus();
+          }
+        });
+    }
+    submit.addEventListener("click", go);
+    input.addEventListener("keydown", function (ev) {
+      if (ev.key === "Enter") { ev.preventDefault(); go(); }
+    });
+
+    setTimeout(function () { input.focus(); }, 0);
+  }
+
   // renderLoginError replaces the step-1 body with an error block and
-  // a Retry button that re-fires /api/login/start in place.
-  function renderLoginError(dlg, err) {
+  // a Retry button that re-fires the start request for the given provider.
+  function renderLoginError(dlg, err, provider) {
     var bodyEl = dlg.querySelector(".dialog-body");
     var msg = err && err.message ? err.message : "unknown error";
     bodyEl.innerHTML = '<div class="quota-error">' + escapeHTML(msg) + '</div>';
+
+    var startURL = provider === "codex" ? "/api/login/codex/start" : "/api/login/start";
+    var step2Fn  = provider === "codex" ? renderCodexLoginStep2 : renderLoginStep2;
+    var loadMsg  = provider === "codex" ? "Contacting OpenAI…" : "Contacting Claude…";
 
     var footer = dlg.querySelector(".dialog-footer");
     footer.innerHTML =
@@ -377,13 +485,10 @@
     footer.querySelector('[data-dialog-action="close"]')
       .addEventListener("click", function () { dlg.close(); });
     footer.querySelector("#login-retry").addEventListener("click", function () {
-      bodyEl.innerHTML = '<p class="muted">Contacting Claude…</p>';
-      footer.innerHTML = '<button class="btn ghost" type="button" data-dialog-action="close">Cancel</button>';
-      footer.querySelector('[data-dialog-action="close"]')
-        .addEventListener("click", function () { dlg.close(); });
-      postJSON("/api/login/start", null)
-        .then(function (resp) { renderLoginStep2(dlg, resp); })
-        .catch(function (e) { renderLoginError(dlg, e); });
+      renderLoginLoading(dlg, loadMsg);
+      postJSON(startURL, null)
+        .then(function (resp) { step2Fn(dlg, resp); })
+        .catch(function (e) { renderLoginError(dlg, e, provider); });
     });
   }
 
