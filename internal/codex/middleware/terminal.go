@@ -42,6 +42,12 @@ type TerminalOpts struct {
 	// OnSessionDie is called when a model_not_found error from upstream
 	// triggers die-fast. Wired by share.Session to call proxy.Stop.
 	OnSessionDie func(reason string)
+	// QuotaCache, if non-nil, is called after each upstream response to
+	// parse x-codex-{5h,7d}-* headers and update per-cred usage telemetry.
+	QuotaCache *QuotaCache
+	// UsageTee, if non-nil, records a UsageEvent after each translated
+	// response (Pipe or Collect path) for display by ccm status / ccm serve.
+	UsageTee *UsageTee
 }
 
 // Terminal is the codex-specific http.Handler that lives at the end of
@@ -101,6 +107,11 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 
+	// Parse quota headers regardless of response status.
+	if t.opts.QuotaCache != nil {
+		t.opts.QuotaCache.Apply(resp)
+	}
+
 	// Non-2xx: parse error body, check for die-fast trigger.
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(resp.Body)
@@ -145,6 +156,14 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			writeAnthropicError(w, http.StatusInternalServerError, "api_error", err.Error())
 			return
 		}
+		if t.opts.UsageTee != nil {
+			fu := st.FinalUsage()
+			t.opts.UsageTee.Record(UsageEvent{
+				InputTokens:          fu.InputTokens,
+				OutputTokens:         fu.OutputTokens,
+				CacheReadInputTokens: fu.CacheReadInputTokens,
+			})
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(js)
 		return
@@ -161,6 +180,14 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// Best-effort error event after partial stream.
 		errBody := `{"type":"error","error":{"type":"api_error","message":"stream interrupted: ` + err.Error() + `"}}`
 		_, _ = io.WriteString(w, "event: error\ndata: "+errBody+"\n\n")
+	}
+	if t.opts.UsageTee != nil {
+		fu := st.FinalUsage()
+		t.opts.UsageTee.Record(UsageEvent{
+			InputTokens:          fu.InputTokens,
+			OutputTokens:         fu.OutputTokens,
+			CacheReadInputTokens: fu.CacheReadInputTokens,
+		})
 	}
 }
 
