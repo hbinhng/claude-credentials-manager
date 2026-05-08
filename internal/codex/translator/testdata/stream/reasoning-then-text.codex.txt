@@ -1,0 +1,19 @@
+data: {"type":"response.created","response":{"id":"resp_3"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_001"}}
+
+data: {"type":"response.reasoning_summary_text.delta","delta":"Let me think about this"}
+
+data: {"type":"response.reasoning_summary_text.delta","delta":" carefully."}
+
+data: {"type":"response.reasoning_summary_text.done"}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_2"}}
+
+data: {"type":"response.output_text.delta","delta":"The answer is 42."}
+
+data: {"type":"response.output_text.done"}
+
+data: {"type":"response.completed","status":"completed","usage":{"input_tokens":15,"output_tokens":8}}
+
+data: [DONE]
