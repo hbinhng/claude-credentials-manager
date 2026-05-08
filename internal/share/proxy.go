@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -15,10 +16,15 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
+	codexmw "github.com/hbinhng/claude-credentials-manager/internal/codex/middleware"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/pipeline"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 // identityHeaderAllowlist enumerates the request headers that identify a
@@ -139,6 +145,16 @@ type Proxy struct {
 	aliasMap       *alias.Map
 	maxConcurrency int
 	bearerSrc      middleware.BearerSource // non-nil → UpstreamAuthReplace step is added
+
+	// Codex provider fields. Populated by SetCodexHandlers before Start.
+	// provider is "codex" when the codex path is active; empty or "claude"
+	// uses the existing p.handle claude path.
+	provider         string
+	codexCred        *store.Credential
+	codexBundle      *identity.Bundle
+	codexCapture     *capture.Result
+	codexTransport   *transport.Transport
+	codexUpstreamURL string // test override; empty in production
 }
 
 // ctxKey is used to thread per-request state from the outer handler into
@@ -274,12 +290,65 @@ func (p *Proxy) SetMaxConcurrency(n int) { p.maxConcurrency = n }
 // pipeline. Must be called before Start.
 func (p *Proxy) SetBearerSource(src middleware.BearerSource) { p.bearerSrc = src }
 
+// CodexHandlers carries the per-session codex identity material
+// assembled by the session orchestrator before Start is called.
+// SetCodexHandlers wires it into the proxy and switches the provider
+// to "codex" so terminalForProvider returns the codex Terminal.
+type CodexHandlers struct {
+	Cred        *store.Credential
+	Bundle      *identity.Bundle
+	Capture     *capture.Result
+	Transport   *transport.Transport
+	UpstreamURL string // test override; empty in production
+}
+
+// SetCodexHandlers wires the codex identity material into the proxy and
+// marks the provider as "codex". Must be called before Start.
+func (p *Proxy) SetCodexHandlers(opts CodexHandlers) {
+	p.provider = "codex"
+	p.codexCred = opts.Cred
+	p.codexBundle = opts.Bundle
+	p.codexCapture = opts.Capture
+	p.codexTransport = opts.Transport
+	p.codexUpstreamURL = opts.UpstreamURL
+}
+
+// cred returns the credential associated with the proxy. For the codex
+// path this is codexCred (set via SetCodexHandlers). The claude path
+// does not expose the credential through the proxy (it lives in the
+// credState owned by the session).
+func (p *Proxy) cred() *store.Credential {
+	return p.codexCred
+}
+
+// handleSessionDie is invoked by the codex Terminal when a die-fast
+// condition is detected (model_not_found). It logs the reason and
+// closes the proxy gracefully in a separate goroutine so the terminal
+// handler can return its error response before the server shuts down.
+func (p *Proxy) handleSessionDie(reason string) {
+	log.Printf("share: session terminating — %s", reason)
+	go p.Close() //nolint:errcheck
+}
+
 // terminalForProvider returns the terminal http.Handler for the current
-// provider. For Task 8 (claude-only) this is always p.handle.
-// Task 16 extends this with a codex case.
+// provider. "codex" returns a codex Terminal wired with the session's
+// identity material; any other value (including empty, meaning claude)
+// returns the existing p.handle claude handler.
 func (p *Proxy) terminalForProvider() http.Handler {
-	// Task 16 extends this with a "codex" case.
-	return http.HandlerFunc(p.handle)
+	switch p.provider {
+	case "codex":
+		return codexmw.NewTerminal(codexmw.TerminalOpts{
+			Cred:         p.cred(),
+			Transport:    p.codexTransport,
+			Capture:      p.codexCapture,
+			Bundle:       p.codexBundle,
+			UpstreamURL:  p.codexUpstreamURL,
+			BearerSrc:    p.bearerSrc,
+			OnSessionDie: p.handleSessionDie,
+		})
+	default:
+		return http.HandlerFunc(p.handle)
+	}
 }
 
 // pipelineHandler builds the request-handling pipeline using the common
