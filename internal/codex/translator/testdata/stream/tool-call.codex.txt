@@ -1,0 +1,13 @@
+data: {"type":"response.created","response":{"id":"resp_2"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_abc","call_id":"call_xyz","name":"get_weather"}}
+
+data: {"type":"response.function_call_arguments.delta","delta":"{\"location\":"}
+
+data: {"type":"response.function_call_arguments.delta","delta":"\"Paris\"}"}
+
+data: {"type":"response.function_call_arguments.done"}
+
+data: {"type":"response.completed","status":"completed","usage":{"input_tokens":20,"output_tokens":5}}
+
+data: [DONE]

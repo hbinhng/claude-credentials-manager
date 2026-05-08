@@ -1,0 +1,17 @@
+data: {"type":"response.created","response":{"id":"resp_4"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_3"}}
+
+data: {"type":"response.output_text.delta","delta":"I will look that up."}
+
+data: {"type":"response.output_text.done"}
+
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_def","call_id":"call_789","name":"search"}}
+
+data: {"type":"response.function_call_arguments.delta","delta":"{\"query\":\"Paris weather\"}"}
+
+data: {"type":"response.function_call_arguments.done"}
+
+data: {"type":"response.completed","status":"completed","usage":{"input_tokens":30,"output_tokens":10}}
+
+data: [DONE]
