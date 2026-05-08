@@ -723,6 +723,72 @@ func TestStatus_CodexQuota_FetchError_RendersError(t *testing.T) {
 	}
 }
 
+func TestBuildStatusReport_CodexTier_FromSubscription(t *testing.T) {
+	// When Subscription.Tier is set on a codex cred, buildStatusReport
+	// should use it for both the JSON Tier field and the Detail string.
+	tok := mkStatusJWT(t, "user@x.com")
+	cred := &store.Credential{
+		ID:       "dddd1111-0000-0000-0000-000000000001",
+		Name:     "cx",
+		Provider: "codex",
+		AuthMode: "chatgpt",
+		Tokens: &store.CodexTokens{
+			IDToken:     tok,
+			AccessToken: tok,
+			AccountID:   "acct",
+		},
+		Subscription:    store.Subscription{Tier: "Pro"},
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+		LastRefresh:     "2026-01-01T00:00:00Z",
+	}
+
+	r := buildStatusReport([]*store.Credential{cred}, []*oauth.UsageInfo{{}}, "", "", false)
+	e := r.Credentials[0]
+
+	// JSON Tier should be set.
+	if e.Tier == nil || *e.Tier != "Pro" {
+		t.Errorf("Tier = %v, want pointer to Pro", e.Tier)
+	}
+	// Detail should hold the tier for the table renderer.
+	if e.Detail != "Pro" {
+		t.Errorf("Detail = %q, want Pro", e.Detail)
+	}
+}
+
+func TestBuildStatusReport_CodexTier_FallbackToJWT(t *testing.T) {
+	// When Subscription.Tier is empty, buildStatusReport should fall back
+	// to the JWT-parsed plan_type.
+	tok := mkStatusJWT(t, "user@x.com") // JWT contains chatgpt_plan_type:"pro"
+	cred := &store.Credential{
+		ID:       "dddd2222-0000-0000-0000-000000000002",
+		Name:     "cx",
+		Provider: "codex",
+		AuthMode: "chatgpt",
+		Tokens: &store.CodexTokens{
+			IDToken:     tok,
+			AccessToken: tok,
+			AccountID:   "acct",
+		},
+		// Subscription.Tier is empty — should fall back to JWT
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+		LastRefresh:     "2026-01-01T00:00:00Z",
+	}
+
+	r := buildStatusReport([]*store.Credential{cred}, []*oauth.UsageInfo{{}}, "", "", false)
+	e := r.Credentials[0]
+
+	// JSON Tier should be nil when no Subscription.Tier.
+	if e.Tier != nil {
+		t.Errorf("Tier = %v, want nil for codex without Subscription.Tier", *e.Tier)
+	}
+	// Detail should be the JWT plan_type.
+	if e.Detail != "pro" {
+		t.Errorf("Detail = %q, want pro (from JWT fallback)", e.Detail)
+	}
+}
+
 func TestStatus_JSON_AdditiveFields_VersionUnchanged(t *testing.T) {
 	setupFakeHome(t)
 	cc := mkClaudeCredHelper(t, "c1")

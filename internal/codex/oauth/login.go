@@ -10,8 +10,15 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
+
+// loginUsageFn is the seam tests replace to inject a canned usage response
+// without spinning up an httptest server. Production: FetchUsage.
+//
+// NOT goroutine-safe. Tests that mutate must NOT call t.Parallel().
+var loginUsageFn = FetchUsage
 
 // Login runs the paste-URL login flow:
 //  1. Print authorize URL + instructions to stdout.
@@ -65,6 +72,14 @@ func Login(ctx context.Context, stdout io.Writer, stdin io.Reader) (*store.Crede
 		}
 		name = id
 	}
+
+	// Best-effort tier from usage endpoint. Failures are silent — tokens
+	// are already good and tier will refresh on next `ccm refresh`.
+	var tier string
+	if u := loginUsageFn(tr.AccessToken, claims.AccountID); u != nil {
+		tier = u.Tier
+	}
+
 	now := time.Now().UTC()
 	return &store.Credential{
 		ID:              uuid.NewString(),
@@ -80,7 +95,8 @@ func Login(ctx context.Context, stdout io.Writer, stdin io.Reader) (*store.Crede
 			RefreshToken: tr.RefreshToken,
 			AccountID:    claims.AccountID,
 		},
-		LastRefresh: now.Format(time.RFC3339Nano),
+		LastRefresh:  now.Format(time.RFC3339Nano),
+		Subscription: store.Subscription{Tier: tier},
 	}, nil
 }
 
@@ -116,3 +132,13 @@ func parseCallbackURL(input string) (code, state string, err error) {
 
 // ExportedParseCallbackURL exposes parseCallbackURL for package-external tests.
 var ExportedParseCallbackURL = parseCallbackURL
+
+// SeamLoginUsage swaps the usage function used during Login. Returns a
+// cleanup that restores the original. Test-only.
+//
+// NOT goroutine-safe. Tests that mutate must NOT call t.Parallel().
+func SeamLoginUsage(fn func(string, string) *oauth.UsageInfo) func() {
+	prev := loginUsageFn
+	loginUsageFn = fn
+	return func() { loginUsageFn = prev }
+}

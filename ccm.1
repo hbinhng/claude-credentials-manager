@@ -169,6 +169,33 @@ The provider this credential targets:
 .BR \(dqclaude\(dq " or " \(dqcodex\(dq .
 Always present in every entry.
 .PP
+For codex credentials, the
+.B tier
+field (and the TIER column in table mode) is populated from the
+.B plan_type
+field returned by the
+.B chatgpt.com/backend-api/wham/usage
+endpoint. The value is capitalized for display (e.g.
+.IR pro " becomes " Pro ).
+Tier is persisted to
+.B ~/.ccm/<uuid>.credentials.json
+under a
+.B subscription
+key and is refreshed during
+.B ccm refresh
+and
+.BR "ccm login codex" .
+If the usage fetch fails at login or refresh time, the tier is silently
+left empty or unchanged \(em the credential tokens remain valid.
+Per-model rate limits from
+.B additional_rate_limits
+in the usage response are emitted as additional quota windows named
+.RI 5h/ model
+and
+.RI 7d/ model
+(e.g.
+.IR 5h/gpt-5.3-codex-spark ).
+.PP
 The envelope is emitted as minified JSON (no indentation, one trailing
 newline) to keep pipelines compact; pipe through
 .B jq

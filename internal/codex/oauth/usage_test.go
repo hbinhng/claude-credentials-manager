@@ -156,3 +156,136 @@ func TestFetchUsage_InvalidURL_Errors(t *testing.T) {
 		t.Fatal("want error for invalid URL")
 	}
 }
+
+func TestFetchUsage_PlanType_PopulatesTier(t *testing.T) {
+	setUsageURL(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"plan_type": "pro",
+			"rate_limit": {
+				"primary_window":   {"used_percent": 10, "reset_at": 1900000000},
+				"secondary_window": {"used_percent": 20, "reset_at": 1910000000}
+			}
+		}`))
+	})
+	info := codexoauth.FetchUsage("at", "")
+	if info == nil || info.Error != "" {
+		t.Fatalf("unexpected error: %+v", info)
+	}
+	if info.Tier != "Pro" {
+		t.Fatalf("Tier = %q, want Pro", info.Tier)
+	}
+}
+
+func TestFetchUsage_EmptyPlanType_TierEmpty(t *testing.T) {
+	setUsageURL(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"rate_limit": {
+				"primary_window": {"used_percent": 10, "reset_at": 1900000000}
+			}
+		}`))
+	})
+	info := codexoauth.FetchUsage("at", "")
+	if info == nil || info.Error != "" {
+		t.Fatalf("unexpected error: %+v", info)
+	}
+	if info.Tier != "" {
+		t.Fatalf("Tier = %q, want empty when plan_type absent", info.Tier)
+	}
+}
+
+func TestFetchUsage_AdditionalRateLimits_EmittedAsExtraQuotas(t *testing.T) {
+	setUsageURL(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"plan_type": "pro",
+			"rate_limit": {
+				"primary_window":   {"used_percent": 10, "reset_at": 1900000000},
+				"secondary_window": {"used_percent": 20, "reset_at": 1910000000}
+			},
+			"additional_rate_limits": [
+				{
+					"limit_name": "GPT-5.3-Codex-Spark",
+					"metered_feature": "codex_bengalfox",
+					"rate_limit": {
+						"primary_window":   {"used_percent": 30, "reset_at": 1900000000},
+						"secondary_window": {"used_percent": 40, "reset_at": 1910000000}
+					}
+				}
+			]
+		}`))
+	})
+	info := codexoauth.FetchUsage("at", "acct")
+	if info == nil || info.Error != "" {
+		t.Fatalf("unexpected error: %+v", info)
+	}
+	// Expect 4 quotas: 5h, 7d, 5h/gpt-5.3-codex-spark, 7d/gpt-5.3-codex-spark
+	if len(info.Quotas) != 4 {
+		t.Fatalf("want 4 quotas; got %d: %+v", len(info.Quotas), info.Quotas)
+	}
+	// Build a name→quota map for easier assertion.
+	byName := make(map[string]float64)
+	for _, q := range info.Quotas {
+		byName[q.Name] = q.Used
+	}
+	if byName["5h"] != 10 {
+		t.Fatalf("5h.Used = %v, want 10", byName["5h"])
+	}
+	if byName["7d"] != 20 {
+		t.Fatalf("7d.Used = %v, want 20", byName["7d"])
+	}
+	if byName["5h/gpt-5.3-codex-spark"] != 30 {
+		t.Fatalf("5h/gpt-5.3-codex-spark.Used = %v, want 30", byName["5h/gpt-5.3-codex-spark"])
+	}
+	if byName["7d/gpt-5.3-codex-spark"] != 40 {
+		t.Fatalf("7d/gpt-5.3-codex-spark.Used = %v, want 40", byName["7d/gpt-5.3-codex-spark"])
+	}
+	if info.Tier != "Pro" {
+		t.Fatalf("Tier = %q, want Pro", info.Tier)
+	}
+}
+
+func TestFetchUsage_AdditionalRateLimits_EmptyLimitName_Skipped(t *testing.T) {
+	setUsageURL(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"rate_limit": {
+				"primary_window": {"used_percent": 10, "reset_at": 1900000000}
+			},
+			"additional_rate_limits": [
+				{
+					"limit_name": "",
+					"rate_limit": {
+						"primary_window": {"used_percent": 50, "reset_at": 1900000000}
+					}
+				}
+			]
+		}`))
+	})
+	info := codexoauth.FetchUsage("at", "")
+	if info == nil || info.Error != "" {
+		t.Fatalf("unexpected error: %+v", info)
+	}
+	// Only the top-level 5h window; empty limit_name entry is skipped.
+	if len(info.Quotas) != 1 {
+		t.Fatalf("want 1 quota; got %d", len(info.Quotas))
+	}
+	if info.Quotas[0].Name != "5h" {
+		t.Fatalf("quota name = %q, want 5h", info.Quotas[0].Name)
+	}
+}
+
+func TestFetchUsage_PlanType_FreePlan_Capitalized(t *testing.T) {
+	setUsageURL(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{
+			"plan_type": "free",
+			"rate_limit": {
+				"primary_window": {"used_percent": 5, "reset_at": 1900000000}
+			}
+		}`))
+	})
+	info := codexoauth.FetchUsage("at", "")
+	if info == nil || info.Error != "" {
+		t.Fatalf("unexpected error: %+v", info)
+	}
+	if info.Tier != "Free" {
+		t.Fatalf("Tier = %q, want Free", info.Tier)
+	}
+}

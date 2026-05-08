@@ -333,6 +333,99 @@ func TestUnmarshal_Credential_CodexBadOpenAIAPIKey_Errors(t *testing.T) {
 	}
 }
 
+func TestMarshal_CodexEmitsSubscriptionWhenTierSet(t *testing.T) {
+	c := &store.Credential{
+		ID: "x", Name: "n", Provider: "codex",
+		AuthMode: "chatgpt", OpenAIAPIKey: nil,
+		Tokens: &store.CodexTokens{IDToken: "i", AccessToken: "a", RefreshToken: "r", AccountID: "acct"},
+		LastRefresh:     "2026-05-08T00:00:00Z",
+		CreatedAt:       "2026-05-08T00:00:00Z",
+		LastRefreshedAt: "2026-05-08T00:00:00Z",
+		Subscription:    store.Subscription{Tier: "Pro"},
+	}
+	b, err := json.Marshal(c)
+	if err != nil { t.Fatal(err) }
+	if !strings.Contains(string(b), `"subscription"`) {
+		t.Fatalf("expected subscription in output when Tier set; got %s", b)
+	}
+	if !strings.Contains(string(b), `"tier":"Pro"`) {
+		t.Fatalf("expected tier:Pro in output; got %s", b)
+	}
+}
+
+func TestMarshal_CodexOmitsSubscriptionWhenTierEmpty(t *testing.T) {
+	c := &store.Credential{
+		ID: "x", Name: "n", Provider: "codex",
+		AuthMode: "chatgpt", OpenAIAPIKey: nil,
+		Tokens: &store.CodexTokens{IDToken: "i", AccessToken: "a", RefreshToken: "r", AccountID: "acct"},
+		LastRefresh:     "2026-05-08T00:00:00Z",
+		CreatedAt:       "2026-05-08T00:00:00Z",
+		LastRefreshedAt: "2026-05-08T00:00:00Z",
+		// Subscription is zero-value (Tier == "")
+	}
+	b, err := json.Marshal(c)
+	if err != nil { t.Fatal(err) }
+	if strings.Contains(string(b), `"subscription"`) {
+		t.Fatalf("expected subscription omitted when Tier empty; got %s", b)
+	}
+}
+
+func TestUnmarshal_CodexPreservesSubscription(t *testing.T) {
+	exp := time.Now().Add(time.Hour).Unix()
+	raw := []byte(`{
+		"id":"u","name":"n","provider":"codex",
+		"createdAt":"t","lastRefreshedAt":"t",
+		"auth_mode":"chatgpt","OPENAI_API_KEY":null,
+		"tokens":{"id_token":"` + makeJWTExp(t, exp) + `","access_token":"` + makeJWTExp(t, exp) + `","refresh_token":"rt","account_id":"acct"},
+		"last_refresh":"t",
+		"subscription":{"tier":"Pro"}
+	}`)
+	var c store.Credential
+	if err := json.Unmarshal(raw, &c); err != nil { t.Fatal(err) }
+	if c.Subscription.Tier != "Pro" {
+		t.Fatalf("Subscription.Tier = %q, want Pro", c.Subscription.Tier)
+	}
+}
+
+func TestUnmarshal_CodexBadSubscription_Errors(t *testing.T) {
+	// subscription must be an object, not a number.
+	exp := time.Now().Add(time.Hour).Unix()
+	raw := []byte(`{
+		"id":"u","name":"n","provider":"codex",
+		"createdAt":"t","lastRefreshedAt":"t",
+		"auth_mode":"chatgpt","OPENAI_API_KEY":null,
+		"tokens":{"id_token":"` + makeJWTExp(t, exp) + `","access_token":"` + makeJWTExp(t, exp) + `","refresh_token":"rt","account_id":"acct"},
+		"last_refresh":"t",
+		"subscription":42
+	}`)
+	var c store.Credential
+	if err := json.Unmarshal(raw, &c); err == nil {
+		t.Fatal("expected error when codex subscription is not an object")
+	}
+}
+
+func TestMarshal_CodexSubscription_RoundTrips(t *testing.T) {
+	// Marshal then unmarshal a codex cred with tier; tier must survive.
+	exp := time.Now().Add(time.Hour).Unix()
+	tok := makeJWTExp(t, exp)
+	c := &store.Credential{
+		ID: "x", Name: "n", Provider: "codex",
+		AuthMode: "chatgpt", OpenAIAPIKey: nil,
+		Tokens: &store.CodexTokens{IDToken: tok, AccessToken: tok, RefreshToken: "r", AccountID: "a"},
+		LastRefresh:     "t",
+		CreatedAt:       "t",
+		LastRefreshedAt: "t",
+		Subscription:    store.Subscription{Tier: "Pro"},
+	}
+	b, err := json.Marshal(c)
+	if err != nil { t.Fatalf("marshal: %v", err) }
+	var c2 store.Credential
+	if err := json.Unmarshal(b, &c2); err != nil { t.Fatalf("unmarshal: %v", err) }
+	if c2.Subscription.Tier != "Pro" {
+		t.Fatalf("Tier after round-trip = %q, want Pro", c2.Subscription.Tier)
+	}
+}
+
 func TestParseJWTExpMillis_BadPayloadJSON(t *testing.T) {
 	// Payload is valid base64 but not valid JSON.
 	h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
