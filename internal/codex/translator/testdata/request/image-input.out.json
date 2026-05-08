@@ -1,0 +1,1 @@
+{"model":"gpt-5-codex","stream":true,"store":false,"client_metadata":{"x-codex-installation-id":"inst-3"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"What is in this image?"},{"type":"input_image","image_url":"data:image/png;base64,iVBORw0KGgo="}]}]}

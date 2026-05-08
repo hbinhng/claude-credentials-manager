@@ -1,0 +1,1 @@
+{"model":"gpt-5-codex","stream":true,"store":false,"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are a helpful assistant.\nBe concise."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}

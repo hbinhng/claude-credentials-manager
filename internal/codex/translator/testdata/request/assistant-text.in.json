@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"What's 2+2?"}]},{"role":"assistant","content":[{"type":"text","text":"4"}]},{"role":"user","content":[{"type":"text","text":"Are you sure?"}]}]}

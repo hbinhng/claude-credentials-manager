@@ -1,0 +1,1 @@
+{"model":"claude-opus-4.7","tools":[{"name":"noop","description":"","input_schema":{}}],"messages":[{"role":"user","content":[{"type":"text","text":"do something"}]}]}
