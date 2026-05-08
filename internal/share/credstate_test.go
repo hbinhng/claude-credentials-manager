@@ -9,12 +9,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
@@ -294,10 +294,23 @@ func TestCredStateDoubleCheckSkipsRedundantRefresh(t *testing.T) {
 // non-claude provider.
 func mkCodexCred(t *testing.T, id string) *store.Credential {
 	t.Helper()
-	exp := time.Now().Add(time.Hour).Unix()
+	return mkCodexCredWithExp(t, id, time.Now().Add(time.Hour).Unix())
+}
+
+// mkExpiredCodexCred builds a minimal codex credential whose JWT is
+// already expired.
+func mkExpiredCodexCred(t *testing.T, id string) *store.Credential {
+	t.Helper()
+	return mkCodexCredWithExp(t, id, time.Now().Add(-time.Second).Unix())
+}
+
+// mkCodexCredWithExp constructs a codex credential whose access/id tokens
+// carry the given Unix second timestamp as the JWT exp claim.
+func mkCodexCredWithExp(t *testing.T, id string, expUnix int64) *store.Credential {
+	t.Helper()
 	h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
 	p := base64.RawURLEncoding.EncodeToString([]byte(
-		`{"email":"u@x.com","exp":` + strconv.FormatInt(exp, 10) + `,"https://api.openai.com/auth":{"chatgpt_account_id":"acct"}}`,
+		`{"email":"u@x.com","exp":` + strconv.FormatInt(expUnix, 10) + `,"https://api.openai.com/auth":{"chatgpt_account_id":"acct"}}`,
 	))
 	s := base64.RawURLEncoding.EncodeToString([]byte("sig"))
 	tok := h + "." + p + "." + s
@@ -311,15 +324,12 @@ func mkCodexCred(t *testing.T, id string) *store.Credential {
 	}
 }
 
-func TestCredStateNew_RejectsCodexCred(t *testing.T) {
+func TestCredStateNew_AcceptsCodexCred(t *testing.T) {
 	setupFakeHome(t)
 	cred := mkCodexCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 	_, err := newCredState(cred)
-	if err == nil {
-		t.Fatal("newCredState: nil err, want rejection for codex cred")
-	}
-	if !strings.Contains(err.Error(), "claude-only") {
-		t.Errorf("err = %v; want 'claude-only' in message", err)
+	if err != nil {
+		t.Fatalf("newCredState: unexpected error for codex cred: %v", err)
 	}
 }
 
@@ -359,5 +369,90 @@ func TestCredStateReloadErrorFallsBack(t *testing.T) {
 	}
 	if got != "access-held" {
 		t.Fatalf("got token %q, want %q", got, "access-held")
+	}
+}
+
+func TestCredState_Codex_FreshReturnsAccessToken(t *testing.T) {
+	setupFakeHome(t)
+	cred := mkCodexCred(t, "00000000-0000-0000-0000-000000000002")
+	if err := store.Save(cred); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+	// Reload from disk so expiresAtMillis cache is populated.
+	loaded, err := store.Load(cred.ID)
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	cs, err := newCredState(loaded)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
+	tok, err := cs.Fresh()
+	if err != nil {
+		t.Fatalf("Fresh: %v", err)
+	}
+	if tok != loaded.AccessToken() {
+		t.Errorf("credState returned %q, want cred.AccessToken() = %q", tok, loaded.AccessToken())
+	}
+}
+
+func TestCredState_Codex_RefreshViaCredflow(t *testing.T) {
+	setupFakeHome(t)
+	credID := "00000000-0000-0000-0000-000000000003"
+	// Build a codex cred whose JWT is already expired so Fresh() will
+	// take the slow path and invoke credflow.RefreshFn.
+	cred := mkExpiredCodexCred(t, credID)
+	if err := store.Save(cred); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+
+	called := false
+	restore := credflow.SetRefreshFnForTest(func(id string) (*store.Credential, error) {
+		called = true
+		fresh := mkCodexCred(t, id)
+		fresh.Tokens.AccessToken = "acc-refreshed"
+		_ = store.Save(fresh)
+		return fresh, nil
+	})
+	defer restore()
+
+	loaded, err := store.Load(credID)
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	cs, err := newCredState(loaded)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
+	tok, err := cs.Fresh()
+	if err != nil {
+		t.Fatalf("Fresh triggered refresh: %v", err)
+	}
+	if !called {
+		t.Error("credflow.RefreshFn was not invoked; credstate still uses inline oauth.Refresh")
+	}
+	if tok != "acc-refreshed" {
+		t.Errorf("Fresh returned %q, want acc-refreshed", tok)
+	}
+}
+
+func TestCredState_Claude_FreshUnchanged(t *testing.T) {
+	// Regression: existing claude path must continue to work after the
+	// refactor. peer-reload semantics preserved.
+	setupFakeHome(t)
+	cred := makeCred(t, "00000000-0000-0000-0000-000000000004", "claude-acc-tok")
+	cs, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
+	tok, err := cs.Fresh()
+	if err != nil {
+		t.Fatalf("Fresh: %v", err)
+	}
+	if tok == "" {
+		t.Error("Fresh returned empty token")
+	}
+	if tok != "claude-acc-tok" {
+		t.Errorf("Fresh returned %q, want %q", tok, "claude-acc-tok")
 	}
 }

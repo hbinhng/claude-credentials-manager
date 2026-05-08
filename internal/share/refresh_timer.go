@@ -34,7 +34,7 @@ const jitterCap = 60 * time.Second
 // Pure function — no side effects, uses the supplied jitter()
 // function so tests can inject deterministic values.
 func nextRefreshDelay(cred *store.Credential, now time.Time, jitter func() time.Duration) time.Duration {
-	target := time.UnixMilli(cred.ClaudeAiOauth.ExpiresAt).Add(-refreshExpiryMargin)
+	target := time.UnixMilli(cred.ExpiresAtMillis()).Add(-refreshExpiryMargin)
 	delay := target.Sub(now)
 	if delay < 0 {
 		delay = 0
