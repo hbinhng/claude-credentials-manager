@@ -446,6 +446,23 @@ Credential
 .I id-or-name
 arguments are completed against the stored credentials.
 .TP
+.B "model discovery \-\-from " \fIarg\fR
+Discover what model string Claude Code sends to the API for a given
+.B \-\-model
+argument. Spawns a local intercepting proxy, runs
+.BI "claude \-\-model " arg
+.B "\-p"
+against it, and prints the model field claude actually puts in the request
+body. Returns a synthetic Anthropic SSE response so claude exits cleanly
+without burning real API quota \[em] no active credential or internet
+required. Useful when authoring
+.B \-\-model\-alias
+patterns for
+.B "ccm share"
+and
+.B "ccm launch"
+against codex credentials.
+.TP
 .B version
 Print the ccm version, the short git commit the binary was built from, and
 the build timestamp (UTC, ISO-8601). The same information is available via
