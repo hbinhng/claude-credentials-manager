@@ -151,6 +151,9 @@ The share session stays alive until you press Ctrl-C.`,
 }
 
 func runShareSingle(cred *store.Credential, opts share.Options) error {
+	if cred.ProviderName() != "claude" {
+		return fmt.Errorf("ccm share is claude-only in v1.17 (got provider: %s)", cred.ProviderName())
+	}
 	sess, err := share.StartSession(cred, opts)
 	if err != nil {
 		return wrapPinnedTokenErr(err)

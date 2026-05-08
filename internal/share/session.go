@@ -252,7 +252,12 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 	if opts.Pool != nil {
 		tokens = opts.Pool
 	} else {
-		tokens = newCredState(cred)
+		state, serr := newCredState(cred)
+		if serr != nil {
+			_ = proxy.Close()
+			return nil, serr
+		}
+		tokens = state
 	}
 	if err := proxy.Transition(accessToken, tokens, opts.Pool); err != nil {
 		_ = proxy.Close()

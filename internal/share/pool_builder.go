@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"sort"
 	"time"
 
@@ -58,7 +59,13 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 	// usage endpoint is rate-limited by Anthropic, so we want to
 	// avoid calling it for the singleton path entirely.
 	for _, cred := range resolved {
-		state := newCredState(cred)
+		state, serr := newCredState(cred)
+		if serr != nil {
+			msg := fmt.Sprintf("%s(%s): %v", credLogName(cred), shortID(cred.ID), serr)
+			rejections = append(rejections, msg)
+			fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
+			continue
+		}
 		if _, ferr := state.Fresh(); ferr != nil {
 			msg := fmt.Sprintf("%s(%s): refresh failed: %v", credLogName(cred), shortID(cred.ID), ferr)
 			rejections = append(rejections, msg)
@@ -201,7 +208,19 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 // *store.Credential. Empty args = every credential in the store.
 func resolvePoolArgs(args []string) ([]*store.Credential, error) {
 	if len(args) == 0 {
-		return store.List()
+		all, err := store.List()
+		if err != nil {
+			return nil, err
+		}
+		var out []*store.Credential
+		for _, c := range all {
+			if c.ProviderName() != "claude" {
+				fmt.Fprintf(os.Stderr, "ccm: skipping %s (provider=%s; share/launch pool is claude-only)\n", c.Name, c.ProviderName())
+				continue
+			}
+			out = append(out, c)
+		}
+		return out, nil
 	}
 	seen := make(map[string]struct{})
 	var out []*store.Credential
@@ -209,6 +228,9 @@ func resolvePoolArgs(args []string) ([]*store.Credential, error) {
 		c, err := store.Resolve(a)
 		if err != nil {
 			return nil, fmt.Errorf("resolve %q: %w", a, err)
+		}
+		if c.ProviderName() != "claude" {
+			return nil, fmt.Errorf("share/launch pool is claude-only; %s is %s", c.Name, c.ProviderName())
 		}
 		if _, ok := seen[c.ID]; ok {
 			continue

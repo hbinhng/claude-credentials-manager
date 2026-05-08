@@ -1,11 +1,34 @@
 package claude
 
 import (
+	"encoding/base64"
 	"os"
+	"strconv"
 	"testing"
+	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
+
+// makeCodexCredForSync builds and saves a codex credential for Sync guard tests.
+func makeCodexCredForSync(t *testing.T, id string) *store.Credential {
+	t.Helper()
+	exp := time.Now().Add(time.Hour).Unix()
+	h := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"none"}`))
+	p := base64.RawURLEncoding.EncodeToString([]byte(
+		`{"email":"u@x.com","exp":` + strconv.FormatInt(exp, 10) + `,"https://api.openai.com/auth":{"chatgpt_account_id":"acct"}}`,
+	))
+	s := base64.RawURLEncoding.EncodeToString([]byte("sig"))
+	tok := h + "." + p + "." + s
+	return &store.Credential{
+		ID: id, Name: "codex-sync-test", Provider: "codex",
+		AuthMode: "chatgpt", OpenAIAPIKey: nil,
+		Tokens:          &store.CodexTokens{IDToken: tok, AccessToken: tok, RefreshToken: "rt_a.b", AccountID: "acct"},
+		LastRefresh:     "2026-05-08T00:00:00Z",
+		CreatedAt:       "2026-05-08T00:00:00Z",
+		LastRefreshedAt: "2026-05-08T00:00:00Z",
+	}
+}
 
 func TestSync_NoBackendEntry(t *testing.T) {
 	_, cleanup := setupFakeHome(t)
@@ -160,6 +183,28 @@ func TestSync_StoreWriteFailure(t *testing.T) {
 	_, err := Sync()
 	if err == nil {
 		t.Fatal("Sync: nil, want write error")
+	}
+}
+
+func TestSync_BailsOnNonClaudeActive(t *testing.T) {
+	// If the ccmSourceId in the active blob points to a codex credential
+	// in the store, Sync must return (false, nil) — not crash or write
+	// junk into the credential's claude-only fields.
+	_, cleanup := setupFakeHome(t)
+	defer cleanup()
+
+	codex := makeCodexCredForSync(t, "dddddddd-dddd-dddd-dddd-dddddddddddd")
+	saveCred(t, codex)
+
+	// Set an active blob that points at the codex credential ID.
+	setActiveBlob(t, codex.ID, store.OAuthTokens{AccessToken: "tok", ExpiresAt: 9999})
+
+	changed, err := Sync()
+	if err != nil {
+		t.Fatalf("Sync: %v (want nil — codex cred must be a no-op)", err)
+	}
+	if changed {
+		t.Error("changed = true, want false (codex cred skipped)")
 	}
 }
 

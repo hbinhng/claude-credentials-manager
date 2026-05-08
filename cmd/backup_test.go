@@ -161,6 +161,30 @@ func TestRunBackup_NoClaudeAiOauthErrors(t *testing.T) {
 	}
 }
 
+func TestRunBackup_SkipsCodexCred(t *testing.T) {
+	// If the active ccmSourceId resolves to a codex credential in the
+	// store, runBackup must skip it (with a stderr warning) and return
+	// nil instead of passing the codex cred to the claude-only sync path.
+	setupHomeWithCcm(t)
+
+	// Save a codex cred into the store.
+	codex := saveCodexCred(t, "cccccccc-cccc-cccc-cccc-cccccccccccc", "codex-backup-test")
+	// Place an active blob whose ccmSourceId points at the codex cred.
+	// installActiveBlob sets claudeAiOauth, which is what claude.Active()
+	// reads to find the ccmSourceId marker.
+	installActiveBlob(t, codex.ID, store.OAuthTokens{AccessToken: "tok", RefreshToken: "r", ExpiresAt: 1})
+
+	if err := runBackup(); err != nil {
+		t.Fatalf("runBackup: %v (want nil — codex cred should be skipped, not an error)", err)
+	}
+	// No new credentials should have been added (the codex cred was
+	// already in the store but backup must not re-import it).
+	all, _ := store.List()
+	if len(all) != 1 {
+		t.Errorf("store has %d creds, want 1 (codex cred must not be duplicated)", len(all))
+	}
+}
+
 func TestRunBackup_SyncWriteFailure_PropagatesError(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("chmod-based failure injection is Unix-only")
