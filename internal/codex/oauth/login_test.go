@@ -1,26 +1,25 @@
 package codexoauth_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
-	"net"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// listenFreePort binds an ephemeral TCP port and returns the listener.
-// The caller must close the listener when done.
-func listenFreePort() (net.Listener, error) {
-	return net.Listen("tcp", "127.0.0.1:0")
-}
-
+// mkLoginJWT builds a minimal JWT accepted by the codex JWT parser.
 func mkLoginJWT(t *testing.T, email, accountID string) string {
 	t.Helper()
 	exp := time.Now().Add(time.Hour).Unix()
@@ -32,199 +31,294 @@ func mkLoginJWT(t *testing.T, email, accountID string) string {
 	return h + "." + p + "." + s
 }
 
-func setLoginEphemeral(t *testing.T) {
+// findStateInPrintedURL extracts the state query param from the auth
+// URL printed to stdout, so the test can fabricate a matching pasted
+// redirect URL.
+func findStateInPrintedURL(t *testing.T, out string) string {
 	t.Helper()
-	prevAddr := codexoauth.ListenAddr
-	codexoauth.ListenAddr = "127.0.0.1:0"
-	t.Cleanup(func() { codexoauth.ListenAddr = prevAddr })
+	idx := strings.Index(out, "https://auth.openai.com/oauth/authorize?")
+	if idx < 0 {
+		t.Fatalf("no authorize URL in stdout: %s", out)
+	}
+	rest := out[idx:]
+	end := strings.IndexAny(rest, " \n\t")
+	if end > 0 {
+		rest = rest[:end]
+	}
+	u, err := url.Parse(rest)
+	if err != nil {
+		t.Fatalf("parse printed URL: %v", err)
+	}
+	return u.Query().Get("state")
 }
 
-func setOpenBrowser(t *testing.T, fn func(string) error) {
-	t.Helper()
-	prev := codexoauth.OpenBrowser
-	codexoauth.OpenBrowser = fn
-	t.Cleanup(func() { codexoauth.OpenBrowser = prev })
+// safeBuffer is a bytes.Buffer guarded by a mutex for concurrent access.
+type safeBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
 }
 
-func setSeamLoginContext(t *testing.T, fn func(codexoauth.LoginContext)) {
-	t.Helper()
-	prev := codexoauth.SeamLoginContext
-	codexoauth.SeamLoginContext = fn
-	t.Cleanup(func() { codexoauth.SeamLoginContext = prev })
+func (sb *safeBuffer) Write(p []byte) (int, error) {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.Write(p)
 }
 
-func setLoginTimeout(t *testing.T, d time.Duration) {
-	t.Helper()
-	prev := codexoauth.LoginTimeout
-	codexoauth.LoginTimeout = d
-	t.Cleanup(func() { codexoauth.LoginTimeout = prev })
+func (sb *safeBuffer) String() string {
+	sb.mu.Lock()
+	defer sb.mu.Unlock()
+	return sb.buf.String()
 }
 
-func TestLogin_HappyPath_DriversCallbackAndExchange(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"` + mkLoginJWT(t, "u@x.com", "acct-1") + `","refresh_token":"new_rt","id_token":"` + mkLoginJWT(t, "u@x.com", "acct-1") + `","expires_in":600}`))
-	}))
-	defer srv.Close()
-	prevTok := codexoauth.TokenURL
-	codexoauth.TokenURL = srv.URL
-	defer func() { codexoauth.TokenURL = prevTok }()
+// loginAsync starts Login in a goroutine, drains stdout into a
+// mutex-protected buffer, waits for the prompt to appear, then writes
+// the URL returned by pastedURL(state) to stdin and closes it.
+// Returns channels for the credential and error.
+func loginAsync(t *testing.T, pastedURL func(state string) string) (<-chan *store.Credential, <-chan error) {
+	t.Helper()
+	prIn, pwIn := io.Pipe()
+	prOut, pwOut := io.Pipe()
 
-	setLoginEphemeral(t)
-	setOpenBrowser(t, func(string) error { return nil })
+	credCh := make(chan *store.Credential, 1)
+	errCh := make(chan error, 1)
 
-	captured := make(chan codexoauth.LoginContext, 1)
-	setSeamLoginContext(t, func(c codexoauth.LoginContext) { captured <- c })
-
-	var wg sync.WaitGroup
-	wg.Add(1)
 	go func() {
-		defer wg.Done()
-		c := <-captured
-		_, _ = http.Get("http://" + c.BindAddr + "/auth/callback?code=THE_CODE&state=" + c.State)
+		c, e := codexoauth.Login(context.Background(), pwOut, prIn)
+		_ = pwOut.Close()
+		credCh <- c
+		errCh <- e
 	}()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cred, err := codexoauth.Login(ctx)
-	wg.Wait()
-	if err != nil {
+	out := &safeBuffer{}
+	drainDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(out, prOut)
+		close(drainDone)
+	}()
+
+	go func() {
+		deadline := time.Now().Add(2 * time.Second)
+		var state string
+		for time.Now().Before(deadline) {
+			s := out.String()
+			if strings.Contains(s, "https://auth.openai.com/oauth/authorize?") && strings.Contains(s, "> ") {
+				state = findStateInPrintedURL(t, s)
+				break
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		pasted := pastedURL(state)
+		_, _ = pwIn.Write([]byte(pasted))
+		_ = pwIn.Close()
+		<-drainDone
+	}()
+
+	return credCh, errCh
+}
+
+func tokenServer(t *testing.T, email, accountID string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		tok := mkLoginJWT(t, email, accountID)
+		_, _ = w.Write([]byte(`{"access_token":"` + tok + `","refresh_token":"new_rt","id_token":"` + tok + `","expires_in":600}`))
+	}))
+}
+
+func setTokenURLStr(t *testing.T, u string) {
+	t.Helper()
+	prev := codexoauth.TokenURL
+	codexoauth.TokenURL = u
+	t.Cleanup(func() { codexoauth.TokenURL = prev })
+}
+
+// ---- Login integration tests ----
+
+func TestLogin_HappyPath_PasteURL(t *testing.T) {
+	srv := tokenServer(t, "u@x.com", "acct-1")
+	defer srv.Close()
+	setTokenURLStr(t, srv.URL)
+
+	credCh, errCh := loginAsync(t, func(state string) string {
+		if state == "" {
+			t.Errorf("state was empty — printed URL not captured in time")
+		}
+		return "http://localhost:1455/auth/callback?code=THE_CODE&state=" + state + "\n"
+	})
+
+	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	if cred.Tokens == nil || cred.Tokens.AccountID != "acct-1" {
+	cred := <-credCh
+	if cred == nil || cred.Tokens == nil || cred.Tokens.AccountID != "acct-1" {
 		t.Fatalf("account_id missing: %+v", cred)
-	}
-	if cred.Name != "u@x.com" {
-		t.Fatalf("name: %q", cred.Name)
 	}
 	if cred.Provider != "codex" {
 		t.Fatalf("provider: %q", cred.Provider)
 	}
+	if cred.Name != "u@x.com" {
+		t.Fatalf("name: %q", cred.Name)
+	}
 	if cred.AuthMode != "chatgpt" {
-		t.Fatalf("auth_mode")
+		t.Fatalf("auth_mode: %q", cred.AuthMode)
 	}
 	if cred.OpenAIAPIKey != nil {
-		t.Fatalf("OPENAI_API_KEY: want nil")
+		t.Fatal("OpenAIAPIKey: want nil")
 	}
 	if cred.LastRefresh == "" {
-		t.Fatalf("last_refresh empty")
+		t.Fatal("LastRefresh empty")
 	}
 }
 
-func TestLogin_TimeoutPropagates(t *testing.T) {
-	setLoginEphemeral(t)
-	setOpenBrowser(t, func(string) error { return nil })
-	setLoginTimeout(t, 50*time.Millisecond)
-	_, err := codexoauth.Login(context.Background())
-	if !errors.Is(err, codexoauth.ErrCallbackTimeout) {
-		t.Fatalf("want ErrCallbackTimeout; got %v", err)
-	}
-}
-
-func TestLogin_BrowserFailureContinues(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"access_token":"` + mkLoginJWT(t, "u@x.com", "acct-2") + `","refresh_token":"r","id_token":"` + mkLoginJWT(t, "u@x.com", "acct-2") + `","expires_in":600}`))
-	}))
+func TestLogin_EmptyEmail_FallsBackToUUIDPrefix(t *testing.T) {
+	srv := tokenServer(t, "", "acct-3")
 	defer srv.Close()
-	prev := codexoauth.TokenURL
-	codexoauth.TokenURL = srv.URL
-	defer func() { codexoauth.TokenURL = prev }()
+	setTokenURLStr(t, srv.URL)
 
-	setLoginEphemeral(t)
-	setOpenBrowser(t, func(string) error { return errors.New("no display") })
+	credCh, errCh := loginAsync(t, func(state string) string {
+		return "http://localhost:1455/auth/callback?code=c&state=" + state + "\n"
+	})
 
-	captured := make(chan codexoauth.LoginContext, 1)
-	setSeamLoginContext(t, func(c codexoauth.LoginContext) { captured <- c })
-
-	go func() {
-		c := <-captured
-		_, _ = http.Get("http://" + c.BindAddr + "/auth/callback?code=c&state=" + c.State)
-	}()
-	cred, err := codexoauth.Login(context.Background())
-	if err != nil {
+	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
-	if cred.Tokens.AccountID != "acct-2" {
-		t.Fatal("account_id wrong")
+	cred := <-credCh
+	if cred == nil || cred.Name == "" {
+		t.Fatal("name should fall back to uuid prefix, got empty")
+	}
+	if len(cred.Name) > 8 {
+		t.Fatalf("uuid prefix should be ≤8 chars; got %q", cred.Name)
 	}
 }
 
-func TestLogin_ExchangeCodeError_PropagatesErr(t *testing.T) {
-	// Token endpoint returns a 400 so ExchangeCode returns an error.
+func TestLogin_ExchangeError_Propagates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = w.Write([]byte(`{"error":"invalid_grant"}`))
 	}))
 	defer srv.Close()
-	prev := codexoauth.TokenURL
-	codexoauth.TokenURL = srv.URL
-	defer func() { codexoauth.TokenURL = prev }()
+	setTokenURLStr(t, srv.URL)
 
-	setLoginEphemeral(t)
-	setOpenBrowser(t, func(string) error { return nil })
+	credCh, errCh := loginAsync(t, func(state string) string {
+		return "http://localhost:1455/auth/callback?code=bad&state=" + state + "\n"
+	})
+	_ = <-credCh
 
-	captured := make(chan codexoauth.LoginContext, 1)
-	setSeamLoginContext(t, func(c codexoauth.LoginContext) { captured <- c })
-
-	go func() {
-		c := <-captured
-		_, _ = http.Get("http://" + c.BindAddr + "/auth/callback?code=bad&state=" + c.State)
-	}()
-	_, err := codexoauth.Login(context.Background())
-	if err == nil {
+	if err := <-errCh; err == nil {
 		t.Fatal("expected error from ExchangeCode, got nil")
 	}
 }
 
-func TestLogin_PortInUse_PropagatesErrPortInUse(t *testing.T) {
-	// Bind a listener on 127.0.0.1:0, get the port, then point ListenAddr
-	// at that same port to trigger the "address already in use" path.
-	held, err := listenFreePort()
-	if err != nil {
-		t.Skip("could not bind ephemeral port:", err)
-	}
-	defer held.Close()
-	addr := held.Addr().String()
+func TestLogin_StateMismatch(t *testing.T) {
+	prIn, pwIn := io.Pipe()
+	prOut, pwOut := io.Pipe()
+	done := make(chan error, 1)
+	go func() {
+		_, e := codexoauth.Login(context.Background(), pwOut, prIn)
+		_ = pwOut.Close()
+		done <- e
+	}()
+	// Drain stdout
+	go io.Copy(io.Discard, prOut) //nolint:errcheck
 
-	prev := codexoauth.ListenAddr
-	codexoauth.ListenAddr = addr
-	defer func() { codexoauth.ListenAddr = prev }()
+	// Wait briefly for the prompt to be printed.
+	time.Sleep(100 * time.Millisecond)
+	pasted := "http://localhost:1455/auth/callback?code=abc&state=WRONG\n"
+	_, _ = pwIn.Write([]byte(pasted))
+	_ = pwIn.Close()
 
-	_, loginErr := codexoauth.Login(context.Background())
-	if !errors.Is(loginErr, codexoauth.ErrPortInUse) {
-		t.Fatalf("want ErrPortInUse; got %v", loginErr)
+	if err := <-done; !errors.Is(err, codexoauth.ErrStateMismatch) {
+		t.Fatalf("want ErrStateMismatch; got %v", err)
 	}
 }
 
-func TestLogin_EmptyEmail_FallsBackToUUIDPrefix(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		// id_token has empty email
-		emptyEmail := mkLoginJWT(t, "", "acct-3")
-		_, _ = w.Write([]byte(`{"access_token":"` + emptyEmail + `","refresh_token":"r","id_token":"` + emptyEmail + `","expires_in":600}`))
-	}))
-	defer srv.Close()
-	prev := codexoauth.TokenURL
-	codexoauth.TokenURL = srv.URL
-	defer func() { codexoauth.TokenURL = prev }()
-	setLoginEphemeral(t)
-	setOpenBrowser(t, func(string) error { return nil })
+func TestLogin_StdinEOF_Errors(t *testing.T) {
+	stdout := &bytes.Buffer{}
+	stdin := strings.NewReader("") // immediate EOF, no content
+	_, err := codexoauth.Login(context.Background(), stdout, stdin)
+	if err == nil {
+		t.Fatal("expected error on EOF")
+	}
+}
 
-	captured := make(chan codexoauth.LoginContext, 1)
-	setSeamLoginContext(t, func(c codexoauth.LoginContext) { captured <- c })
+// TestLogin_ParseCallbackError_Propagates covers the parseCallbackURL
+// error path inside Login (lines 47-49): paste an access_denied URL
+// so parseCallbackURL returns ErrAuthDenied before the state check.
+func TestLogin_ParseCallbackError_Propagates(t *testing.T) {
+	prIn, pwIn := io.Pipe()
+	prOut, pwOut := io.Pipe()
+	done := make(chan error, 1)
 	go func() {
-		c := <-captured
-		_, _ = http.Get("http://" + c.BindAddr + "/auth/callback?code=c&state=" + c.State)
+		_, e := codexoauth.Login(context.Background(), pwOut, prIn)
+		_ = pwOut.Close()
+		done <- e
 	}()
-	cred, err := codexoauth.Login(context.Background())
+	go io.Copy(io.Discard, prOut) //nolint:errcheck
+
+	time.Sleep(100 * time.Millisecond)
+	// Paste an access_denied URL — parseCallbackURL returns ErrAuthDenied
+	// before the state equality check, covering the error-return branch.
+	_, _ = pwIn.Write([]byte("http://localhost:1455/auth/callback?error=access_denied\n"))
+	_ = pwIn.Close()
+
+	if err := <-done; !errors.Is(err, codexoauth.ErrAuthDenied) {
+		t.Fatalf("want ErrAuthDenied; got %v", err)
+	}
+}
+
+// ---- parseCallbackURL unit tests (via exported seam) ----
+
+func TestParseCallbackURL_HappyPath(t *testing.T) {
+	code, state, err := codexoauth.ExportedParseCallbackURL("http://localhost:1455/auth/callback?code=abc&state=xyz")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cred.Name == "" {
-		t.Fatal("name should fall back to uuid prefix, got empty")
+	if code != "abc" || state != "xyz" {
+		t.Fatalf("got code=%q state=%q", code, state)
 	}
-	if len(cred.Name) > 8 {
-		t.Fatalf("uuid prefix should be ≤8 chars; got %q", cred.Name)
+}
+
+func TestParseCallbackURL_AccessDenied(t *testing.T) {
+	_, _, err := codexoauth.ExportedParseCallbackURL("http://localhost:1455/auth/callback?error=access_denied&state=x")
+	if !errors.Is(err, codexoauth.ErrAuthDenied) {
+		t.Fatalf("want ErrAuthDenied; got %v", err)
+	}
+}
+
+func TestParseCallbackURL_OtherError_Wraps(t *testing.T) {
+	_, _, err := codexoauth.ExportedParseCallbackURL("http://localhost:1455/auth/callback?error=server_error&error_description=oops&state=x")
+	if !errors.Is(err, codexoauth.ErrTokenEndpoint) {
+		t.Fatalf("want ErrTokenEndpoint; got %v", err)
+	}
+	if !strings.Contains(err.Error(), "oops") {
+		t.Fatalf("missing description: %v", err)
+	}
+}
+
+func TestParseCallbackURL_OtherError_NoDesc_FallsBackToCode(t *testing.T) {
+	_, _, err := codexoauth.ExportedParseCallbackURL("http://localhost:1455/auth/callback?error=server_error")
+	if err == nil || !strings.Contains(err.Error(), "server_error") {
+		t.Fatalf("want server_error in msg; got %v", err)
+	}
+}
+
+func TestParseCallbackURL_NoCode_Errors(t *testing.T) {
+	_, _, err := codexoauth.ExportedParseCallbackURL("http://localhost:1455/auth/callback?state=x")
+	if err == nil || !strings.Contains(err.Error(), "no code") {
+		t.Fatalf("want no-code error; got %v", err)
+	}
+}
+
+func TestParseCallbackURL_Empty_Errors(t *testing.T) {
+	_, _, err := codexoauth.ExportedParseCallbackURL("   ")
+	if err == nil || !strings.Contains(err.Error(), "empty") {
+		t.Fatalf("want empty error; got %v", err)
+	}
+}
+
+func TestParseCallbackURL_BadURL_Errors(t *testing.T) {
+	_, _, err := codexoauth.ExportedParseCallbackURL("not://a valid url with spaces")
+	if err == nil {
+		t.Fatal("expected parse error")
 	}
 }

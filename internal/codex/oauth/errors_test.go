@@ -9,8 +9,6 @@ import (
 
 func TestErrorSentinels_AreDistinctNonNil(t *testing.T) {
 	all := []error{
-		codexoauth.ErrPortInUse,
-		codexoauth.ErrCallbackTimeout,
 		codexoauth.ErrStateMismatch,
 		codexoauth.ErrAuthDenied,
 		codexoauth.ErrRefreshRotated,
