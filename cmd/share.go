@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/credflow"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -154,6 +155,23 @@ func runShareSingle(cred *store.Credential, opts share.Options) error {
 	if cred.ProviderName() != "claude" {
 		return fmt.Errorf("ccm share is claude-only in v1.17 (got provider: %s)", cred.ProviderName())
 	}
+
+	// Pre-flight refresh: rotate access token if expiring soon. Routes
+	// through credflow which dispatches per-provider (claude / codex) and
+	// handles codex's rotating refresh-token model with file locking.
+	if cred.IsExpired() || cred.IsExpiringSoon() {
+		fmt.Fprintln(os.Stderr, "Credential is expired or expiring soon — refreshing...")
+		refreshed, err := credflow.RefreshFn(cred.ID)
+		if err != nil {
+			// Non-fatal: continue with the existing token. The share proxy's
+			// in-session refresh path will retry. Surface the warning so the
+			// operator can diagnose.
+			fmt.Fprintf(os.Stderr, "warning: pre-flight refresh failed: %v\n", err)
+		} else {
+			cred = refreshed
+		}
+	}
+
 	sess, err := share.StartSession(cred, opts)
 	if err != nil {
 		return wrapPinnedTokenErr(err)
