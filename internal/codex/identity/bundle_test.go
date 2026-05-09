@@ -83,8 +83,15 @@ func TestBundle_ApplyNilTokens(t *testing.T) {
 	b := identity.New(cred)
 	req := newReq(t)
 	b.Apply(req)
-	// Authorization is set ("Bearer " — AccessToken returns "" with nil
-	// Tokens — no panic). chatgpt-account-id must be absent.
+	// With nil Tokens, cred.AccessToken() returns "" (no panic), so
+	// Authorization is still written as "Bearer " and the static
+	// headers still flow. Only chatgpt-account-id is suppressed.
+	if got := req.Header.Get("Authorization"); got != "Bearer " {
+		t.Errorf("Authorization = %q, want %q", got, "Bearer ")
+	}
+	if got := req.Header.Get("Version"); got != identity.StaticVersion {
+		t.Errorf("Version = %q, want %q", got, identity.StaticVersion)
+	}
 	if got := req.Header.Get("chatgpt-account-id"); got != "" {
 		t.Errorf("chatgpt-account-id should be absent when Tokens is nil, got %q", got)
 	}
