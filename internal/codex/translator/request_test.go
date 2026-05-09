@@ -365,3 +365,88 @@ func jsonEqual(a, b any) bool {
 	jb, _ := json.Marshal(b)
 	return string(ja) == string(jb)
 }
+
+func TestTranslateRequest_HoistSystemToInstructions(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","system":"be helpful","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, want := m["instructions"], "be helpful"; got != want {
+		t.Errorf("instructions = %v, want %q", got, want)
+	}
+	input := m["input"].([]any)
+	for _, item := range input {
+		it := item.(map[string]any)
+		if it["role"] == "developer" {
+			t.Errorf("system content should NOT produce a developer-role item; got %v", it)
+		}
+	}
+}
+
+func TestTranslateRequest_FallbackInstructionsWhenNoSystem(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, want := m["instructions"], "You are a ChatGPT agent."; got != want {
+		t.Errorf("instructions = %v, want %q", got, want)
+	}
+}
+
+func TestTranslateRequest_FallbackInstructionsWhenSystemIsEmpty(t *testing.T) {
+	cases := []string{
+		`{"model":"claude-opus-4.7","system":"","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		`{"model":"claude-opus-4.7","system":[],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+		`{"model":"claude-opus-4.7","system":[{"type":"text","text":""}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
+	}
+	for i, body := range cases {
+		got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+		if err != nil {
+			t.Fatalf("case %d: unexpected error: %v", i, err)
+		}
+		var m map[string]any
+		if err := json.Unmarshal(got, &m); err != nil {
+			t.Fatalf("case %d: unmarshal: %v", i, err)
+		}
+		if got, want := m["instructions"], "You are a ChatGPT agent."; got != want {
+			t.Errorf("case %d: instructions = %v, want %q", i, got, want)
+		}
+	}
+}
+
+func TestTranslateRequest_PromptCacheKeyFromSessionID(t *testing.T) {
+	const sessionID = "019e0a01-5569-7480-8945-f61f37958342"
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5", SessionID: sessionID})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got, want := m["prompt_cache_key"], sessionID; got != want {
+		t.Errorf("prompt_cache_key = %v, want %q", got, want)
+	}
+}
+
+func TestTranslateRequest_NoPromptCacheKeyWhenSessionIDEmpty(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(string(got), "prompt_cache_key") {
+		t.Errorf("expected no prompt_cache_key in output when SessionID is empty: %s", string(got))
+	}
+}
