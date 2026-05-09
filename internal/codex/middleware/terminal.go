@@ -82,12 +82,14 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	var outBody []byte
 	if matched {
-		// Translate Anthropic Messages → OpenAI Responses.
+		// Translate Anthropic Messages → OpenAI Responses. Per spec
+		// 2026-05-09-codex-omniroute-pivot §5.2 InstallationID and
+		// PromptCacheKey were removed from RequestOpts. ServiceTier
+		// passthrough from Capture is preserved here pending Task 4
+		// (which removes the Capture field entirely).
 		reqOpts := translator.RequestOpts{
-			TargetModel:    effectiveModel,
-			InstallationID: t.opts.Capture.InstallationID,
-			ServiceTier:    t.opts.Capture.ServiceTier,
-			PromptCacheKey: derivePromptCacheKey(r, t.opts.Capture.SessionID),
+			TargetModel: effectiveModel,
+			ServiceTier: t.opts.Capture.ServiceTier,
 		}
 		outBody, err = translator.TranslateRequest(body, reqOpts)
 		if err != nil {
