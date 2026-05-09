@@ -7,12 +7,14 @@ import (
 )
 
 // RequestOpts configures TranslateRequest. Per spec
-// 2026-05-09-codex-omniroute-pivot §5.2, the InstallationID and
-// PromptCacheKey fields from sub-project B are dropped — neither
-// field is emitted in the outbound body anymore.
+// 2026-05-09-codex-omniroute-bridging §5.4:
+//   - SessionID is the inbound X-Claude-Code-Session-Id (UUIDv7).
+//     Populates the outbound `prompt_cache_key` body field when
+//     non-empty; omitted otherwise.
 type RequestOpts struct {
-	TargetModel string // post-alias model name to send upstream
-	ServiceTier string // verbatim into outbound; "" → field omitted
+	TargetModel string
+	ServiceTier string
+	SessionID   string
 }
 
 // Errors returned by TranslateRequest.
@@ -39,13 +41,21 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 		ServiceTier: opts.ServiceTier,
 	}
 
-	// system → developer message at index 0 of input[]
+	// Per spec 2026-05-09-codex-omniroute-bridging §5.4: hoist
+	// inbound system content to the top-level `instructions` field
+	// (NOT a developer-role item in input[]). Fall back to OmniRoute's
+	// CODEX_CHAT_DEFAULT_INSTRUCTIONS when inbound has no system
+	// content — chatgpt.com requires the field on every request.
 	if sys := flattenSystem(in.System); sys != "" {
-		out.Input = append(out.Input, codexInput{
-			Type: "message",
-			Role: "developer",
-			Content: []codexContent{{Type: "input_text", Text: sys}},
-		})
+		out.Instructions = sys
+	} else {
+		out.Instructions = "You are a ChatGPT agent."
+	}
+
+	// Per spec §5.4: populate prompt_cache_key from the inbound session
+	// ID. Empty SessionID → field omitted via the struct's omitempty.
+	if opts.SessionID != "" {
+		out.PromptCacheKey = opts.SessionID
 	}
 
 	// messages[] → input[]
