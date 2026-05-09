@@ -37,24 +37,6 @@ func saveCodexCred(t *testing.T, id, name string) *store.Credential {
 	return cred
 }
 
-// TestLaunchCommand_CodexCredRequiresCodexCLI verifies that runLaunchLocal
-// hard-fails with a useful install hint when the credential is a codex
-// credential and the codex CLI is not on PATH. The test uses an empty
-// PATH so exec.LookPath never succeeds.
-func TestLaunchCommand_CodexCredRequiresCodexCLI(t *testing.T) {
-	t.Setenv("PATH", t.TempDir()) // empty dir — no binaries present
-	setupHomeWithCcm(t)
-	saveCodexCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa", "codex-test")
-
-	err := runLaunchLocal("codex-test", nil)
-	if err == nil {
-		t.Fatal("runLaunchLocal: nil err, want hard-fail for missing codex CLI")
-	}
-	if !strings.Contains(err.Error(), "codex CLI is required") {
-		t.Errorf("err = %v; want 'codex CLI is required' in message", err)
-	}
-}
-
 // TestLaunchCommand_ModelAliasConflictRejected verifies that conflicting
 // --model-alias patterns (overlapping source globs) cause runLaunchLocal
 // to return an error at parse time, before any subprocess is spawned.

@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -172,18 +171,6 @@ The share session stays alive until you press Ctrl-C.`,
 }
 
 func runShareSingle(cred *store.Credential, opts share.Options) error {
-	// Codex provider: hard-fail with install hint when codex CLI is
-	// absent. Capture is impossible without it (the CLI is spawned to
-	// record its identity headers). This check runs before any session
-	// setup so the error is immediate and actionable.
-	if cred.ProviderName() == "codex" {
-		if _, err := exec.LookPath("codex"); err != nil {
-			return fmt.Errorf("codex CLI is required for this command. " +
-				"Install it from https://github.com/openai/codex; ccm uses it " +
-				"to capture identity headers for the codex backend")
-		}
-	}
-
 	// Pre-flight refresh: rotate access token if expiring soon. Routes
 	// through credflow which dispatches per-provider (claude / codex) and
 	// handles codex's rotating refresh-token model with file locking.

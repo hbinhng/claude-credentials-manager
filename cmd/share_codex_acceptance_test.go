@@ -27,7 +27,6 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"runtime"
 	"strconv"
 	"strings"
@@ -35,8 +34,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
@@ -44,16 +41,6 @@ import (
 )
 
 // ── helpers ──────────────────────────────────────────────────────────────────
-
-// minimalCodexCapture returns a minimal capture.Result for testing.
-func minimalCodexCapture() *capture.Result {
-	return &capture.Result{
-		HeaderBundle:   http.Header{},
-		InstallationID: "test-install-acceptance",
-		ServiceTier:    "priority",
-		SessionID:      "sess-acceptance-123",
-	}
-}
 
 // newTestTransport returns a bogdanfinn transport with TLS verification
 // disabled so tests can use httptest.NewTLSServer without cert setup.
@@ -69,33 +56,18 @@ func newTestTransport(t *testing.T) *transport.Transport {
 	return tr
 }
 
-// installFakeCodexCLI writes a no-op codex shell script in a temp dir,
-// prepends it to PATH, and registers cleanup. Returns the dir path.
-// Only call this on non-Windows (the tests file is already gated by
-// the //go:build !windows constraint).
-func installFakeCodexCLI(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	script := "#!/bin/sh\nexit 0\n"
-	path := dir + "/codex"
-	if err := os.WriteFile(path, []byte(script), 0755); err != nil {
-		t.Fatalf("write fake codex: %v", err)
-	}
-	t.Setenv("PATH", dir+":"+os.Getenv("PATH"))
-	return dir
-}
-
-// installCodexCaptureFake installs a SetCodexCaptureFnForTest seam that
-// returns a minimal CodexHandlers backed by the given TLS upstream. The
+// installCodexHandlersFake installs a SetCodexHandlersFnForTest seam
+// that returns a CodexHandlers backed by the given TLS upstream. The
 // returned restore function must be deferred by the caller.
-func installCodexCaptureFake(t *testing.T, upstreamURL string) func() {
+//
+// Renamed from installCodexHandlersFake per spec
+// 2026-05-09-codex-omniroute-pivot §5.6.
+func installCodexHandlersFake(t *testing.T, upstreamURL string) func() {
 	t.Helper()
 	tr := newTestTransport(t)
-	restore := share.SetCodexCaptureFnForTest(func(cred *store.Credential) (share.CodexHandlers, error) {
+	restore := share.SetCodexHandlersFnForTest(func(cred *store.Credential) (share.CodexHandlers, error) {
 		return share.CodexHandlers{
 			Cred:        cred,
-			Bundle:      identity.New(cred),
-			Capture:     minimalCodexCapture(),
 			Transport:   tr,
 			UpstreamURL: upstreamURL,
 		}, nil
@@ -157,7 +129,7 @@ func startSessionWithFakeCodexBackend(
 ) share.Session {
 	t.Helper()
 
-	restoreCapture := installCodexCaptureFake(t, upstreamURL)
+	restoreCapture := installCodexHandlersFake(t, upstreamURL)
 	t.Cleanup(restoreCapture)
 
 	// Stub the claude capture step (captureFn runs `claude -p`; skip it).
@@ -257,7 +229,6 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 		t.Skip("unix-only test")
 	}
 	setupHomeWithCcm(t)
-	installFakeCodexCLI(t)
 
 	// Fake codex backend: just return 200 for any request
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -267,7 +238,7 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	restoreCapture := installCodexCaptureFake(t, upstream.URL)
+	restoreCapture := installCodexHandlersFake(t, upstream.URL)
 	defer restoreCapture()
 
 	cred := buildCodexCredAndStore(t,
