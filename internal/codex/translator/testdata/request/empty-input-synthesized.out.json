@@ -13,5 +13,6 @@
         }
       ]
     }
-  ]
+  ],
+  "instructions": "You are a ChatGPT agent."
 }

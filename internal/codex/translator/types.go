@@ -67,16 +67,18 @@ type anthropicThinkingPref struct {
 
 // Codex request shape — the outbound /backend-api/codex/responses body.
 // Per spec 2026-05-09-codex-omniroute-bridging §5.3:
+//   - Instructions has NO omitempty: chatgpt.com requires the field on
+//     every request and rejects with 400 "Instructions are required"
+//     if missing. Translator guarantees a non-empty value via the
+//     fallback in TranslateRequest.
 //   - PromptCacheKey is re-added (was removed in pivot Task 2). Empty
-//     value is omitted via `omitempty`.
-//   - Instructions is currently `omitempty`; Task 5 removes that tag
-//     after TranslateRequest is updated to always populate the field.
+//     value is omitted via the `omitempty` tag.
 //   - client_metadata stays gone; no installation_id is emitted.
 type codexRequest struct {
 	Model          string          `json:"model"`
 	Stream         bool            `json:"stream"`
 	Input          []codexInput    `json:"input"`
-	Instructions   string          `json:"instructions,omitempty"`
+	Instructions   string          `json:"instructions"`
 	Tools          []codexTool     `json:"tools,omitempty"`
 	ToolChoice     any             `json:"tool_choice,omitempty"`
 	Reasoning      *codexReasoning `json:"reasoning,omitempty"`
