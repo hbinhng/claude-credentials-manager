@@ -284,17 +284,23 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 func TestCodexShare_WithAlias(t *testing.T) {
 	setupHomeWithCcm(t)
 
+	const claudeSessionID = "019e0a01-5569-7480-8945-f61f37958342"
+
 	// Body + synthesized identity headers + URL path seen by the fake codex
 	// backend. Captured here so post-request assertions can verify that
 	// Bundle.Apply's headers actually arrive on the upstream side and that
 	// the outbound URL path is /backend-api/codex/responses (not /v1/responses).
 	var (
-		upstreamBody       atomic.Value
-		upstreamVersion    string
-		upstreamOpenaiBeta string
-		upstreamUserAgent  string
-		upstreamAccountID  string
-		upstreamPath       string
+		upstreamBody           atomic.Value
+		upstreamVersion        string
+		upstreamOpenaiBeta     string
+		upstreamUserAgent      string
+		upstreamAccountID      string
+		upstreamPath           string
+		upstreamSessionIDSnake string
+		upstreamSessionIDKebab string
+		upstreamThreadIDSnake  string
+		upstreamThreadIDKebab  string
 	)
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -303,6 +309,10 @@ func TestCodexShare_WithAlias(t *testing.T) {
 		upstreamUserAgent = r.Header.Get("User-Agent")
 		upstreamAccountID = r.Header.Get("chatgpt-account-id")
 		upstreamPath = r.URL.Path
+		upstreamSessionIDSnake = r.Header.Get("Session_id")
+		upstreamSessionIDKebab = r.Header.Get("Session-Id")
+		upstreamThreadIDSnake = r.Header.Get("Thread_id")
+		upstreamThreadIDKebab = r.Header.Get("Thread-Id")
 		b, _ := io.ReadAll(r.Body)
 		upstreamBody.Store(string(b))
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -324,7 +334,18 @@ func TestCodexShare_WithAlias(t *testing.T) {
 		[]string{"claude-opus-*=gpt-5-codex"})
 
 	inbound := `{"model":"claude-opus-4.7","stream":true,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	resp := postToSession(t, sess, inbound)
+	tk := decodeSessionTicket(t, sess)
+	req, err := http.NewRequest("POST", sess.Reach()+"/v1/messages", strings.NewReader(inbound))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tk.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Claude-Code-Session-Id", claudeSessionID)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
@@ -368,6 +389,18 @@ func TestCodexShare_WithAlias(t *testing.T) {
 	}
 	if upstreamPath != "/backend-api/codex/responses" {
 		t.Errorf("upstream URL path = %q, want %q", upstreamPath, "/backend-api/codex/responses")
+	}
+	if upstreamSessionIDSnake != claudeSessionID {
+		t.Errorf("upstream session_id = %q, want %q", upstreamSessionIDSnake, claudeSessionID)
+	}
+	if upstreamSessionIDKebab != claudeSessionID {
+		t.Errorf("upstream session-id = %q, want %q", upstreamSessionIDKebab, claudeSessionID)
+	}
+	if upstreamThreadIDSnake != claudeSessionID {
+		t.Errorf("upstream thread_id = %q, want %q", upstreamThreadIDSnake, claudeSessionID)
+	}
+	if upstreamThreadIDKebab != claudeSessionID {
+		t.Errorf("upstream thread-id = %q, want %q", upstreamThreadIDKebab, claudeSessionID)
 	}
 }
 
