@@ -287,24 +287,31 @@ func TestTerminal_StreamFalseBuffersCollected(t *testing.T) {
 
 type fakeBearerSrc struct {
 	refreshed int
-	token     string
+	token     string // value to return AND, when cred is non-nil, write into cred.Tokens.AccessToken
 	err       error
+	cred      *store.Credential // optional: when non-nil, Fresh mutates cred.Tokens.AccessToken
 }
 
 func (f *fakeBearerSrc) Fresh() (string, error) {
 	f.refreshed++
+	if f.cred != nil && f.cred.Tokens != nil && f.err == nil {
+		f.cred.Tokens.AccessToken = f.token
+	}
 	return f.token, f.err
 }
 
 func TestTerminal_401TriggersRefreshAndRetry(t *testing.T) {
 	var requestCount int
+	var firstAuth, secondAuth string
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		if requestCount == 1 {
+			firstAuth = r.Header.Get("Authorization")
 			w.WriteHeader(http.StatusUnauthorized)
 			io.WriteString(w, `{"error":{"type":"auth_error","message":"unauthorized"}}`)
 			return
 		}
+		secondAuth = r.Header.Get("Authorization")
 		// Second attempt succeeds.
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
@@ -316,12 +323,16 @@ func TestTerminal_401TriggersRefreshAndRetry(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	bearer := &fakeBearerSrc{token: "fresh-tok"}
+	// Single shared cred, mirroring production wiring (proxy passes the
+	// same *store.Credential into Cred and Bundle in
+	// terminalForProvider).
+	cred := minimalCred("old-tok")
+	bearer := &fakeBearerSrc{token: "fresh-tok", cred: cred}
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
-		Cred:        minimalCred("old-tok"),
+		Cred:        cred,
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(minimalCred("tok")),
+		Bundle:      identity.New(cred),
 		UpstreamURL: upstream.URL,
 		BearerSrc:   bearer,
 	})
@@ -340,6 +351,12 @@ func TestTerminal_401TriggersRefreshAndRetry(t *testing.T) {
 	}
 	if rr.Code != http.StatusOK {
 		t.Errorf("status = %d, want 200", rr.Code)
+	}
+	if firstAuth != "Bearer old-tok" {
+		t.Errorf("first attempt Authorization = %q, want %q", firstAuth, "Bearer old-tok")
+	}
+	if secondAuth != "Bearer fresh-tok" {
+		t.Errorf("second attempt Authorization = %q, want %q (token must rotate after Fresh)", secondAuth, "Bearer fresh-tok")
 	}
 }
 
