@@ -211,8 +211,6 @@ Anthropic shape.
 ### Requirements
 
 - A logged-in codex credential (`ccm login codex`)
-- `codex` CLI on PATH — used for per-session identity capture. Install
-  from <https://github.com/openai/codex>.
 
 ### Quick start
 
