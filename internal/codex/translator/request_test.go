@@ -220,18 +220,6 @@ func TestTranslateRequest_ThinkingDisabled(t *testing.T) {
 	}
 }
 
-func TestTranslateRequest_NoInstallationID(t *testing.T) {
-	// No InstallationID → no client_metadata field
-	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if strings.Contains(string(got), "client_metadata") {
-		t.Errorf("no installation ID should produce no client_metadata: %s", string(got))
-	}
-}
-
 func TestTranslateRequest_SystemEmptyBlocks(t *testing.T) {
 	// system as array but all blocks have empty text → no developer message
 	body := `{"model":"claude-opus-4.7","system":[{"type":"text","text":""}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`

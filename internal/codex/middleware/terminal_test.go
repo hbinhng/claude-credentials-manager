@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -972,38 +971,3 @@ func TestTerminal_UsageTeeWired(t *testing.T) {
 	}
 }
 
-// ── TestTerminal_PromptCacheKeyFromHeader ─────────────────────────────────────
-
-func TestTerminal_PromptCacheKeyFromHeader(t *testing.T) {
-	var receivedPromptCacheKey string
-	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var got map[string]any
-		json.Unmarshal(body, &got)
-		receivedPromptCacheKey = fmt.Sprint(got["prompt_cache_key"])
-		w.Header().Set("Content-Type", "text/event-stream")
-		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
-		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\"}\n\n")
-		io.WriteString(w, "data: [DONE]\n\n")
-	}))
-	defer upstream.Close()
-
-	term := codexmw.NewTerminal(codexmw.TerminalOpts{
-		Cred:        minimalCred("tok"),
-		Transport:   newTransport(t),
-		Capture:     &capture.Result{SessionID: "fallback-session"},
-		Bundle:      identity.New(minimalCred("tok")),
-		UpstreamURL: upstream.URL,
-	})
-
-	req := httptest.NewRequest("POST", "/v1/messages",
-		bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
-	req.Header.Set("X-Claude-Code-Session-Id", "header-session")
-	rr := httptest.NewRecorder()
-
-	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
-
-	if receivedPromptCacheKey != "header-session" {
-		t.Errorf("prompt_cache_key = %q, want %q", receivedPromptCacheKey, "header-session")
-	}
-}

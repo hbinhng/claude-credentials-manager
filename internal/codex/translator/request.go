@@ -10,10 +10,8 @@ import (
 // verbatim from the capture/identity layer; the translator does not
 // synthesize them.
 type RequestOpts struct {
-	TargetModel    string // post-alias model name to send upstream
-	InstallationID string // verbatim from capture
-	ServiceTier    string // verbatim from capture; "" → omit field
-	PromptCacheKey string // X-Claude-Code-Session-Id or captured session_id
+	TargetModel string // post-alias model name to send upstream
+	ServiceTier string // verbatim from capture; "" → omit field
 }
 
 // Errors returned by TranslateRequest.
@@ -34,16 +32,10 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 	}
 
 	out := codexRequest{
-		Model:          opts.TargetModel,
-		Stream:         true, // forced per spec §5.1
-		Store:          false,
-		ServiceTier:    opts.ServiceTier,
-		PromptCacheKey: opts.PromptCacheKey,
-	}
-	if opts.InstallationID != "" {
-		out.ClientMetadata = map[string]any{
-			"x-codex-installation-id": opts.InstallationID,
-		}
+		Model:       opts.TargetModel,
+		Stream:      true, // forced per spec §5.1
+		Store:       false,
+		ServiceTier: opts.ServiceTier,
 	}
 
 	// system → developer message at index 0 of input[]

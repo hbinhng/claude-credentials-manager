@@ -67,17 +67,15 @@ type anthropicThinkingPref struct {
 
 // Codex request shape — the outbound /v1/responses body.
 type codexRequest struct {
-	Model          string         `json:"model"`
-	Stream         bool           `json:"stream"`
-	Input          []codexInput   `json:"input"`
-	Tools          []codexTool    `json:"tools,omitempty"`
-	ToolChoice     any            `json:"tool_choice,omitempty"`
-	Reasoning      *codexReasoning `json:"reasoning,omitempty"`
-	Store          bool           `json:"store"`
-	ServiceTier    string         `json:"service_tier,omitempty"`
-	PromptCacheKey string         `json:"prompt_cache_key,omitempty"`
-	ClientMetadata map[string]any `json:"client_metadata,omitempty"`
-	Instructions   string         `json:"instructions,omitempty"` // we leave empty per spec §5.1
+	Model        string          `json:"model"`
+	Stream       bool            `json:"stream"`
+	Input        []codexInput    `json:"input"`
+	Tools        []codexTool     `json:"tools,omitempty"`
+	ToolChoice   any             `json:"tool_choice,omitempty"`
+	Reasoning    *codexReasoning `json:"reasoning,omitempty"`
+	Store        bool            `json:"store"`
+	ServiceTier  string          `json:"service_tier,omitempty"`
+	Instructions string          `json:"instructions,omitempty"` // we leave empty per spec §5.1
 }
 
 type codexInput struct {
