@@ -32,5 +32,7 @@
   "tool_choice": {
     "type": "function",
     "name": "search"
-  }
+  },
+  "instructions": "You are a ChatGPT agent.",
+  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342"
 }

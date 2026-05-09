@@ -2,17 +2,8 @@
   "model": "gpt-5-codex",
   "stream": true,
   "store": false,
+  "instructions": "You are a helpful assistant.",
   "input": [
-    {
-      "type": "message",
-      "role": "developer",
-      "content": [
-        {
-          "type": "input_text",
-          "text": "You are a helpful assistant."
-        }
-      ]
-    },
     {
       "type": "message",
       "role": "user",
@@ -23,5 +14,6 @@
         }
       ]
     }
-  ]
+  ],
+  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342"
 }
