@@ -212,6 +212,38 @@ func TestIntToStr(t *testing.T) {
 // store.go
 // ---------------------------------------------------------------------------
 
+func TestDir_DefaultsToHomeCcm(t *testing.T) {
+	tmp := setHome(t)
+	t.Setenv("CCM_HOME", "")
+	want := filepath.Join(tmp, ".ccm")
+	if got := Dir(); got != want {
+		t.Fatalf("Dir() = %q, want %q", got, want)
+	}
+}
+
+func TestDir_RespectsCCMHome(t *testing.T) {
+	setHome(t)
+	custom := filepath.Join(t.TempDir(), "custom-ccm")
+	t.Setenv("CCM_HOME", custom)
+	if got := Dir(); got != custom {
+		t.Fatalf("Dir() = %q, want %q", got, custom)
+	}
+}
+
+func TestSaveWritesIntoCCMHome(t *testing.T) {
+	setHome(t)
+	custom := filepath.Join(t.TempDir(), "custom-ccm")
+	t.Setenv("CCM_HOME", custom)
+
+	cred := makeCred("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "x", time.Now().Add(time.Hour).UnixMilli())
+	if err := Save(cred); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(custom, cred.ID+".credentials.json")); err != nil {
+		t.Fatalf("expected cred file under CCM_HOME: %v", err)
+	}
+}
+
 func TestSaveAndLoad(t *testing.T) {
 	home := setHome(t)
 

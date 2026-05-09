@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 // pinnedCloudflaredVersion is the cloudflared release we download if the
@@ -53,14 +55,15 @@ func EnsureCloudflared() (string, error) {
 	return managed, nil
 }
 
-// managedCloudflaredPath returns ~/.ccm/bin/cloudflared[.exe].
+// managedCloudflaredPath returns ccm's managed cloudflared binary
+// path, rooted at store.Dir() (~/.ccm or $CCM_HOME).
 func managedCloudflaredPath() string {
-	home, _ := os.UserHomeDir()
 	name := "cloudflared"
 	if runtime.GOOS == "windows" {
+		// coverage: GOOS=windows branch is not exercised by Linux CI.
 		name = "cloudflared.exe"
 	}
-	return filepath.Join(home, ".ccm", "bin", name)
+	return filepath.Join(store.Dir(), "bin", name)
 }
 
 // cloudflaredAssetName returns the release-asset filename for the current
