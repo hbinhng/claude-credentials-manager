@@ -66,21 +66,23 @@ type anthropicThinkingPref struct {
 }
 
 // Codex request shape — the outbound /backend-api/codex/responses body.
-// Per spec 2026-05-09-codex-omniroute-pivot §5.2 we drop
-// `prompt_cache_key` and `client_metadata` (OmniRoute production
-// evidence shows chatgpt.com tolerates synthesis-only requests; these
-// fields are not part of OmniRoute's outbound shape). Removing them
-// from the type makes accidental re-introduction impossible.
+// Per spec 2026-05-09-codex-omniroute-bridging §5.3:
+//   - PromptCacheKey is re-added (was removed in pivot Task 2). Empty
+//     value is omitted via `omitempty`.
+//   - Instructions is currently `omitempty`; Task 5 removes that tag
+//     after TranslateRequest is updated to always populate the field.
+//   - client_metadata stays gone; no installation_id is emitted.
 type codexRequest struct {
-	Model        string          `json:"model"`
-	Stream       bool            `json:"stream"`
-	Input        []codexInput    `json:"input"`
-	Tools        []codexTool     `json:"tools,omitempty"`
-	ToolChoice   any             `json:"tool_choice,omitempty"`
-	Reasoning    *codexReasoning `json:"reasoning,omitempty"`
-	Store        bool            `json:"store"`
-	ServiceTier  string          `json:"service_tier,omitempty"`
-	Instructions string          `json:"instructions,omitempty"` // we leave empty per spec §5.1
+	Model          string          `json:"model"`
+	Stream         bool            `json:"stream"`
+	Input          []codexInput    `json:"input"`
+	Instructions   string          `json:"instructions,omitempty"`
+	Tools          []codexTool     `json:"tools,omitempty"`
+	ToolChoice     any             `json:"tool_choice,omitempty"`
+	Reasoning      *codexReasoning `json:"reasoning,omitempty"`
+	Store          bool            `json:"store"`
+	ServiceTier    string          `json:"service_tier,omitempty"`
+	PromptCacheKey string          `json:"prompt_cache_key,omitempty"`
 }
 
 type codexInput struct {
