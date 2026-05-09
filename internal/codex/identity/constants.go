@@ -21,3 +21,18 @@ const (
 	StaticOpenaiBeta = "responses=experimental"
 	StaticUserAgent  = "codex-cli/0.129.0 (Linux; x86_64)"
 )
+
+// Static parity headers shipped with ccm. Mirror what the real codex
+// CLI emits per OpenAI's openai/codex repo.
+//
+//   originator: identifies the binary type ("codex_cli_rs" for the Rust
+//     CLI). chatgpt.com appears not to gate on this, but every CLI
+//     request sets it.
+//   X-Codex-Beta-Features: comma-separated list of beta features the
+//     client supports. The current production codex CLI advertises
+//     "responses_websockets". chatgpt.com tolerates plain HTTP POST
+//     against the responses endpoint regardless.
+const (
+	StaticOriginator        = "codex_cli_rs"
+	StaticCodexBetaFeatures = "responses_websockets"
+)
