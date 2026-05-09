@@ -1050,3 +1050,106 @@ func TestTerminal_UsageTeeWired(t *testing.T) {
 	}
 }
 
+// ── TestApplyDynamicCodexHeaders_PopulatesAllFromSession ─────────────────────
+
+func TestApplyDynamicCodexHeaders_PopulatesAllFromSession(t *testing.T) {
+	const sessionID = "019e0a01-5569-7480-8945-f61f37958342"
+	req, _ := http.NewRequest("POST", "https://chatgpt.com/backend-api/codex/responses", nil)
+	req.Header = http.Header{}
+
+	codexmw.ApplyDynamicCodexHeadersForTest(req, sessionID)
+
+	checks := map[string]string{
+		"Session_id":        sessionID,
+		"Session-Id":        sessionID,
+		"Thread_id":         sessionID,
+		"Thread-Id":         sessionID,
+		"X-Codex-Window-Id": sessionID,
+	}
+	for key, want := range checks {
+		if got := req.Header.Get(key); got != want {
+			t.Errorf("%s = %q, want %q", key, got, want)
+		}
+	}
+
+	if got := req.Header.Get("X-Client-Request-Id"); got == "" {
+		t.Error("X-Client-Request-Id should be set; got empty")
+	}
+
+	turnMetaRaw := req.Header.Get("X-Codex-Turn-Metadata")
+	if turnMetaRaw == "" {
+		t.Fatal("X-Codex-Turn-Metadata should be set; got empty")
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(turnMetaRaw), &meta); err != nil {
+		t.Fatalf("X-Codex-Turn-Metadata is not valid JSON: %v (raw=%q)", err, turnMetaRaw)
+	}
+	if meta["turn_id"] == "" {
+		t.Errorf("turn_id should be a non-empty UUID; got %q", meta["turn_id"])
+	}
+	if meta["sandbox"] != "none" {
+		t.Errorf("sandbox = %q, want %q", meta["sandbox"], "none")
+	}
+	if meta["session_id"] != sessionID {
+		t.Errorf("session_id (in turn metadata) = %q, want %q", meta["session_id"], sessionID)
+	}
+}
+
+// ── TestApplyDynamicCodexHeaders_NoSessionID ─────────────────────────────────
+
+func TestApplyDynamicCodexHeaders_NoSessionID(t *testing.T) {
+	req, _ := http.NewRequest("POST", "https://chatgpt.com/backend-api/codex/responses", nil)
+	req.Header = http.Header{}
+
+	codexmw.ApplyDynamicCodexHeadersForTest(req, "")
+
+	for _, key := range []string{"Session_id", "Session-Id", "Thread_id", "Thread-Id", "X-Codex-Window-Id"} {
+		if got := req.Header.Get(key); got != "" {
+			t.Errorf("%s should be absent when sessionID is empty; got %q", key, got)
+		}
+	}
+	if got := req.Header.Get("X-Client-Request-Id"); got == "" {
+		t.Error("X-Client-Request-Id should still be set even without sessionID; got empty")
+	}
+	turnMetaRaw := req.Header.Get("X-Codex-Turn-Metadata")
+	if turnMetaRaw == "" {
+		t.Fatal("X-Codex-Turn-Metadata should still be set without sessionID")
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(turnMetaRaw), &meta); err != nil {
+		t.Fatalf("X-Codex-Turn-Metadata is not valid JSON: %v", err)
+	}
+	if meta["turn_id"] == "" {
+		t.Errorf("turn_id should be set; got %q", meta["turn_id"])
+	}
+	if _, has := meta["session_id"]; has {
+		t.Errorf("session_id should NOT be in turn metadata when sessionID is empty; got %q", meta["session_id"])
+	}
+}
+
+// ── TestApplyDynamicCodexHeaders_FreshTurnIDPerCall ──────────────────────────
+
+func TestApplyDynamicCodexHeaders_FreshTurnIDPerCall(t *testing.T) {
+	const sessionID = "019e0a01-5569-7480-8945-f61f37958342"
+	req1, _ := http.NewRequest("POST", "https://chatgpt.com", nil)
+	req1.Header = http.Header{}
+	req2, _ := http.NewRequest("POST", "https://chatgpt.com", nil)
+	req2.Header = http.Header{}
+
+	codexmw.ApplyDynamicCodexHeadersForTest(req1, sessionID)
+	codexmw.ApplyDynamicCodexHeadersForTest(req2, sessionID)
+
+	if req1.Header.Get("X-Client-Request-Id") == req2.Header.Get("X-Client-Request-Id") {
+		t.Error("X-Client-Request-Id should differ between calls")
+	}
+
+	parseTurnID := func(raw string) string {
+		var m map[string]string
+		_ = json.Unmarshal([]byte(raw), &m)
+		return m["turn_id"]
+	}
+	if parseTurnID(req1.Header.Get("X-Codex-Turn-Metadata")) == parseTurnID(req2.Header.Get("X-Codex-Turn-Metadata")) {
+		t.Error("turn_id should differ between calls")
+	}
+}
+

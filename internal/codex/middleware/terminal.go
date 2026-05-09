@@ -17,6 +17,8 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/google/uuid"
+
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
@@ -91,6 +93,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// PromptCacheKey entirely.
 		reqOpts := translator.RequestOpts{
 			TargetModel: effectiveModel,
+			SessionID:   sessionID,
 		}
 		outBody, err = translator.TranslateRequest(body, reqOpts)
 		if err != nil {
@@ -209,18 +212,11 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte, sessionID st
 			return nil, err
 		}
 		t.opts.Bundle.Apply(req)
-		// Per codex CLI 0.129 (codex-rs/codex-api/src/requests/headers.rs):
-		// session_id and thread_id are sent as request headers in BOTH
-		// snake_case and kebab-case forms. We forward the inbound
-		// X-Claude-Code-Session-Id (UUIDv7) so chatgpt.com sees one
-		// coherent session for the duration of a Claude Code session.
-		// Empty inbound → no session headers (matches OmniRoute baseline).
-		if sessionID != "" {
-			req.Header.Set("session_id", sessionID)
-			req.Header.Set("session-id", sessionID)
-			req.Header.Set("thread_id", sessionID)
-			req.Header.Set("thread-id", sessionID)
-		}
+		// Per spec 2026-05-09-codex-omniroute-bridging §5.6: the dynamic
+		// per-request identity headers (session/thread/window IDs from
+		// inbound, plus fresh-per-call turn metadata and request ID) live
+		// in applyDynamicCodexHeaders.
+		applyDynamicCodexHeaders(req, sessionID)
 		return req, nil
 	}
 	req, err := build()
@@ -300,4 +296,57 @@ func isStreamFalse(body []byte) bool {
 		return false
 	}
 	return probe.Stream != nil && !*probe.Stream
+}
+
+// applyDynamicCodexHeaders sets the per-request identity headers that
+// the real codex CLI generates fresh per session/turn/request. Per
+// spec 2026-05-09-codex-omniroute-bridging-design §5.6 we derive
+// session-scoped values from the inbound X-Claude-Code-Session-Id and
+// generate a fresh UUIDv7 for x-client-request-id and the turn_id
+// inside x-codex-turn-metadata.
+//
+// When sessionID is empty: skip session_id/session-id/thread_id/
+// thread-id/x-codex-window-id; emit x-codex-turn-metadata with
+// turn_id only (no session_id field); emit x-client-request-id.
+func applyDynamicCodexHeaders(req *http.Request, sessionID string) {
+	turnID := newRequestUUID()
+	clientRequestID := newRequestUUID()
+
+	if sessionID != "" {
+		req.Header.Set("session_id", sessionID)
+		req.Header.Set("session-id", sessionID)
+		req.Header.Set("thread_id", sessionID)
+		req.Header.Set("thread-id", sessionID)
+		req.Header.Set("x-codex-window-id", sessionID)
+	}
+
+	if turnID != "" {
+		turnMeta := map[string]string{"turn_id": turnID, "sandbox": "none"}
+		if sessionID != "" {
+			turnMeta["session_id"] = sessionID
+		}
+		if buf, err := json.Marshal(turnMeta); err == nil {
+			req.Header.Set("x-codex-turn-metadata", string(buf))
+		}
+	}
+
+	if clientRequestID != "" {
+		req.Header.Set("x-client-request-id", clientRequestID)
+	}
+}
+
+// newRequestUUID returns a fresh UUIDv7 string. Returns "" on
+// crypto/rand failure (unfailing on supported platforms in practice).
+func newRequestUUID() string {
+	id, err := uuid.NewV7()
+	if err != nil {
+		return ""
+	}
+	return id.String()
+}
+
+// ApplyDynamicCodexHeadersForTest exposes the unexported helper for
+// black-box tests. Test-only.
+func ApplyDynamicCodexHeadersForTest(req *http.Request, sessionID string) {
+	applyDynamicCodexHeaders(req, sessionID)
 }
