@@ -87,10 +87,10 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var outBody []byte
 	if matched {
 		// Translate Anthropic Messages → OpenAI Responses. Per spec
-		// 2026-05-09-codex-omniroute-pivot-design §5.3 the request
-		// opts are reduced to TargetModel + (always-empty)
-		// ServiceTier; the pivot drops InstallationID and
-		// PromptCacheKey entirely.
+		// 2026-05-09-codex-omniroute-pivot-design §5.3 plus the
+		// bridging follow-up: opts carry TargetModel + SessionID.
+		// SessionID is mirrored into prompt_cache_key inside the
+		// translator so cache slots line up with upstream Codex.
 		reqOpts := translator.RequestOpts{
 			TargetModel: effectiveModel,
 			SessionID:   sessionID,
