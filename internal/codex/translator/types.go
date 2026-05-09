@@ -65,7 +65,12 @@ type anthropicThinkingPref struct {
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
-// Codex request shape — the outbound /v1/responses body.
+// Codex request shape — the outbound /backend-api/codex/responses body.
+// Per spec 2026-05-09-codex-omniroute-pivot §5.2 we drop
+// `prompt_cache_key` and `client_metadata` (OmniRoute production
+// evidence shows chatgpt.com tolerates synthesis-only requests; these
+// fields are not part of OmniRoute's outbound shape). Removing them
+// from the type makes accidental re-introduction impossible.
 type codexRequest struct {
 	Model        string          `json:"model"`
 	Stream       bool            `json:"stream"`
