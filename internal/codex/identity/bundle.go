@@ -1,6 +1,3 @@
-// Package identity assembles per-request outbound headers for codex
-// requests by combining the captured codex-CLI header bundle with the
-// credential's current bearer token.
 package identity
 
 import (
@@ -9,32 +6,47 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// Bundle holds the captured header set from a per-session codex CLI run.
-// Apply writes those headers onto an outbound request and overrides
-// Authorization with the credential's current bearer.
+// Bundle synthesizes per-request outbound headers from compile-time
+// constants and the credential's runtime metadata. Replaces the
+// captured-headers model from sub-project B per spec
+// 2026-05-09-codex-omniroute-pivot-design §5.1.
 type Bundle struct {
-	captured http.Header
+	cred *store.Credential
 }
 
-// New constructs a Bundle from a captured header set. nil is permitted
-// (Apply still sets Authorization + chatgpt-account-id from the cred).
-func New(captured http.Header) *Bundle {
-	return &Bundle{captured: captured}
+// New constructs a Bundle for the given credential. nil cred is
+// permitted (Apply becomes a no-op).
+func New(cred *store.Credential) *Bundle {
+	return &Bundle{cred: cred}
 }
 
-// Apply writes b's captured headers onto req, then overrides
-// Authorization with cred.AccessToken() and sets chatgpt-account-id from
-// cred.Tokens.AccountID. Hop-by-hop headers from the captured set are
-// not filtered here — capture only records request headers, never
-// hop-by-hop.
-func (b *Bundle) Apply(req *http.Request, cred *store.Credential) {
-	if b != nil {
-		for name, values := range b.captured {
-			req.Header[name] = append([]string{}, values...)
-		}
+// Apply writes the synthesized identity headers onto req.
+// Authorization tracks cred.AccessToken() so mid-session refresh
+// propagates on each request build. chatgpt-account-id is set from
+// cred.Tokens.AccountID when present and skipped otherwise.
+//
+// Headers set:
+//
+//	Authorization      = "Bearer " + cred.AccessToken()
+//	chatgpt-account-id = cred.Tokens.AccountID (if non-empty)
+//	Version            = StaticVersion
+//	Openai-Beta        = StaticOpenaiBeta
+//	User-Agent         = StaticUserAgent
+//	Accept             = "text/event-stream"
+//	Content-Type       = "application/json"
+//
+// Apply is a no-op when b is nil or b.cred is nil.
+func (b *Bundle) Apply(req *http.Request) {
+	if b == nil || b.cred == nil {
+		return
 	}
-	req.Header.Set("Authorization", "Bearer "+cred.AccessToken())
-	if cred.Tokens != nil && cred.Tokens.AccountID != "" {
-		req.Header.Set("chatgpt-account-id", cred.Tokens.AccountID)
+	req.Header.Set("Authorization", "Bearer "+b.cred.AccessToken())
+	req.Header.Set("Version", StaticVersion)
+	req.Header.Set("Openai-Beta", StaticOpenaiBeta)
+	req.Header.Set("User-Agent", StaticUserAgent)
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Content-Type", "application/json")
+	if b.cred.Tokens != nil && b.cred.Tokens.AccountID != "" {
+		req.Header.Set("chatgpt-account-id", b.cred.Tokens.AccountID)
 	}
 }

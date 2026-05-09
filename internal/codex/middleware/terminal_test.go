@@ -100,7 +100,7 @@ func TestTerminal_HappyPath(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -139,7 +139,7 @@ func TestTerminal_PassThrough(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -174,7 +174,7 @@ func TestTerminal_DieFastOnModelNotFound(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		OnSessionDie: func(reason string) { dieReason.Store(reason) },
 	})
@@ -213,7 +213,7 @@ func TestTerminal_DieFastOnInvalidRequestWithModel(t *testing.T) {
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
 		Capture:      minimalCapture(),
-		Bundle:       identity.New(http.Header{}),
+		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { called = true },
 	})
@@ -250,7 +250,7 @@ func TestTerminal_StreamFalseBuffersCollected(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -321,7 +321,7 @@ func TestTerminal_401TriggersRefreshAndRetry(t *testing.T) {
 		Cred:        minimalCred("old-tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		BearerSrc:   bearer,
 	})
@@ -357,7 +357,7 @@ func TestTerminal_401RefreshFailureReturns502(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		BearerSrc:   bearer,
 	})
@@ -386,7 +386,7 @@ func TestTerminal_TranslatorError(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -425,7 +425,7 @@ func TestTerminal_UpstreamError(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -462,7 +462,7 @@ func TestTerminal_PostMatched_StreamingPipeError(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -491,7 +491,7 @@ func TestTerminal_DefaultUpstreamURL(t *testing.T) {
 		Cred:      minimalCred("tok"),
 		Transport: newTransport(t),
 		Capture:   minimalCapture(),
-		Bundle:    identity.New(http.Header{}),
+		Bundle:    identity.New(minimalCred("tok")),
 		// UpstreamURL intentionally omitted → defaults to "https://chatgpt.com"
 	})
 	if term == nil {
@@ -514,7 +514,7 @@ func TestTerminal_NoAliasMatch_NoSessionDie(t *testing.T) {
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
 		Capture:      minimalCapture(),
-		Bundle:       identity.New(http.Header{}),
+		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { dieReason.Store(reason) },
 	})
@@ -551,7 +551,7 @@ func TestTerminal_BodyReadError(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -616,7 +616,7 @@ func TestTerminal_CollectContextCancel(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -667,7 +667,7 @@ func TestTerminal_401NoBearerSrcReturns401(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		// BearerSrc intentionally nil → early return on 401
 	})
@@ -699,7 +699,7 @@ func TestTerminal_ShouldDieFast_MalformedJSON(t *testing.T) {
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
 		Capture:      minimalCapture(),
-		Bundle:       identity.New(http.Header{}),
+		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { called = true },
 	})
@@ -733,7 +733,7 @@ func TestTerminal_ShouldDieFast_InvalidRequestNoModelMatch(t *testing.T) {
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
 		Capture:      minimalCapture(),
-		Bundle:       identity.New(http.Header{}),
+		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { called = true },
 	})
@@ -768,7 +768,7 @@ func TestTerminal_StreamTrue(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -825,7 +825,7 @@ func TestTerminal_PipeErrorEmitsErrorEvent(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
@@ -890,7 +890,7 @@ func TestTerminal_QuotaCacheWired(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		QuotaCache:  qc,
 	})
@@ -932,7 +932,7 @@ func TestTerminal_UsageTeeWired(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     minimalCapture(),
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		UsageTee:    tee,
 	})
@@ -975,7 +975,7 @@ func TestTerminal_PromptCacheKeyFromHeader(t *testing.T) {
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
 		Capture:     &capture.Result{SessionID: "fallback-session"},
-		Bundle:      identity.New(http.Header{}),
+		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
 
