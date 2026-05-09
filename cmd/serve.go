@@ -19,6 +19,7 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/serve"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -42,9 +43,9 @@ generated and printed once at startup. The token is accepted via
 Authorization: Bearer, a ccm_serve_token cookie, or a ?token=
 query parameter.
 
-Only one ccm serve runs at a time (enforced via ~/.ccm/serve.pid
-with stale-PID detection). Ctrl-C tears every managed session
-down cleanly before exiting.`,
+Only one ccm serve runs at a time (enforced via a serve.pid file
+in the data directory with stale-PID detection). Ctrl-C tears
+every managed session down cleanly before exiting.`,
 	RunE: runServe,
 }
 
@@ -171,8 +172,7 @@ func resolveToken(loopback bool) (string, error) {
 
 // pidFilePath is the canonical location of the serve PID file.
 func pidFilePath() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".ccm", "serve.pid")
+	return filepath.Join(store.Dir(), "serve.pid")
 }
 
 // writePIDFile writes our PID to path. Refuses to overwrite if the

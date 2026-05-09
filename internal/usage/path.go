@@ -3,12 +3,14 @@ package usage
 import (
 	"os"
 	"path/filepath"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// Dir returns ~/.ccm/usage/.
+// Dir returns the usage directory, rooted at ccm's data dir
+// (~/.ccm or $CCM_HOME).
 func Dir() string {
-	home, _ := os.UserHomeDir()
-	return filepath.Join(home, ".ccm", "usage")
+	return filepath.Join(store.Dir(), "usage")
 }
 
 // EnsureDir creates ~/.ccm/usage/ with 0700 if it does not exist.

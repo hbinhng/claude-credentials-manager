@@ -43,3 +43,15 @@ func TestSessionPath_JoinsCorrectly(t *testing.T) {
 		t.Fatalf("SessionPath() = %q, want %q", got, want)
 	}
 }
+
+func TestDir_RespectsCCMHome(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	custom := filepath.Join(t.TempDir(), "custom-ccm")
+	t.Setenv("CCM_HOME", custom)
+	got := Dir()
+	want := filepath.Join(custom, "usage")
+	if got != want {
+		t.Fatalf("Dir() = %q, want %q", got, want)
+	}
+}

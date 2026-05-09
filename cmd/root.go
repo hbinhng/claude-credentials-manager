@@ -13,8 +13,15 @@ import (
 var claudeSyncFn = claude.Sync
 
 var rootCmd = &cobra.Command{
-	Use:               "ccm",
-	Short:             "Claude Credentials Manager — manage multiple Claude OAuth sessions",
+	Use:   "ccm",
+	Short: "Claude Credentials Manager — manage multiple Claude OAuth sessions",
+	Long: `Claude Credentials Manager — manage multiple Claude OAuth sessions.
+
+Environment variables:
+  CCM_HOME        Override the data directory (default: ~/.ccm). When set,
+                  this path is used directly — no .ccm suffix is appended.
+  CCM_PROXY       HTTP proxy for upstream Anthropic / OpenAI calls.
+  CCM_SERVE_TOKEN Auth token for ` + "`ccm serve`" + ` when bound to a non-loopback host.`,
 	PersistentPreRunE: rootPersistentPreRunE,
 }
 

@@ -8,7 +8,14 @@ import (
 	"strings"
 )
 
+// Dir returns ccm's data directory. CCM_HOME, when set and non-empty,
+// takes precedence and is used as the directory itself (matching
+// CARGO_HOME / RUSTUP_HOME semantics — it replaces ~/.ccm rather than
+// being a parent of it). Otherwise falls back to ~/.ccm.
 func Dir() string {
+	if h := os.Getenv("CCM_HOME"); h != "" {
+		return h
+	}
 	home, _ := os.UserHomeDir()
 	return filepath.Join(home, ".ccm")
 }

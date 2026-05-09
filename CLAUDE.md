@@ -50,6 +50,8 @@ internal/
 
 **Credential resolution** (`store.Resolve`): accepts full UUID, UUID prefix (min 4 chars), or credential name.
 
+**Data directory override:** `CCM_HOME`, when set and non-empty, replaces `~/.ccm` as the data directory (matches `CARGO_HOME` semantics — the env var IS the dir, not a parent of it). It is the single source of truth for `store.Dir()`, `usage.Dir()`, the `serve.pid` location, and the managed `cloudflared` binary path. External tool dirs (`~/.claude`, `~/.codex`) are NOT redirected — they belong to Claude Code / Codex CLI and must stay anchored to `$HOME`.
+
 ## Test Patterns
 
 Tests override `HOME`/`USERPROFILE` env vars to use `t.TempDir()` as a fake home directory. The `setupFakeHome` helper creates both `~/.claude/` and `~/.ccm/` directories. OAuth tests use `httptest` servers.

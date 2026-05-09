@@ -89,6 +89,20 @@ func TestEffectiveHost(t *testing.T) {
 	}
 }
 
+func TestPIDFilePath_RespectsCCMHome(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	custom := filepath.Join(t.TempDir(), "custom-ccm")
+	t.Setenv("CCM_HOME", custom)
+
+	got := pidFilePath()
+	want := filepath.Join(custom, "serve.pid")
+	if got != want {
+		t.Fatalf("pidFilePath() = %q, want %q", got, want)
+	}
+}
+
 func TestPIDFileLifecycle(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
