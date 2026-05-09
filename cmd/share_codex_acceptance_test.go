@@ -33,6 +33,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
@@ -283,10 +284,25 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 func TestCodexShare_WithAlias(t *testing.T) {
 	setupHomeWithCcm(t)
 
-	// Body seen by the fake codex backend.
-	var upstreamBody atomic.Value
+	// Body + synthesized identity headers + URL path seen by the fake codex
+	// backend. Captured here so post-request assertions can verify that
+	// Bundle.Apply's headers actually arrive on the upstream side and that
+	// the outbound URL path is /backend-api/codex/responses (not /v1/responses).
+	var (
+		upstreamBody       atomic.Value
+		upstreamVersion    string
+		upstreamOpenaiBeta string
+		upstreamUserAgent  string
+		upstreamAccountID  string
+		upstreamPath       string
+	)
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamVersion = r.Header.Get("Version")
+		upstreamOpenaiBeta = r.Header.Get("Openai-Beta")
+		upstreamUserAgent = r.Header.Get("User-Agent")
+		upstreamAccountID = r.Header.Get("chatgpt-account-id")
+		upstreamPath = r.URL.Path
 		b, _ := io.ReadAll(r.Body)
 		upstreamBody.Store(string(b))
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -333,6 +349,25 @@ func TestCodexShare_WithAlias(t *testing.T) {
 	}
 	if !strings.Contains(outStr, "message_stop") {
 		t.Errorf("downstream SSE missing message_stop; got:\n%s", outStr)
+	}
+
+	// Integration-level guarantees from the omniroute pivot: the synthesized
+	// identity headers built by Bundle.Apply must actually arrive on the
+	// upstream side, and the outbound URL path must be /backend-api/codex/responses.
+	if upstreamVersion != identity.StaticVersion {
+		t.Errorf("upstream Version = %q, want %q", upstreamVersion, identity.StaticVersion)
+	}
+	if upstreamOpenaiBeta != identity.StaticOpenaiBeta {
+		t.Errorf("upstream Openai-Beta = %q, want %q", upstreamOpenaiBeta, identity.StaticOpenaiBeta)
+	}
+	if upstreamUserAgent != identity.StaticUserAgent {
+		t.Errorf("upstream User-Agent = %q, want %q", upstreamUserAgent, identity.StaticUserAgent)
+	}
+	if upstreamAccountID != "acct-accept" {
+		t.Errorf("upstream chatgpt-account-id = %q, want %q", upstreamAccountID, "acct-accept")
+	}
+	if upstreamPath != "/backend-api/codex/responses" {
+		t.Errorf("upstream URL path = %q, want %q", upstreamPath, "/backend-api/codex/responses")
 	}
 }
 
