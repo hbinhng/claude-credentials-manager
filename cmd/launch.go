@@ -148,18 +148,6 @@ func runLaunchLocal(idOrName string, claudeArgs []string) error {
 		return err
 	}
 
-	// Codex provider: hard-fail with install hint when codex CLI is
-	// absent. Capture is impossible without it (the CLI is spawned to
-	// record its identity headers). This check runs before any session
-	// setup so the error is immediate and actionable.
-	if cred.ProviderName() == "codex" {
-		if _, err := exec.LookPath("codex"); err != nil {
-			return fmt.Errorf("codex CLI is required for this command. " +
-				"Install it from https://github.com/openai/codex; ccm uses it " +
-				"to capture identity headers for the codex backend")
-		}
-	}
-
 	// Parse --model-alias flag values into an alias map. Boot-time
 	// conflict detection in alias.Parse rejects overlapping patterns.
 	aliasMap, err := alias.Parse(launchModelAliases)
