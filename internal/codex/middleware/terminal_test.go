@@ -115,6 +115,111 @@ func TestTerminal_HappyPath(t *testing.T) {
 	}
 }
 
+// ── TestTerminal_PropagatesClaudeSessionID ────────────────────────────────────
+
+func TestTerminal_PropagatesClaudeSessionID(t *testing.T) {
+	const claudeSessionID = "019e0a01-5569-7480-8945-f61f37958342"
+	var (
+		gotSessionIDSnake string
+		gotSessionIDKebab string
+		gotThreadIDSnake  string
+		gotThreadIDKebab  string
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSessionIDSnake = r.Header.Get("Session_id")
+		gotSessionIDKebab = r.Header.Get("Session-Id")
+		gotThreadIDSnake = r.Header.Get("Thread_id")
+		gotThreadIDKebab = r.Header.Get("Thread-Id")
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	req.Header.Set("X-Claude-Code-Session-Id", claudeSessionID)
+	rr := httptest.NewRecorder()
+
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if gotSessionIDSnake != claudeSessionID {
+		t.Errorf("upstream session_id = %q, want %q", gotSessionIDSnake, claudeSessionID)
+	}
+	if gotSessionIDKebab != claudeSessionID {
+		t.Errorf("upstream session-id = %q, want %q", gotSessionIDKebab, claudeSessionID)
+	}
+	if gotThreadIDSnake != claudeSessionID {
+		t.Errorf("upstream thread_id = %q, want %q", gotThreadIDSnake, claudeSessionID)
+	}
+	if gotThreadIDKebab != claudeSessionID {
+		t.Errorf("upstream thread-id = %q, want %q", gotThreadIDKebab, claudeSessionID)
+	}
+}
+
+// ── TestTerminal_NoSessionIDWhenInboundHeaderMissing ─────────────────────────
+
+func TestTerminal_NoSessionIDWhenInboundHeaderMissing(t *testing.T) {
+	var (
+		gotSessionIDSnake string
+		gotSessionIDKebab string
+		gotThreadIDSnake  string
+		gotThreadIDKebab  string
+	)
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotSessionIDSnake = r.Header.Get("Session_id")
+		gotSessionIDKebab = r.Header.Get("Session-Id")
+		gotThreadIDSnake = r.Header.Get("Thread_id")
+		gotThreadIDKebab = r.Header.Get("Thread-Id")
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	// deliberately no X-Claude-Code-Session-Id header
+	rr := httptest.NewRecorder()
+
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if gotSessionIDSnake != "" || gotSessionIDKebab != "" || gotThreadIDSnake != "" || gotThreadIDKebab != "" {
+		t.Errorf("expected no session/thread headers when inbound X-Claude-Code-Session-Id is absent; got session=%q/%q thread=%q/%q",
+			gotSessionIDSnake, gotSessionIDKebab, gotThreadIDSnake, gotThreadIDKebab)
+	}
+}
+
 // ── TestTerminal_PassThrough ──────────────────────────────────────────────────
 
 func TestTerminal_PassThrough(t *testing.T) {

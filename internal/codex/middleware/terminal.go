@@ -78,6 +78,10 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Capture inbound Claude Code session ID (UUIDv7) before any branching.
+	// Empty string when absent — handled by doWith401Retry's build closure.
+	sessionID := r.Header.Get("X-Claude-Code-Session-Id")
+
 	var outBody []byte
 	if matched {
 		// Translate Anthropic Messages → OpenAI Responses. Per spec
@@ -99,7 +103,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		outBody = body
 	}
 
-	resp, err := t.doWith401Retry(r.Context(), outBody)
+	resp, err := t.doWith401Retry(r.Context(), outBody, sessionID)
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream: "+err.Error())
 		return
@@ -193,7 +197,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // doWith401Retry POSTs body to /backend-api/codex/responses; if the
 // upstream returns 401, it triggers a credflow refresh via
 // BearerSrc.Fresh() and retries once with the new bearer. Per spec §10.
-func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Response, error) {
+func (t *Terminal) doWith401Retry(ctx context.Context, body []byte, sessionID string) (*http.Response, error) {
 	build := func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, "POST",
 			t.opts.UpstreamURL+"/backend-api/codex/responses", bytes.NewReader(body))
@@ -205,6 +209,18 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 			return nil, err
 		}
 		t.opts.Bundle.Apply(req)
+		// Per codex CLI 0.129 (codex-rs/codex-api/src/requests/headers.rs):
+		// session_id and thread_id are sent as request headers in BOTH
+		// snake_case and kebab-case forms. We forward the inbound
+		// X-Claude-Code-Session-Id (UUIDv7) so chatgpt.com sees one
+		// coherent session for the duration of a Claude Code session.
+		// Empty inbound → no session headers (matches OmniRoute baseline).
+		if sessionID != "" {
+			req.Header.Set("session_id", sessionID)
+			req.Header.Set("session-id", sessionID)
+			req.Header.Set("thread_id", sessionID)
+			req.Header.Set("thread-id", sessionID)
+		}
 		return req, nil
 	}
 	req, err := build()
