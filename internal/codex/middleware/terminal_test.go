@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	codexmw "github.com/hbinhng/claude-credentials-manager/internal/codex/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
@@ -22,15 +21,6 @@ import (
 	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
-
-// minimalCapture returns a capture.Result with sensible test defaults.
-func minimalCapture() *capture.Result {
-	return &capture.Result{
-		InstallationID: "test-install",
-		ServiceTier:    "priority",
-		SessionID:      "sess-123",
-	}
-}
 
 // minimalCred builds a codex credential with the given access token.
 func minimalCred(tok string) *store.Credential {
@@ -98,7 +88,6 @@ func TestTerminal_HappyPath(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -137,7 +126,6 @@ func TestTerminal_PassThrough(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -172,7 +160,6 @@ func TestTerminal_DieFastOnModelNotFound(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		OnSessionDie: func(reason string) { dieReason.Store(reason) },
@@ -211,7 +198,6 @@ func TestTerminal_DieFastOnInvalidRequestWithModel(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
-		Capture:      minimalCapture(),
 		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { called = true },
@@ -248,7 +234,6 @@ func TestTerminal_StreamFalseBuffersCollected(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -330,7 +315,6 @@ func TestTerminal_401TriggersRefreshAndRetry(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        cred,
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(cred),
 		UpstreamURL: upstream.URL,
 		BearerSrc:   bearer,
@@ -372,7 +356,6 @@ func TestTerminal_401RefreshFailureReturns502(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		BearerSrc:   bearer,
@@ -401,7 +384,6 @@ func TestTerminal_TranslatorError(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -440,7 +422,6 @@ func TestTerminal_UpstreamError(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -477,7 +458,6 @@ func TestTerminal_PostMatched_StreamingPipeError(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -506,7 +486,6 @@ func TestTerminal_DefaultUpstreamURL(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:      minimalCred("tok"),
 		Transport: newTransport(t),
-		Capture:   minimalCapture(),
 		Bundle:    identity.New(minimalCred("tok")),
 		// UpstreamURL intentionally omitted → defaults to "https://chatgpt.com"
 	})
@@ -529,7 +508,6 @@ func TestTerminal_NoAliasMatch_NoSessionDie(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
-		Capture:      minimalCapture(),
 		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { dieReason.Store(reason) },
@@ -566,7 +544,6 @@ func TestTerminal_BodyReadError(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -631,7 +608,6 @@ func TestTerminal_CollectContextCancel(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -682,7 +658,6 @@ func TestTerminal_401NoBearerSrcReturns401(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		// BearerSrc intentionally nil → early return on 401
@@ -714,7 +689,6 @@ func TestTerminal_ShouldDieFast_MalformedJSON(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
-		Capture:      minimalCapture(),
 		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { called = true },
@@ -748,7 +722,6 @@ func TestTerminal_ShouldDieFast_InvalidRequestNoModelMatch(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:         minimalCred("tok"),
 		Transport:    newTransport(t),
-		Capture:      minimalCapture(),
 		Bundle:       identity.New(minimalCred("tok")),
 		UpstreamURL:  upstream.URL,
 		OnSessionDie: func(reason string) { called = true },
@@ -783,7 +756,6 @@ func TestTerminal_StreamTrue(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -840,7 +812,6 @@ func TestTerminal_PipeErrorEmitsErrorEvent(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 	})
@@ -905,7 +876,6 @@ func TestTerminal_QuotaCacheWired(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		QuotaCache:  qc,
@@ -947,7 +917,6 @@ func TestTerminal_UsageTeeWired(t *testing.T) {
 	term := codexmw.NewTerminal(codexmw.TerminalOpts{
 		Cred:        minimalCred("tok"),
 		Transport:   newTransport(t),
-		Capture:     minimalCapture(),
 		Bundle:      identity.New(minimalCred("tok")),
 		UpstreamURL: upstream.URL,
 		UsageTee:    tee,

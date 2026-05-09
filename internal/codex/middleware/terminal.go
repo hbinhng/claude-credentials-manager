@@ -1,8 +1,8 @@
 // Package middleware provides the codex-specific pipeline terminal
 // handler. It composes:
 //  1. AliasMatched? translate request body : pass through
-//  2. Apply identity bundle (captured headers + cred bearer)
-//  3. POST to upstream /v1/responses via bogdanfinn
+//  2. Apply identity bundle (synthesized headers + cred bearer)
+//  3. POST to upstream /backend-api/codex/responses via bogdanfinn
 //  4. SSE reshape on the response (translator.StreamTranslator)
 //  5. Die-fast detection on model_not_found errors
 //  6. 401 → refresh + retry once
@@ -17,7 +17,6 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
@@ -29,7 +28,6 @@ import (
 type TerminalOpts struct {
 	Cred        *store.Credential
 	Transport   *transport.Transport
-	Capture     *capture.Result // produced by capture.Run at session start
 	Bundle      *identity.Bundle
 	// UpstreamURL overrides the codex backend (default "https://chatgpt.com").
 	// Test-only; production callers leave it blank.
@@ -83,13 +81,12 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var outBody []byte
 	if matched {
 		// Translate Anthropic Messages → OpenAI Responses. Per spec
-		// 2026-05-09-codex-omniroute-pivot §5.2 InstallationID and
-		// PromptCacheKey were removed from RequestOpts. ServiceTier
-		// passthrough from Capture is preserved here pending Task 4
-		// (which removes the Capture field entirely).
+		// 2026-05-09-codex-omniroute-pivot-design §5.3 the request
+		// opts are reduced to TargetModel + (always-empty)
+		// ServiceTier; the pivot drops InstallationID and
+		// PromptCacheKey entirely.
 		reqOpts := translator.RequestOpts{
 			TargetModel: effectiveModel,
-			ServiceTier: t.opts.Capture.ServiceTier,
 		}
 		outBody, err = translator.TranslateRequest(body, reqOpts)
 		if err != nil {
@@ -193,13 +190,13 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// doWith401Retry POSTs body to /v1/responses; if the upstream returns
-// 401, it triggers a credflow refresh via BearerSrc.Fresh() and retries
-// once with the new bearer. Per spec §10.
+// doWith401Retry POSTs body to /backend-api/codex/responses; if the
+// upstream returns 401, it triggers a credflow refresh via
+// BearerSrc.Fresh() and retries once with the new bearer. Per spec §10.
 func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Response, error) {
 	build := func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, "POST",
-			t.opts.UpstreamURL+"/v1/responses", bytes.NewReader(body))
+			t.opts.UpstreamURL+"/backend-api/codex/responses", bytes.NewReader(body))
 		if err != nil {
 			// Unreachable in production: "POST" is a valid method and
 			// UpstreamURL is validated to be non-empty by NewTerminal.
@@ -287,13 +284,4 @@ func isStreamFalse(body []byte) bool {
 		return false
 	}
 	return probe.Stream != nil && !*probe.Stream
-}
-
-// derivePromptCacheKey returns the X-Claude-Code-Session-Id header if
-// present, otherwise falls back to the captured session_id.
-func derivePromptCacheKey(r *http.Request, fallback string) string {
-	if v := r.Header.Get("X-Claude-Code-Session-Id"); v != "" {
-		return v
-	}
-	return fallback
 }
