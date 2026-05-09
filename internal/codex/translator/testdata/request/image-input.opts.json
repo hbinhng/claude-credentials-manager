@@ -1,1 +1,4 @@
-{"TargetModel":"gpt-5-codex","InstallationID":"inst-3","ServiceTier":"","PromptCacheKey":""}
+{
+  "TargetModel": "gpt-5-codex",
+  "ServiceTier": ""
+}

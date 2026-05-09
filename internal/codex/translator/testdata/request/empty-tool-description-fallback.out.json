@@ -1,1 +1,28 @@
-{"model":"gpt-5-codex","stream":true,"store":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"do something"}]}],"tools":[{"type":"function","name":"noop","description":" ","parameters":{"type":"object","properties":{}}}]}
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "do something"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "noop",
+      "description": " ",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ]
+}

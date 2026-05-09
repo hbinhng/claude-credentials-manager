@@ -1,1 +1,18 @@
-{"model":"gpt-5-codex","stream":true,"store":false,"service_tier":"priority","prompt_cache_key":"sess-1","client_metadata":{"x-codex-installation-id":"inst-1"},"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "service_tier": "priority",
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "hello"
+        }
+      ]
+    }
+  ]
+}
