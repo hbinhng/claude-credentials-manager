@@ -16,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/capture"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	codexmw "github.com/hbinhng/claude-credentials-manager/internal/codex/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
@@ -151,8 +150,6 @@ type Proxy struct {
 	// uses the existing p.handle claude path.
 	provider         string
 	codexCred        *store.Credential
-	codexBundle      *identity.Bundle
-	codexCapture     *capture.Result
 	codexTransport   *transport.Transport
 	codexUpstreamURL string // test override; empty in production
 }
@@ -290,25 +287,22 @@ func (p *Proxy) SetMaxConcurrency(n int) { p.maxConcurrency = n }
 // pipeline. Must be called before Start.
 func (p *Proxy) SetBearerSource(src middleware.BearerSource) { p.bearerSrc = src }
 
-// CodexHandlers carries the per-session codex identity material
-// assembled by the session orchestrator before Start is called.
-// SetCodexHandlers wires it into the proxy and switches the provider
-// to "codex" so terminalForProvider returns the codex Terminal.
+// CodexHandlers carries the per-session codex transport configuration
+// that the session orchestrator assembles before Start. Per spec
+// 2026-05-09-codex-omniroute-pivot §5.5 the Bundle and Capture fields
+// are gone — the Bundle is built inline in terminalForProvider from
+// the credential, and capture has been removed entirely.
 type CodexHandlers struct {
 	Cred        *store.Credential
-	Bundle      *identity.Bundle
-	Capture     *capture.Result
 	Transport   *transport.Transport
 	UpstreamURL string // test override; empty in production
 }
 
-// SetCodexHandlers wires the codex identity material into the proxy and
-// marks the provider as "codex". Must be called before Start.
+// SetCodexHandlers wires the codex transport into the proxy and marks
+// the provider as "codex". Must be called before Start.
 func (p *Proxy) SetCodexHandlers(opts CodexHandlers) {
 	p.provider = "codex"
 	p.codexCred = opts.Cred
-	p.codexBundle = opts.Bundle
-	p.codexCapture = opts.Capture
 	p.codexTransport = opts.Transport
 	p.codexUpstreamURL = opts.UpstreamURL
 }
@@ -331,17 +325,17 @@ func (p *Proxy) handleSessionDie(reason string) {
 }
 
 // terminalForProvider returns the terminal http.Handler for the current
-// provider. "codex" returns a codex Terminal wired with the session's
-// identity material; any other value (including empty, meaning claude)
-// returns the existing p.handle claude handler.
+// provider. "codex" returns a codex Terminal with a freshly built
+// identity.Bundle (synthesized from the credential per spec §5.1).
+// Any other value (including empty, meaning claude) returns the
+// existing p.handle claude handler.
 func (p *Proxy) terminalForProvider() http.Handler {
 	switch p.provider {
 	case "codex":
 		return codexmw.NewTerminal(codexmw.TerminalOpts{
 			Cred:         p.cred(),
 			Transport:    p.codexTransport,
-			Capture:      p.codexCapture,
-			Bundle:       p.codexBundle,
+			Bundle:       identity.New(p.cred()),
 			UpstreamURL:  p.codexUpstreamURL,
 			BearerSrc:    p.bearerSrc,
 			OnSessionDie: p.handleSessionDie,
