@@ -8,8 +8,7 @@
 //  S3 — Claude launch unchanged (regression)      → TestClaudeLaunch_Regression
 //  S4 — Alias conflict rejected at boot           → covered by TestShareCommand_ModelAliasConflictRejected
 //                                                    and TestLaunchCommand_ModelAliasConflictRejected
-//  S5 — No codex CLI                              → covered by TestShareCommand_CodexCredRequiresCodexCLI
-//                                                    and TestLaunchCommand_CodexCredRequiresCodexCLI
+//  S5 — (retired) Codex CLI no longer required    → tests removed in omniroute pivot Task 8
 //  S6 — stream:false buffers to JSON              → TestCodexShare_StreamFalseBuffersJSON
 //  S7 — Cancellation                              → TestCodexShare_ClientCancellation
 //  S8 — Mid-session refresh on 401               → TestCodexShare_MidSession401Refresh
@@ -60,7 +59,7 @@ func newTestTransport(t *testing.T) *transport.Transport {
 // that returns a CodexHandlers backed by the given TLS upstream. The
 // returned restore function must be deferred by the caller.
 //
-// Renamed from installCodexHandlersFake per spec
+// Renamed from installCodexCaptureFake per spec
 // 2026-05-09-codex-omniroute-pivot §5.6.
 func installCodexHandlersFake(t *testing.T, upstreamURL string) func() {
 	t.Helper()
@@ -218,7 +217,7 @@ func postToSession(t *testing.T, sess share.Session, body string) *http.Response
 // ── S1: codex launch with alias ──────────────────────────────────────────────
 
 // TestCodexLaunch_WithAlias tests that runLaunchLocal for a codex credential:
-//  1. Finds a fake codex CLI on PATH (no actual CLI needed)
+//  1. Does not require codex CLI on PATH (omniroute pivot dropped that gate)
 //  2. Builds a local proxy that forwards to a fake codex backend
 //  3. The launch exec receives the proxy URL in the environment
 //
@@ -277,7 +276,7 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 
 // TestCodexShare_WithAlias verifies the end-to-end share path for a codex
 // credential with a model alias. It:
-//  1. Starts a share session (captureFn and codexCaptureFn stubbed)
+//  1. Starts a share session (captureFn and codexHandlersFn stubbed)
 //  2. Sends a Claude Messages POST with a model that matches the alias
 //  3. Asserts the fake codex backend received a translated gpt-* model name
 //  4. Asserts the downstream response is Anthropic SSE
