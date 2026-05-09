@@ -94,7 +94,7 @@ func installCodexCaptureFake(t *testing.T, upstreamURL string) func() {
 	restore := share.SetCodexCaptureFnForTest(func(cred *store.Credential) (share.CodexHandlers, error) {
 		return share.CodexHandlers{
 			Cred:        cred,
-			Bundle:      identity.New(http.Header{}),
+			Bundle:      identity.New(cred),
 			Capture:     minimalCodexCapture(),
 			Transport:   tr,
 			UpstreamURL: upstreamURL,

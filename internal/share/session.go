@@ -692,7 +692,7 @@ func runCodexCapture(cred *store.Credential) (CodexHandlers, error) {
 	if err != nil {
 		return CodexHandlers{}, fmt.Errorf("capture codex identity: %w", err)
 	}
-	bundle := identity.New(res.HeaderBundle)
+	bundle := identity.New(cred)
 	return CodexHandlers{
 		Cred:      cred,
 		Bundle:    bundle,

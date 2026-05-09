@@ -205,9 +205,7 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 			// malformed URL; neither applies here.
 			return nil, err
 		}
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "text/event-stream")
-		t.opts.Bundle.Apply(req, t.opts.Cred)
+		t.opts.Bundle.Apply(req)
 		return req, nil
 	}
 	req, err := build()
