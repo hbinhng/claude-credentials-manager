@@ -120,16 +120,34 @@ func TestTerminal_HappyPath(t *testing.T) {
 func TestTerminal_PropagatesClaudeSessionID(t *testing.T) {
 	const claudeSessionID = "019e0a01-5569-7480-8945-f61f37958342"
 	var (
-		gotSessionIDSnake string
-		gotSessionIDKebab string
-		gotThreadIDSnake  string
-		gotThreadIDKebab  string
+		gotSessionIDSnake  string
+		gotSessionIDKebab  string
+		gotThreadIDSnake   string
+		gotThreadIDKebab   string
+		gotWindowID        string
+		gotOriginator      string
+		gotBetaFeatures    string
+		gotTurnMetaRaw     string
+		gotClientRequestID string
+		gotInstructions    string
+		gotPromptCacheKey  string
 	)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotSessionIDSnake = r.Header.Get("Session_id")
 		gotSessionIDKebab = r.Header.Get("Session-Id")
 		gotThreadIDSnake = r.Header.Get("Thread_id")
 		gotThreadIDKebab = r.Header.Get("Thread-Id")
+		gotWindowID = r.Header.Get("X-Codex-Window-Id")
+		gotOriginator = r.Header.Get("Originator")
+		gotBetaFeatures = r.Header.Get("X-Codex-Beta-Features")
+		gotTurnMetaRaw = r.Header.Get("X-Codex-Turn-Metadata")
+		gotClientRequestID = r.Header.Get("X-Client-Request-Id")
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		if err := json.Unmarshal(body, &parsed); err == nil {
+			gotInstructions, _ = parsed["instructions"].(string)
+			gotPromptCacheKey, _ = parsed["prompt_cache_key"].(string)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
@@ -170,22 +188,68 @@ func TestTerminal_PropagatesClaudeSessionID(t *testing.T) {
 	if gotThreadIDKebab != claudeSessionID {
 		t.Errorf("upstream thread-id = %q, want %q", gotThreadIDKebab, claudeSessionID)
 	}
+	if gotWindowID != claudeSessionID {
+		t.Errorf("upstream x-codex-window-id = %q, want %q", gotWindowID, claudeSessionID)
+	}
+	if gotOriginator != "codex_cli_rs" {
+		t.Errorf("upstream originator = %q, want %q", gotOriginator, "codex_cli_rs")
+	}
+	if gotBetaFeatures != "responses_websockets" {
+		t.Errorf("upstream X-Codex-Beta-Features = %q, want %q", gotBetaFeatures, "responses_websockets")
+	}
+	if gotClientRequestID == "" {
+		t.Error("upstream x-client-request-id should not be empty")
+	}
+	if gotTurnMetaRaw == "" {
+		t.Fatal("upstream x-codex-turn-metadata should be set")
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(gotTurnMetaRaw), &meta); err != nil {
+		t.Fatalf("upstream x-codex-turn-metadata is not valid JSON: %v", err)
+	}
+	if meta["session_id"] != claudeSessionID {
+		t.Errorf("turn metadata session_id = %q, want %q", meta["session_id"], claudeSessionID)
+	}
+	if meta["sandbox"] != "none" {
+		t.Errorf("turn metadata sandbox = %q, want %q", meta["sandbox"], "none")
+	}
+	if meta["turn_id"] == "" {
+		t.Error("turn metadata turn_id should not be empty")
+	}
+	if gotInstructions != "You are a ChatGPT agent." {
+		t.Errorf("body instructions = %q, want %q", gotInstructions, "You are a ChatGPT agent.")
+	}
+	if gotPromptCacheKey != claudeSessionID {
+		t.Errorf("body prompt_cache_key = %q, want %q", gotPromptCacheKey, claudeSessionID)
+	}
 }
 
 // ── TestTerminal_NoSessionIDWhenInboundHeaderMissing ─────────────────────────
 
 func TestTerminal_NoSessionIDWhenInboundHeaderMissing(t *testing.T) {
 	var (
-		gotSessionIDSnake string
-		gotSessionIDKebab string
-		gotThreadIDSnake  string
-		gotThreadIDKebab  string
+		gotSessionIDSnake  string
+		gotSessionIDKebab  string
+		gotThreadIDSnake   string
+		gotThreadIDKebab   string
+		gotWindowID        string
+		gotTurnMetaRaw     string
+		gotClientRequestID string
+		gotPromptCacheKey  string
 	)
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotSessionIDSnake = r.Header.Get("Session_id")
 		gotSessionIDKebab = r.Header.Get("Session-Id")
 		gotThreadIDSnake = r.Header.Get("Thread_id")
 		gotThreadIDKebab = r.Header.Get("Thread-Id")
+		gotWindowID = r.Header.Get("X-Codex-Window-Id")
+		gotTurnMetaRaw = r.Header.Get("X-Codex-Turn-Metadata")
+		gotClientRequestID = r.Header.Get("X-Client-Request-Id")
+		body, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		if err := json.Unmarshal(body, &parsed); err == nil {
+			gotPromptCacheKey, _ = parsed["prompt_cache_key"].(string)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
@@ -217,6 +281,28 @@ func TestTerminal_NoSessionIDWhenInboundHeaderMissing(t *testing.T) {
 	if gotSessionIDSnake != "" || gotSessionIDKebab != "" || gotThreadIDSnake != "" || gotThreadIDKebab != "" {
 		t.Errorf("expected no session/thread headers when inbound X-Claude-Code-Session-Id is absent; got session=%q/%q thread=%q/%q",
 			gotSessionIDSnake, gotSessionIDKebab, gotThreadIDSnake, gotThreadIDKebab)
+	}
+	if gotWindowID != "" {
+		t.Errorf("x-codex-window-id should be absent when sessionID empty; got %q", gotWindowID)
+	}
+	if gotClientRequestID == "" {
+		t.Error("x-client-request-id should still be set even without sessionID")
+	}
+	if gotTurnMetaRaw == "" {
+		t.Fatal("x-codex-turn-metadata should still be set even without sessionID")
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(gotTurnMetaRaw), &meta); err != nil {
+		t.Fatalf("x-codex-turn-metadata is not valid JSON: %v", err)
+	}
+	if _, has := meta["session_id"]; has {
+		t.Errorf("turn metadata should NOT have session_id when sessionID empty; got %q", meta["session_id"])
+	}
+	if meta["turn_id"] == "" {
+		t.Error("turn metadata turn_id should be set")
+	}
+	if gotPromptCacheKey != "" {
+		t.Errorf("body prompt_cache_key should be absent when sessionID empty; got %q", gotPromptCacheKey)
 	}
 }
 

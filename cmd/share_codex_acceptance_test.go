@@ -301,6 +301,13 @@ func TestCodexShare_WithAlias(t *testing.T) {
 		upstreamSessionIDKebab string
 		upstreamThreadIDSnake  string
 		upstreamThreadIDKebab  string
+		upstreamWindowID       string
+		upstreamOriginator     string
+		upstreamBetaFeatures   string
+		upstreamTurnMetaRaw    string
+		upstreamClientReqID    string
+		upstreamInstructions   string
+		upstreamPromptCacheKey string
 	)
 
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -313,8 +320,18 @@ func TestCodexShare_WithAlias(t *testing.T) {
 		upstreamSessionIDKebab = r.Header.Get("Session-Id")
 		upstreamThreadIDSnake = r.Header.Get("Thread_id")
 		upstreamThreadIDKebab = r.Header.Get("Thread-Id")
+		upstreamWindowID = r.Header.Get("X-Codex-Window-Id")
+		upstreamOriginator = r.Header.Get("Originator")
+		upstreamBetaFeatures = r.Header.Get("X-Codex-Beta-Features")
+		upstreamTurnMetaRaw = r.Header.Get("X-Codex-Turn-Metadata")
+		upstreamClientReqID = r.Header.Get("X-Client-Request-Id")
 		b, _ := io.ReadAll(r.Body)
 		upstreamBody.Store(string(b))
+		var parsed map[string]any
+		if err := json.Unmarshal(b, &parsed); err == nil {
+			upstreamInstructions, _ = parsed["instructions"].(string)
+			upstreamPromptCacheKey, _ = parsed["prompt_cache_key"].(string)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
@@ -401,6 +418,40 @@ func TestCodexShare_WithAlias(t *testing.T) {
 	}
 	if upstreamThreadIDKebab != claudeSessionID {
 		t.Errorf("upstream thread-id = %q, want %q", upstreamThreadIDKebab, claudeSessionID)
+	}
+	if upstreamWindowID != claudeSessionID {
+		t.Errorf("upstream x-codex-window-id = %q, want %q", upstreamWindowID, claudeSessionID)
+	}
+	if upstreamOriginator != "codex_cli_rs" {
+		t.Errorf("upstream originator = %q, want %q", upstreamOriginator, "codex_cli_rs")
+	}
+	if upstreamBetaFeatures != "responses_websockets" {
+		t.Errorf("upstream X-Codex-Beta-Features = %q, want %q", upstreamBetaFeatures, "responses_websockets")
+	}
+	if upstreamClientReqID == "" {
+		t.Error("upstream x-client-request-id should not be empty")
+	}
+	if upstreamTurnMetaRaw == "" {
+		t.Fatal("upstream x-codex-turn-metadata should be set")
+	}
+	var meta map[string]string
+	if err := json.Unmarshal([]byte(upstreamTurnMetaRaw), &meta); err != nil {
+		t.Fatalf("upstream x-codex-turn-metadata is not valid JSON: %v", err)
+	}
+	if meta["session_id"] != claudeSessionID {
+		t.Errorf("turn metadata session_id = %q, want %q", meta["session_id"], claudeSessionID)
+	}
+	if meta["sandbox"] != "none" {
+		t.Errorf("turn metadata sandbox = %q, want %q", meta["sandbox"], "none")
+	}
+	if meta["turn_id"] == "" {
+		t.Error("turn metadata turn_id should be set")
+	}
+	if upstreamInstructions != "You are a ChatGPT agent." {
+		t.Errorf("upstream body instructions = %q, want %q", upstreamInstructions, "You are a ChatGPT agent.")
+	}
+	if upstreamPromptCacheKey != claudeSessionID {
+		t.Errorf("upstream body prompt_cache_key = %q, want %q", upstreamPromptCacheKey, claudeSessionID)
 	}
 }
 
