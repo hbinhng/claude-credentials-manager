@@ -65,8 +65,13 @@ func withAlias(t *testing.T, aliasRule string, term *codexmw.Terminal, req *http
 // ── TestTerminal_HappyPath ────────────────────────────────────────────────────
 
 func TestTerminal_HappyPath(t *testing.T) {
-	// Upstream: verify translated model, reply with tiny SSE.
+	// Upstream: verify URL path, translated model, reply with tiny SSE.
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Pin the omniroute pivot URL change at the middleware layer:
+		// outbound requests must hit /backend-api/codex/responses, not /v1/responses.
+		if r.URL.Path != "/backend-api/codex/responses" {
+			t.Errorf("upstream URL path = %q, want %q", r.URL.Path, "/backend-api/codex/responses")
+		}
 		body, _ := io.ReadAll(r.Body)
 		var got map[string]any
 		if err := json.Unmarshal(body, &got); err != nil {
