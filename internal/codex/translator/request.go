@@ -6,12 +6,13 @@ import (
 	"fmt"
 )
 
-// RequestOpts configures TranslateRequest. All fields are propagated
-// verbatim from the capture/identity layer; the translator does not
-// synthesize them.
+// RequestOpts configures TranslateRequest. Per spec
+// 2026-05-09-codex-omniroute-pivot §5.2, the InstallationID and
+// PromptCacheKey fields from sub-project B are dropped — neither
+// field is emitted in the outbound body anymore.
 type RequestOpts struct {
 	TargetModel string // post-alias model name to send upstream
-	ServiceTier string // verbatim from capture; "" → omit field
+	ServiceTier string // verbatim into outbound; "" → field omitted
 }
 
 // Errors returned by TranslateRequest.
