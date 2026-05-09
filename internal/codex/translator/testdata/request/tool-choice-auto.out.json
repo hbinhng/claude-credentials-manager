@@ -1,1 +1,29 @@
-{"model":"gpt-5-codex","stream":true,"store":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"calculate 2+2"}]}],"tools":[{"type":"function","name":"calc","description":"Calculate","parameters":{"type":"object","properties":{}}}],"tool_choice":"auto"}
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "calculate 2+2"
+        }
+      ]
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "calc",
+      "description": "Calculate",
+      "parameters": {
+        "type": "object",
+        "properties": {}
+      }
+    }
+  ],
+  "tool_choice": "auto"
+}

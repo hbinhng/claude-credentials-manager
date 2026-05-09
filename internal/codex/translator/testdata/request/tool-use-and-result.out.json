@@ -3,9 +3,27 @@
   "stream": true,
   "store": false,
   "input": [
-    {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "What's the weather in Paris?"}]},
-    {"type": "function_call", "call_id": "tool-abc123", "name": "get_weather", "arguments": "{\"location\":\"Paris\"}"},
-    {"type": "function_call_output", "call_id": "tool-abc123", "output": "Sunny, 22°C"}
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "What's the weather in Paris?"
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "call_id": "tool-abc123",
+      "name": "get_weather",
+      "arguments": "{\"location\":\"Paris\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "tool-abc123",
+      "output": "Sunny, 22°C"
+    }
   ],
   "tools": [
     {
@@ -15,7 +33,9 @@
       "parameters": {
         "type": "object",
         "properties": {
-          "location": {"type": "string"}
+          "location": {
+            "type": "string"
+          }
         }
       }
     }

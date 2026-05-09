@@ -1,1 +1,27 @@
-{"model":"gpt-5-codex","stream":true,"store":false,"client_metadata":{"x-codex-installation-id":"inst-2"},"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are a helpful assistant."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"hi"}]}]}
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "input": [
+    {
+      "type": "message",
+      "role": "developer",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "You are a helpful assistant."
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "hi"
+        }
+      ]
+    }
+  ]
+}

@@ -1,1 +1,33 @@
-{"model":"gpt-5-codex","stream":true,"store":false,"input":[{"type":"function_call","call_id":"abc123","name":"bash","arguments":"{\"command\":\"ls\"}"},{"type":"function_call_output","call_id":"abc123","output":"file1.txt\nfile2.txt"}],"tools":[{"type":"function","name":"bash","description":"Run a shell command","parameters":{"type":"object","properties":{"command":{"type":"string"}}}}]}
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "input": [
+    {
+      "type": "function_call",
+      "call_id": "abc123",
+      "name": "bash",
+      "arguments": "{\"command\":\"ls\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "abc123",
+      "output": "file1.txt\nfile2.txt"
+    }
+  ],
+  "tools": [
+    {
+      "type": "function",
+      "name": "bash",
+      "description": "Run a shell command",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "command": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  ]
+}

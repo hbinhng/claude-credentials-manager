@@ -1,1 +1,37 @@
-{"model":"gpt-5-codex","stream":true,"store":false,"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"What's 2+2?"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"4"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"Are you sure?"}]}]}
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "What's 2+2?"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "assistant",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "4"
+        }
+      ]
+    },
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "Are you sure?"
+        }
+      ]
+    }
+  ]
+}
