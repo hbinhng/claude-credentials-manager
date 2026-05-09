@@ -1,4 +1,4 @@
-.TH CCM 1 "May 2026" "ccm 1.15.1" "User Commands"
+.TH CCM 1 "May 2026" "ccm 1.19.0" "User Commands"
 .SH NAME
 ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH SYNOPSIS
@@ -566,6 +566,29 @@ Currently holds
 if it was not already on
 .BR PATH .
 .SH ENVIRONMENT
+.TP
+.B CCM_HOME
+Override ccm's data directory. When set to a non-empty path, that path
+replaces
+.B ~/.ccm
+as the storage root \(em the env var is the directory itself, not a
+parent of it (matching
+.B CARGO_HOME
+and
+.B RUSTUP_HOME
+semantics). Affects credential storage
+.RB ( <uuid> .credentials.json
+files), the usage log directory, the
+.B ccm serve
+PID file, and the managed
+.B cloudflared
+binary location. External tool dirs
+.RB ( ~/.claude ", " ~/.codex )
+are
+.B not
+redirected \(em those belong to Claude Code and the codex CLI, which
+keep reading from
+.BR $HOME .
 .TP
 .B CCM_PROXY
 Route all outbound ccm traffic through an HTTP(S) or SOCKS5 proxy. The
