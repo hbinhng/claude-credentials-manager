@@ -156,10 +156,32 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	})
 
 	// stream:false → buffer entire response and return JSON.
+	//
+	// Pre-flush response headers BEFORE Collect blocks so Cloudflare's
+	// ~100s "no first byte" timeout is satisfied regardless of how long
+	// upstream takes to complete the buffered generation. Once headers
+	// are on the wire, the body (a single Anthropic Message JSON)
+	// follows when Collect returns. This does NOT protect against
+	// Cloudflare's idle-bytes timeout if upstream takes longer than
+	// ~100s without producing any byte — operators with long-running
+	// stream:false workloads should bind LAN-direct (--bind-host)
+	// instead of using a tunnel.
 	if isStreamFalse(body) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
 		js, err := st.Collect(r.Context(), resp.Body)
 		if err != nil {
-			writeAnthropicError(w, http.StatusInternalServerError, "api_error", err.Error())
+			// Headers already sent. Emit an inline Anthropic-shaped
+			// error JSON so the client sees structured output rather
+			// than malformed JSON.
+			errBody, _ := json.Marshal(map[string]any{
+				"type":  "error",
+				"error": map[string]any{"type": "api_error", "message": err.Error()},
+			})
+			_, _ = w.Write(errBody)
 			return
 		}
 		if t.opts.UsageTee != nil {
@@ -170,7 +192,6 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				CacheReadInputTokens: fu.CacheReadInputTokens,
 			})
 		}
-		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write(js)
 		return
 	}

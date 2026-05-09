@@ -1239,3 +1239,187 @@ func TestApplyDynamicCodexHeaders_FreshTurnIDPerCall(t *testing.T) {
 	}
 }
 
+// orderedRecorder records the relative order of WriteHeader vs Write
+// calls on a ResponseWriter. Used to verify pre-flush behavior in
+// streaming-sensitive paths.
+type orderedRecorder struct {
+	*httptest.ResponseRecorder
+	headerWrittenAt int // sequence number when WriteHeader fired (-1 = never)
+	firstWriteAt    int // sequence number of the first Write call (-1 = never)
+	seq             int
+}
+
+func newOrderedRecorder() *orderedRecorder {
+	return &orderedRecorder{
+		ResponseRecorder: httptest.NewRecorder(),
+		headerWrittenAt:  -1,
+		firstWriteAt:     -1,
+	}
+}
+
+func (o *orderedRecorder) WriteHeader(code int) {
+	o.seq++
+	o.headerWrittenAt = o.seq
+	o.ResponseRecorder.WriteHeader(code)
+}
+
+func (o *orderedRecorder) Write(b []byte) (int, error) {
+	o.seq++
+	if o.firstWriteAt == -1 {
+		o.firstWriteAt = o.seq
+	}
+	return o.ResponseRecorder.Write(b)
+}
+
+func (o *orderedRecorder) Flush() {
+	o.ResponseRecorder.Flush()
+}
+
+// TestTerminal_StreamFalsePreFlushesHeaders ensures the stream:false
+// path writes response headers BEFORE Collect blocks, so Cloudflare's
+// "no first byte" timeout is satisfied even for long-running
+// generations. Per Cloudflare Quick Tunnel behavior the tunnel returns
+// 524 if no bytes (headers count) reach the edge within ~100s.
+func TestTerminal_StreamFalsePreFlushesHeaders(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	// stream:false body
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := newOrderedRecorder()
+
+	// Inline alias-rewrite + ServeHTTP (mirrors withAlias, which is
+	// typed for *httptest.ResponseRecorder and cannot accept the
+	// orderedRecorder wrapper).
+	m, err := alias.Parse([]string{"claude-opus-*=gpt-5-codex"})
+	if err != nil {
+		t.Fatalf("alias.Parse: %v", err)
+	}
+	sharemw.NewAliasRewrite(m).Apply(term).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if rr.headerWrittenAt < 0 {
+		t.Fatal("WriteHeader was never called")
+	}
+	if rr.firstWriteAt < 0 {
+		t.Fatal("Write was never called")
+	}
+	if rr.headerWrittenAt > rr.firstWriteAt {
+		t.Errorf("WriteHeader fired AFTER first Write (header seq=%d, first write seq=%d) — pre-flush ordering is broken",
+			rr.headerWrittenAt, rr.firstWriteAt)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	// StreamTranslator.Collect emits Anthropic SSE event bytes (matching
+	// the existing TestTerminal_StreamFalseBuffersCollected contract):
+	// the body must include both message_start and message_stop markers
+	// so we know Collect ran to completion AFTER headers flushed.
+	out := rr.Body.String()
+	if !strings.Contains(out, "message_start") {
+		t.Errorf("body missing message_start, got:\n%s", out)
+	}
+	if !strings.Contains(out, "message_stop") {
+		t.Errorf("body missing message_stop, got:\n%s", out)
+	}
+}
+
+// TestTerminal_StreamFalseCollectFailsAfterFlush exercises the
+// post-flush error branch: headers are already on the wire (status
+// 200, application/json), then Collect returns an error because
+// upstream closed the connection mid-stream. The handler must NOT
+// call WriteHeader again (which would log a Go warning); instead it
+// emits an inline Anthropic-shaped error JSON as the body.
+func TestTerminal_StreamFalseCollectFailsAfterFlush(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Send 200 + SSE content-type so middleware enters the SSE
+		// path. Hijack and close to make scanner.Err() return an
+		// unexpected EOF inside Collect.
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		// Write a partial event then forcibly close the underlying
+		// connection — this surfaces as a read error to Collect.
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("upstream ResponseWriter does not support hijack")
+			return
+		}
+		conn, bw, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		_, _ = bw.WriteString("data: {\"type\":\"response.created\"}\n") // no trailing \n\n + close
+		_ = bw.Flush()
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","stream":false,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+
+	m, err := alias.Parse([]string{"claude-opus-*=gpt-5-codex"})
+	if err != nil {
+		t.Fatalf("alias.Parse: %v", err)
+	}
+	sharemw.NewAliasRewrite(m).Apply(term).ServeHTTP(rr, req)
+
+	// Headers were already flushed before Collect failed → status MUST
+	// be 200 (we cannot WriteHeader twice) and Content-Type stays JSON.
+	if rr.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (pre-flush already committed)", rr.Code)
+	}
+	if got := rr.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	// Body must be a parseable Anthropic-shaped error object.
+	var parsed map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &parsed); err != nil {
+		t.Fatalf("body is not valid JSON: %v (body=%q)", err, rr.Body.String())
+	}
+	if got := parsed["type"]; got != "error" {
+		t.Errorf("body type = %v, want %q", got, "error")
+	}
+	errObj, ok := parsed["error"].(map[string]any)
+	if !ok {
+		t.Fatalf("body.error is not an object: %v", parsed["error"])
+	}
+	if got := errObj["type"]; got != "api_error" {
+		t.Errorf("body.error.type = %v, want %q", got, "api_error")
+	}
+	if _, hasMsg := errObj["message"]; !hasMsg {
+		t.Errorf("body.error.message missing: %v", errObj)
+	}
+}
+
