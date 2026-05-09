@@ -46,6 +46,8 @@ func (b *Bundle) Apply(req *http.Request) {
 	req.Header.Set("User-Agent", StaticUserAgent)
 	req.Header.Set("Accept", "text/event-stream")
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("originator", StaticOriginator)
+	req.Header.Set("X-Codex-Beta-Features", StaticCodexBetaFeatures)
 	if b.cred.Tokens != nil && b.cred.Tokens.AccountID != "" {
 		req.Header.Set("chatgpt-account-id", b.cred.Tokens.AccountID)
 	}

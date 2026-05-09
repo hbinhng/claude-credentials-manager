@@ -35,6 +35,8 @@ func TestBundle_ApplySetsStaticHeaders(t *testing.T) {
 		{"Accept", "text/event-stream"},
 		{"Content-Type", "application/json"},
 		{"chatgpt-account-id", "acc-1"},
+		{"Originator", identity.StaticOriginator},
+		{"X-Codex-Beta-Features", identity.StaticCodexBetaFeatures},
 	}
 	for _, c := range cases {
 		if got := req.Header.Get(c.key); got != c.want {
