@@ -11,6 +11,7 @@ package translator_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -521,6 +522,118 @@ func TestStream_ReverseRenameViewImageToRead(t *testing.T) {
 	if !strings.Contains(out.String(), `\"file_path\":\"./img.png\"`) {
 		t.Errorf("output should rename path to file_path (escaped form):\n%s", out.String())
 	}
+}
+
+func TestStream_ReverseRenameApplyPatchToEdit(t *testing.T) {
+	diffJSON := `{"patch":"--- a/foo.go\n+++ b/foo.go\n@@\n-old\n+new\n","filename":"foo.go"}`
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"apply_patch"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":` + asJSONString(diffJSON) + `}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"name":"Edit"`) {
+		t.Errorf("apply_patch single-hunk diff should map to Edit:\n%s", body)
+	}
+	// The keys appear escaped inside partial_json. Check escaped forms.
+	if !strings.Contains(body, `\"old_string\":\"old\\n\"`) {
+		t.Errorf("Edit should carry old_string=old\\n (escaped form):\n%s", body)
+	}
+	if !strings.Contains(body, `\"new_string\":\"new\\n\"`) {
+		t.Errorf("Edit should carry new_string=new\\n (escaped form):\n%s", body)
+	}
+}
+
+func TestStream_ReverseRenameApplyPatchCreateToWrite(t *testing.T) {
+	diffJSON := `{"patch":"--- /dev/null\n+++ b/new.go\n@@ -0,0 +1,1 @@\n+package main\n","filename":"new.go"}`
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"apply_patch"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":` + asJSONString(diffJSON) + `}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"name":"Write"`) {
+		t.Errorf("apply_patch /dev/null diff should map to Write:\n%s", body)
+	}
+	if !strings.Contains(body, `\"file_path\":\"new.go\"`) {
+		t.Errorf("Write should carry file_path (escaped form):\n%s", body)
+	}
+	if !strings.Contains(body, `\"content\":\"package main\\n\"`) {
+		t.Errorf("Write should carry content (escaped form):\n%s", body)
+	}
+}
+
+func TestStream_ApplyPatchFallbackOnInvalidDiff(t *testing.T) {
+	// When apply_patch args contain an unparsable diff (e.g. a rename diff),
+	// the stream translator falls back to emitting the raw args verbatim.
+	renameDiffJSON := `{"patch":"--- a/old.go\n+++ b/new.go\n@@ -1 +1 @@\n-x\n+y\n","filename":"new.go"}`
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"apply_patch"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":` + asJSONString(renameDiffJSON) + `}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	body := out.String()
+	// Fallback: the tool name should remain apply_patch (not Edit or Write).
+	if !strings.Contains(body, `"name":"apply_patch"`) {
+		t.Errorf("fallback should keep apply_patch name:\n%s", body)
+	}
+	// The raw args should be emitted verbatim in partial_json (escaped).
+	if !strings.Contains(body, `\"patch\"`) {
+		t.Errorf("fallback should emit raw args verbatim (escaped form):\n%s", body)
+	}
+}
+
+func TestTranslateRequest_WriteToolForwardSynthesizesCreateDiff(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"create file"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Write","input":{"file_path":"new.go","content":"package main\n"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+        ],
+        "tools":[{"name":"Write","description":"w","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"name":"apply_patch"`)) {
+		t.Errorf("Write history should become apply_patch function_call:\n%s", out)
+	}
+	// The patch should contain /dev/null in the diff header.
+	if !bytes.Contains(out, []byte(`\/dev\/null`)) && !bytes.Contains(out, []byte(`/dev/null`)) {
+		t.Errorf("Write diff should have /dev/null header:\n%s", out)
+	}
+}
+
+// asJSONString returns s wrapped as a JSON string literal.
+func asJSONString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
 }
 
 // normalize strips trailing whitespace per line and tolerates \r\n vs \n.
