@@ -1,6 +1,7 @@
 package translator_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -610,5 +611,59 @@ func TestTranslateRequest_ToolResultImageNonBase64Skipped(t *testing.T) {
 	}
 	if strings.Contains(string(got), "example.com") {
 		t.Errorf("URL-source image should be dropped, not passed through: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_DropsClaudeCodeOnlyTools(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[
+            {"name":"TaskUpdate","description":"x","input_schema":{"type":"object"}},
+            {"name":"Bash","description":"y","input_schema":{"type":"object"}},
+            {"name":"mcp__plugin__do_thing","description":"z","input_schema":{"type":"object"}}
+        ]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var got struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	names := map[string]bool{}
+	for _, t := range got.Tools {
+		names[t.Name] = true
+	}
+	if names["TaskUpdate"] {
+		t.Errorf("TaskUpdate must be dropped from outbound tools")
+	}
+	if !names["Bash"] {
+		t.Errorf("Bash must survive (renamed in Phase 4)")
+	}
+	if !names["mcp__plugin__do_thing"] {
+		t.Errorf("MCP tools must pass through")
+	}
+}
+
+func TestTranslateRequest_DoesNotDropToolsWithSimilarPrefix(t *testing.T) {
+	// "TaskFoo" is not a Claude builtin; only the exact names in
+	// droppedClaudeTools are dropped.
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[{"name":"TaskFoo","description":"x","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"TaskFoo"`)) {
+		t.Errorf("TaskFoo should pass through (not in drop list)")
 	}
 }
