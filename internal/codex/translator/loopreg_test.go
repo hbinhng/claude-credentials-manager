@@ -8,34 +8,6 @@ import (
 	"testing"
 )
 
-// TestLoopReplay_DroppedToolsNeverInOutboundTools replays each
-// inbound /v1/messages from the fixture through TranslateRequest and
-// asserts that NO outbound tools[] entry has a name in
-// droppedClaudeTools. This is the post-Phase-2 regression assertion:
-// any future change that re-enables a Claude-Code-only tool will fail
-// here.
-func TestLoopReplay_DroppedToolsNeverInOutboundTools(t *testing.T) {
-	for i, body := range loadFixtureBodies(t) {
-		out, err := TranslateRequest(body, RequestOpts{TargetModel: "gpt-5"})
-		if err != nil {
-			t.Fatalf("turn %d: TranslateRequest: %v", i, err)
-		}
-		var probe struct {
-			Tools []struct {
-				Name string `json:"name"`
-			} `json:"tools"`
-		}
-		if err := json.Unmarshal(out, &probe); err != nil {
-			t.Fatalf("turn %d: unmarshal: %v", i, err)
-		}
-		for _, tt := range probe.Tools {
-			if isDroppedClaudeTool(tt.Name) {
-				t.Errorf("turn %d: outbound tools[] contains dropped tool %q", i, tt.Name)
-			}
-		}
-	}
-}
-
 // TestLoopReplay_StaleReminderNeverInOutboundInput replays each
 // inbound and asserts that the outbound input[] does NOT contain the
 // stale "task tools haven't been used recently" reminder text. This is

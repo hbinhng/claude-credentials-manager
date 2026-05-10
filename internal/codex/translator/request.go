@@ -87,9 +87,6 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 		readPresent := false
 		viewImagePresent := false
 		for _, t := range in.Tools {
-			if isDroppedClaudeTool(t.Name) {
-				continue
-			}
 			out.Tools = append(out.Tools, applyForwardToolDef(t))
 			if t.Name == "Read" {
 				readPresent = true
@@ -178,9 +175,6 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				msgContent = append(msgContent, codexContent{Type: "input_image", ImageURL: dataURL})
 			}
 		case "tool_use":
-			if isDroppedClaudeTool(b.Name) {
-				continue // historical call to a dropped tool — skip
-			}
 			if len(msgContent) > 0 {
 				out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
 				msgContent = nil
