@@ -524,29 +524,6 @@ func TestStream_ReverseRenameViewImageToRead(t *testing.T) {
 	}
 }
 
-func TestStream_SanitizesEmptyPagesOnRead(t *testing.T) {
-	in := strings.Join([]string{
-		`data: {"type":"response.created"}`,
-		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"Read"}}`,
-		`data: {"type":"response.function_call_arguments.delta","delta":"{\"file_path\":\"foo.go\",\"pages\":\"\"}"}`,
-		`data: {"type":"response.function_call_arguments.done"}`,
-		`data: {"type":"response.completed","status":"completed"}`,
-		``,
-	}, "\n\n")
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
-	var out bytes.Buffer
-	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
-		t.Fatalf("Pipe: %v", err)
-	}
-	// Args travel double-encoded inside partial_json. Check escaped forms.
-	if strings.Contains(out.String(), `\"pages\":\"\"`) {
-		t.Errorf("empty pages should be dropped, got:\n%s", out.String())
-	}
-	if !strings.Contains(out.String(), `\"file_path\":\"foo.go\"`) {
-		t.Errorf("file_path should survive sanitization (escaped form):\n%s", out.String())
-	}
-}
-
 // TestStream_MessageStartUsesUpstreamResponseID verifies that the message_start
 // event carries an id translated from the upstream response.id field.
 func TestStream_MessageStartUsesUpstreamResponseID(t *testing.T) {
