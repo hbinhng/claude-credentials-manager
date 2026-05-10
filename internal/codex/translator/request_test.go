@@ -668,6 +668,74 @@ func TestTranslateRequest_DoesNotDropToolsWithSimilarPrefix(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_StripsTaskToolsReminderFromUserMessages(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":[
+                {"type":"text","text":"do thing"},
+                {"type":"text","text":"<system-reminder>\nThe task tools haven't been used recently. existing tasks: ...\n</system-reminder>"}
+            ]}
+        ]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if bytes.Contains(out, []byte("haven't been used recently")) {
+		t.Errorf("outbound body still contains the dropped reminder:\n%s", out)
+	}
+	if !bytes.Contains(out, []byte("do thing")) {
+		t.Errorf("outbound body lost the legitimate text block")
+	}
+}
+
+func TestTranslateRequest_DropsAllReminderTextBlock(t *testing.T) {
+	// A text block whose entire content is the reminder should not
+	// become an empty input_text item — drop the block.
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":[
+                {"type":"text","text":"keep me"},
+                {"type":"text","text":"<system-reminder>\nThe task tools haven't been used recently. tasks: ...\n</system-reminder>"}
+            ]}
+        ]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	// Decoded, count input_text items in the user message.
+	var probe struct {
+		Input []struct {
+			Type    string `json:"type"`
+			Role    string `json:"role"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var texts []string
+	for _, item := range probe.Input {
+		if item.Type != "message" {
+			continue
+		}
+		for _, c := range item.Content {
+			if c.Type == "input_text" {
+				texts = append(texts, c.Text)
+			}
+		}
+	}
+	if len(texts) != 1 || texts[0] != "keep me" {
+		t.Errorf("expected single input_text 'keep me'; got %v", texts)
+	}
+}
+
 func TestTranslateRequest_DropsHistoricalToolUseForDroppedTools(t *testing.T) {
 	body := []byte(`{
         "model":"claude-opus-4-7",
