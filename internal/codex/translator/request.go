@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // RequestOpts configures TranslateRequest. Per spec
@@ -355,4 +356,52 @@ func bucketEffort(budget int) string {
 	default:
 		return "xhigh"
 	}
+}
+
+// toolResultMaxBytes caps the size of a forwarded tool_result string.
+// Set well below the model's per-turn token budget; the truncator
+// breaks at the last whitespace at or before the cap so a partial
+// word like the observed "Updated task #1 ___" is avoided.
+const toolResultMaxBytes = 64 * 1024
+
+// truncateAtWordBoundary returns s if len(s) <= max, otherwise the
+// longest prefix of length <= max that ends at a whitespace boundary.
+// If no whitespace exists in the prefix, falls back to a hard cut at
+// max. Callers (currently stringifyToolResult) use this to keep
+// over-long tool_result strings from blowing chatgpt.com's input
+// limit while preserving readability.
+func truncateAtWordBoundary(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	cut := s[:max]
+	if i := lastWhitespaceIndex(cut); i >= 0 {
+		return cut[:i]
+	}
+	// No whitespace — back up byte-by-byte to a UTF-8 rune boundary
+	// so we don't split a multi-byte codepoint and produce invalid
+	// UTF-8.
+	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
+		cut = cut[:len(cut)-1]
+	}
+	// If the last byte is a multi-byte rune start (0b11xxxxxx) but
+	// its continuation bytes were stripped, the rune is incomplete.
+	// Drop the start byte too.
+	if len(cut) > 0 {
+		r, n := utf8.DecodeLastRuneInString(cut)
+		if r == utf8.RuneError && n == 1 {
+			cut = cut[:len(cut)-1]
+		}
+	}
+	return cut
+}
+
+func lastWhitespaceIndex(s string) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		switch s[i] {
+		case ' ', '\t', '\n':
+			return i
+		}
+	}
+	return -1
 }
