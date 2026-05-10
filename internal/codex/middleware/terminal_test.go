@@ -1104,7 +1104,7 @@ func TestTerminal_UsageTeeWired(t *testing.T) {
 		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n")
 		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
-		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"response\":{\"id\":\"resp_t1\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3}}}\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
 	}))
 	defer upstream.Close()

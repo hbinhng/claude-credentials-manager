@@ -14,6 +14,6 @@ data: {"type":"response.output_text.delta","delta":"The answer is 42."}
 
 data: {"type":"response.output_text.done"}
 
-data: {"type":"response.completed","status":"completed","usage":{"input_tokens":15,"output_tokens":8}}
+data: {"type":"response.completed","status":"completed","response":{"id":"resp_3","usage":{"input_tokens":15,"output_tokens":8}}}
 
 data: [DONE]

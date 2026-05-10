@@ -11,6 +11,7 @@ package translator_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -178,7 +179,7 @@ func TestStreamTranslator_DropIgnoredEvents(t *testing.T) {
 		``,
 		`data: {"type":"response.output_item.done"}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -213,7 +214,7 @@ func TestStreamTranslator_MalformedLineSkipped(t *testing.T) {
 		``,
 		`data: {"type":"response.output_text.done"}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -237,7 +238,7 @@ func TestStreamTranslator_DuplicateCreated(t *testing.T) {
 		``,
 		`data: {"type":"response.created","response":{"id":"r1"}}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -269,7 +270,7 @@ func TestStreamTranslator_UnknownItemType(t *testing.T) {
 		``,
 		`data: {"type":"response.output_text.done"}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -294,7 +295,7 @@ func TestStreamTranslator_NilItemInOutputItemAdded(t *testing.T) {
 		``,
 		`data: {"type":"response.output_item.added","output_index":0}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -323,7 +324,7 @@ func TestStreamTranslator_MaxTokensStopReason(t *testing.T) {
 		``,
 		`data: {"type":"response.output_text.done"}`,
 		``,
-		`data: {"type":"response.completed","status":"length","usage":{"input_tokens":10,"output_tokens":5}}`,
+		`data: {"type":"response.completed","status":"length","response":{"id":"r1","usage":{"input_tokens":10,"output_tokens":5}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -349,7 +350,7 @@ func TestStreamTranslator_CloseBlockNoop(t *testing.T) {
 		``,
 		`data: {"type":"response.output_text.done"}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -372,7 +373,7 @@ func TestStreamTranslator_WriteSSEFlush(t *testing.T) {
 	input := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"r1"}}`,
 		``,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 		`data: [DONE]`,
 		``,
@@ -450,7 +451,7 @@ func TestStream_ReverseRenameExecCommandToBash(t *testing.T) {
 		`data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":"}`,
 		`data: {"type":"response.function_call_arguments.delta","delta":"\"ls -la\"}"}`,
 		`data: {"type":"response.function_call_arguments.done"}`,
-		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":1,"output_tokens":1}}}`,
 		``,
 	}, "\n\n")
 	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
@@ -611,6 +612,105 @@ func TestStream_TwoConsecutiveResponsesHaveDistinctMessageIDs(t *testing.T) {
 	// Sanity: ids must be distinct between responses.
 	if !strings.Contains(a, "msg_AAAA") || !strings.Contains(b, "msg_BBBB") {
 		t.Errorf("ids must be distinct between responses")
+	}
+}
+
+func TestStream_MessageDeltaIncludesUsageFromResponseCompleted(t *testing.T) {
+	// Synthesize a minimal upstream SSE: response.created then
+	// response.completed with a usage block under response.usage.
+	src := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_abc"}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"resp_abc","usage":{"input_tokens":123,"output_tokens":45,"input_tokens_details":{"cached_tokens":7}}}}`,
+		``,
+		``,
+	}, "\n")
+
+	tr := translator.NewStreamTranslator(translator.StreamOpts{Model: "test-model", MessageID: "msg_fallback"})
+	var out bytes.Buffer
+	if err := tr.Pipe(context.Background(), strings.NewReader(src), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+
+	// Look for the message_delta line and parse its JSON.
+	var deltaPayload string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "data: ") {
+			payload := strings.TrimPrefix(line, "data: ")
+			if strings.Contains(payload, `"message_delta"`) {
+				deltaPayload = payload
+				break
+			}
+		}
+	}
+	if deltaPayload == "" {
+		t.Fatalf("no message_delta in output:\n%s", out.String())
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal([]byte(deltaPayload), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	usage, ok := got["usage"].(map[string]any)
+	if !ok {
+		t.Fatalf("no usage block in message_delta: %v", got)
+	}
+	if usage["input_tokens"] != float64(123) {
+		t.Errorf("input_tokens = %v, want 123", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(45) {
+		t.Errorf("output_tokens = %v, want 45", usage["output_tokens"])
+	}
+	if usage["cache_read_input_tokens"] != float64(7) {
+		t.Errorf("cache_read_input_tokens = %v, want 7", usage["cache_read_input_tokens"])
+	}
+
+	// FinalUsage getter should report the same numbers.
+	fu := tr.FinalUsage()
+	if fu.InputTokens != 123 || fu.OutputTokens != 45 || fu.CacheReadInputTokens != 7 {
+		t.Errorf("FinalUsage = %+v, want {123 45 7}", fu)
+	}
+}
+
+func TestStream_MessageDeltaUsageMissingFallsBackToZero(t *testing.T) {
+	src := strings.Join([]string{
+		`event: response.created`,
+		`data: {"type":"response.created","response":{"id":"resp_xyz"}}`,
+		``,
+		`event: response.completed`,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"resp_xyz"}}`,
+		``,
+		``,
+	}, "\n")
+
+	tr := translator.NewStreamTranslator(translator.StreamOpts{Model: "test-model", MessageID: "msg_fallback"})
+	var out bytes.Buffer
+	if err := tr.Pipe(context.Background(), strings.NewReader(src), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+
+	var deltaPayload string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.HasPrefix(line, "data: ") && strings.Contains(line, `"message_delta"`) {
+			deltaPayload = strings.TrimPrefix(line, "data: ")
+			break
+		}
+	}
+	if deltaPayload == "" {
+		t.Fatalf("no message_delta in output")
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(deltaPayload), &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	usage, _ := got["usage"].(map[string]any)
+	if usage["input_tokens"] != float64(0) {
+		t.Errorf("input_tokens = %v, want 0", usage["input_tokens"])
+	}
+	if usage["output_tokens"] != float64(0) {
+		t.Errorf("output_tokens = %v, want 0", usage["output_tokens"])
 	}
 }
 
