@@ -93,6 +93,9 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 	if len(in.Tools) > 0 {
 		out.Tools = make([]codexTool, 0, len(in.Tools))
 		for _, t := range in.Tools {
+			if isDroppedClaudeTool(t.Name) {
+				continue
+			}
 			out.Tools = append(out.Tools, codexTool{
 				Type:        "function",
 				Name:        t.Name,
