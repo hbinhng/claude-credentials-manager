@@ -1,6 +1,9 @@
 package translator
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"unicode/utf8"
+)
 
 // argSanitizer is a per-tool helper that mutates the model's tool
 // arguments on the reverse path before they reach Claude Code.
@@ -80,8 +83,23 @@ func truncateAtWordBoundary(s string, max int) string {
 		return s
 	}
 	cut := s[:max]
-	if i := lastWhitespaceIndex(cut); i > 0 {
+	if i := lastWhitespaceIndex(cut); i >= 0 {
 		return cut[:i]
+	}
+	// No whitespace — back up byte-by-byte to a UTF-8 rune boundary
+	// so we don't split a multi-byte codepoint and produce invalid
+	// UTF-8.
+	for len(cut) > 0 && !utf8.RuneStart(cut[len(cut)-1]) {
+		cut = cut[:len(cut)-1]
+	}
+	// If the last byte is a multi-byte rune start (0b11xxxxxx) but
+	// its continuation bytes were stripped, the rune is incomplete.
+	// Drop the start byte too.
+	if len(cut) > 0 {
+		r, n := utf8.DecodeLastRuneInString(cut)
+		if r == utf8.RuneError && n == 1 {
+			cut = cut[:len(cut)-1]
+		}
 	}
 	return cut
 }
