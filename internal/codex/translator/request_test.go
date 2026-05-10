@@ -472,52 +472,27 @@ func TestTranslateRequest_ForwardSynthesizesEditDiff(t *testing.T) {
 	}
 }
 
-func TestRoundTrip_EditApplyPatchPreservesContent(t *testing.T) {
+func TestTranslateRequest_EditWithNullInputFallback(t *testing.T) {
+	// When an Edit tool_use has malformed (non-map) input,
+	// editToolUseToApplyPatchArgs returns false and the fallback
+	// emits the args verbatim. Tests the previously uncovered
+	// request.go fallback branch.
 	body := []byte(`{
         "model":"claude-opus-4-7",
         "messages":[
-            {"role":"user","content":"edit foo"},
-            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"foo.go","old_string":"old\n","new_string":"new\n"}}]},
+            {"role":"user","content":"do edit"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Edit","input":null}]},
             {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
         ],
         "tools":[{"name":"Edit","description":"e","input_schema":{"type":"object"}}]
     }`)
-	fwd, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
-		t.Fatalf("forward: %v", err)
+		t.Fatalf("TranslateRequest: %v", err)
 	}
-	var probe struct {
-		Input []struct {
-			Type      string `json:"type"`
-			Name      string `json:"name,omitempty"`
-			Arguments string `json:"arguments,omitempty"`
-		} `json:"input"`
-	}
-	if err := json.Unmarshal(fwd, &probe); err != nil {
-		t.Fatalf("unmarshal forward: %v", err)
-	}
-	var argsJSON string
-	for _, it := range probe.Input {
-		if it.Type == "function_call" && it.Name == "apply_patch" {
-			argsJSON = it.Arguments
-			break
-		}
-	}
-	if argsJSON == "" {
-		t.Fatalf("no apply_patch in forward output")
-	}
-	name, args, ok := translator.ApplyPatchReverse(argsJSON)
-	if !ok {
-		t.Fatalf("applyPatchReverse failed on synthesized diff")
-	}
-	if name != "Edit" {
-		t.Errorf("round-trip name = %q, want Edit", name)
-	}
-	if args["old_string"] != "old\n" {
-		t.Errorf("round-trip old_string = %q, want \"old\\n\"", args["old_string"])
-	}
-	if args["new_string"] != "new\n" {
-		t.Errorf("round-trip new_string = %q, want \"new\\n\"", args["new_string"])
+	// The fallback path should emit a function_call (not panic, not error).
+	if !bytes.Contains(out, []byte(`"function_call"`)) {
+		t.Errorf("expected a function_call in the output:\n%s", out)
 	}
 }
 

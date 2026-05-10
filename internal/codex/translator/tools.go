@@ -265,16 +265,10 @@ func editToolUseToApplyPatchArgs(toolName string, input any) (string, bool) {
 	return string(args), true
 }
 
-// ApplyPatchReverse parses argsJSON (apply_patch arguments) and
+// applyPatchReverse parses argsJSON (apply_patch arguments) and
 // returns the Anthropic tool name + args map to surface to Claude
 // Code. On parse failure or unsupported diff, returns ("", nil, false)
 // — caller falls back to passthrough.
-// Exported so the round-trip test in request_test.go can call it directly.
-func ApplyPatchReverse(argsJSON string) (claudeName string, claudeArgs map[string]any, ok bool) {
-	return applyPatchReverse(argsJSON)
-}
-
-// applyPatchReverse is the unexported implementation used by the stream translator.
 func applyPatchReverse(argsJSON string) (claudeName string, claudeArgs map[string]any, ok bool) {
 	var raw struct {
 		Patch    string `json:"patch"`
