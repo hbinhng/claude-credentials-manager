@@ -29,8 +29,9 @@ type StreamTranslator struct {
 	messageEnded        bool
 	stopReason          string
 	usage               *anthropicUsage
-	currentToolRenameTo string        // codex tool name when current block is a renamed tool_use; "" otherwise
-	argBuffer           strings.Builder // accumulated function_call_arguments deltas for renamed tools
+	currentToolRenameTo    string          // codex tool name when current block is a renamed tool_use; "" otherwise
+	currentBlockClaudeName string          // Claude tool name (Read, Glob, ...) for the open function_call block
+	argBuffer              strings.Builder // accumulated function_call_arguments deltas for renamed tools
 }
 
 type anthropicUsage struct {
@@ -206,33 +207,38 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.closeBlock()
 
 	case "response.function_call_arguments.delta":
-		// For renamed tools, buffer the delta and suppress emission
-		// until .done so we can rewrite arg keys against the assembled
-		// JSON. For non-renamed tools, stream the delta verbatim.
-		if t.currentToolRenameTo != "" {
-			t.argBuffer.WriteString(ev.Delta)
-			return nil
-		}
-		body, _ := json.Marshal(map[string]any{
-			"type":  "content_block_delta",
-			"index": t.currentBlockIdx,
-			"delta": map[string]any{"type": "input_json_delta", "partial_json": ev.Delta},
-		})
-		return []emission{{name: "content_block_delta", data: string(body)}}
+		t.argBuffer.WriteString(ev.Delta)
+		return nil
 
 	case "response.function_call_arguments.done":
 		var emissions []emission
-		if t.currentToolRenameTo != "" {
-			renamed := reverseRenameArgs(t.currentToolRenameTo, t.argBuffer.String())
+		switch {
+		case t.currentToolRenameTo != "":
+			// Renamed tool (Bash, view_image): rename keys then sanitize.
+			renamedJSON := reverseRenameArgs(t.currentToolRenameTo, t.argBuffer.String())
+			claudeName, _ := lookupReverseName(t.currentToolRenameTo)
+			renamedJSON = sanitizeJSONStringForTool(claudeName, renamedJSON)
 			body, _ := json.Marshal(map[string]any{
 				"type":  "content_block_delta",
 				"index": t.currentBlockIdx,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": renamed},
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": renamedJSON},
 			})
 			emissions = append(emissions, emission{name: "content_block_delta", data: string(body)})
-			t.currentToolRenameTo = ""
-			t.argBuffer.Reset()
+		default:
+			// Passthrough tool. Sanitize against the OUTBOUND name
+			// (which equals the Claude name).
+			passthrough := sanitizeJSONStringForTool(t.currentBlockClaudeName, t.argBuffer.String())
+			if passthrough != "" {
+				body, _ := json.Marshal(map[string]any{
+					"type":  "content_block_delta",
+					"index": t.currentBlockIdx,
+					"delta": map[string]any{"type": "input_json_delta", "partial_json": passthrough},
+				})
+				emissions = append(emissions, emission{name: "content_block_delta", data: string(body)})
+			}
 		}
+		t.currentToolRenameTo = ""
+		t.argBuffer.Reset()
 		emissions = append(emissions, t.closeBlock()...)
 		return emissions
 
@@ -289,12 +295,13 @@ func (t *StreamTranslator) openBlock(ev codexEvent) []emission {
 		content = map[string]any{"type": "thinking", "thinking": ""}
 	case "function_call":
 		callName := ev.Item.Name
-		t.currentToolRenameTo = "" // default: pass through
+		t.currentToolRenameTo = ""
 		if claude, ok := lookupReverseName(ev.Item.Name); ok {
 			callName = claude
 			t.currentToolRenameTo = ev.Item.Name
-			t.argBuffer.Reset()
 		}
+		t.currentBlockClaudeName = callName
+		t.argBuffer.Reset()
 		content = map[string]any{
 			"type":  "tool_use",
 			"id":    ev.Item.CallID,
