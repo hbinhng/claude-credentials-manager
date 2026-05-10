@@ -84,26 +84,9 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 
 	// tools → flat function tools
 	if len(in.Tools) > 0 {
-		out.Tools = make([]codexTool, 0, len(in.Tools)+1)
-		readPresent := false
-		viewImagePresent := false
+		out.Tools = make([]codexTool, 0, len(in.Tools))
 		for _, t := range in.Tools {
 			out.Tools = append(out.Tools, applyForwardToolDef(t))
-			if t.Name == "Read" {
-				readPresent = true
-			}
-			if t.Name == "view_image" {
-				viewImagePresent = true
-			}
-		}
-		if readPresent && !viewImagePresent {
-			r := toolRenameMap["Read"]
-			out.Tools = append(out.Tools, codexTool{
-				Type:        "function",
-				Name:        r.To,
-				Description: "Open a local image or PDF for visual inspection.",
-				Parameters:  r.OutputSchema,
-			})
 		}
 	}
 
@@ -181,11 +164,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				msgContent = nil
 			}
 			callName := b.Name
-			// Only replacement renames (non-empty ParamRename) rewrite the
-			// call name. Additive renames (Read↔view_image, where Read is
-			// kept verbatim AND view_image is added) leave the historical
-			// call as-is.
-			if r, ok := lookupForwardRename(b.Name); ok && len(r.ParamRename) > 0 {
+			if r, ok := lookupForwardRename(b.Name); ok {
 				callName = r.To
 			}
 			renamedInput := applyForwardArgRename(b.Name, b.Input)
@@ -325,12 +304,13 @@ func translateToolChoice(tc *anthropicToolChoice, tools []codexTool) any {
 	case "any":
 		return "required"
 	case "tool":
-		// Replacement renames (non-empty ParamRename) swap the name —
-		// Bash → exec_command. Additive renames (Read↔view_image, where
-		// Read remains in out.Tools) keep the original name so the
-		// caller's force-Read intent is preserved.
+		// Apply forward rename so "Bash" resolves to "exec_command"
+		// after Phase 4's rename. Without this, callers sending
+		// tool_choice:{type:"tool",name:"Bash"} would silently lose the
+		// forced-tool constraint because out.Tools no longer contains
+		// "Bash".
 		resolvedName := tc.Name
-		if r, ok := lookupForwardRename(tc.Name); ok && len(r.ParamRename) > 0 {
+		if r, ok := lookupForwardRename(tc.Name); ok {
 			resolvedName = r.To
 		}
 		for _, t := range tools {
