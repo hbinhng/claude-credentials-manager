@@ -20,17 +20,15 @@ type StreamOpts struct {
 // StreamTranslator consumes codex SSE events and emits Anthropic SSE
 // events. Stateful (tracks open content blocks and the next index).
 type StreamTranslator struct {
-	opts                StreamOpts
-	nextBlockIndex      int
-	currentBlockIdx     int    // -1 when no block open
-	currentType         string // type of the currently open block ("message"|"reasoning"|"function_call")
-	lastClosedType      string // type of the most recently closed block; used by mapStopReason
-	messageStarted      bool
-	messageEnded        bool
-	stopReason          string
-	usage               *anthropicUsage
-	currentToolRenameTo string          // codex tool name when current block is a renamed tool_use; "" otherwise
-	argBuffer           strings.Builder // accumulated function_call_arguments deltas for renamed tools
+	opts            StreamOpts
+	nextBlockIndex  int
+	currentBlockIdx int    // -1 when no block open
+	currentType     string // type of the currently open block ("message"|"reasoning"|"function_call")
+	lastClosedType  string // type of the most recently closed block; used by mapStopReason
+	messageStarted  bool
+	messageEnded    bool
+	stopReason      string
+	usage           *anthropicUsage
 }
 
 type anthropicUsage struct {
@@ -218,13 +216,6 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.closeBlock()
 
 	case "response.function_call_arguments.delta":
-		// For renamed tools, buffer the delta and suppress emission
-		// until .done so we can rewrite arg keys against the assembled
-		// JSON. For non-renamed tools, stream the delta verbatim.
-		if t.currentToolRenameTo != "" {
-			t.argBuffer.WriteString(ev.Delta)
-			return nil
-		}
 		body, _ := json.Marshal(map[string]any{
 			"type":  "content_block_delta",
 			"index": t.currentBlockIdx,
@@ -233,20 +224,7 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return []emission{{name: "content_block_delta", data: string(body)}}
 
 	case "response.function_call_arguments.done":
-		var emissions []emission
-		if t.currentToolRenameTo != "" {
-			renamed := reverseRenameArgs(t.currentToolRenameTo, t.argBuffer.String())
-			body, _ := json.Marshal(map[string]any{
-				"type":  "content_block_delta",
-				"index": t.currentBlockIdx,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": renamed},
-			})
-			emissions = append(emissions, emission{name: "content_block_delta", data: string(body)})
-			t.currentToolRenameTo = ""
-			t.argBuffer.Reset()
-		}
-		emissions = append(emissions, t.closeBlock()...)
-		return emissions
+		return t.closeBlock()
 
 	case "response.completed":
 		var em []emission
@@ -300,17 +278,10 @@ func (t *StreamTranslator) openBlock(ev codexEvent) []emission {
 	case "reasoning":
 		content = map[string]any{"type": "thinking", "thinking": ""}
 	case "function_call":
-		callName := ev.Item.Name
-		t.currentToolRenameTo = "" // default: pass through
-		if claude, ok := lookupReverseName(ev.Item.Name); ok {
-			callName = claude
-			t.currentToolRenameTo = ev.Item.Name
-			t.argBuffer.Reset()
-		}
 		content = map[string]any{
 			"type":  "tool_use",
 			"id":    ev.Item.CallID,
-			"name":  callName,
+			"name":  ev.Item.Name,
 			"input": map[string]any{},
 		}
 	default:
