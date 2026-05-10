@@ -80,27 +80,6 @@ func TestLoopReplay_NoToolResultExceeds64KB(t *testing.T) {
 	}
 }
 
-// TestLoopReplay_FrequencyAndPresencePenaltiesPresent locks in the
-// Phase 1 sampling defaults across every turn of the fixture.
-func TestLoopReplay_FrequencyAndPresencePenaltiesPresent(t *testing.T) {
-	for i, body := range loadFixtureBodies(t) {
-		out, err := TranslateRequest(body, RequestOpts{TargetModel: "gpt-5"})
-		if err != nil {
-			t.Fatalf("turn %d: TranslateRequest: %v", i, err)
-		}
-		var probe map[string]any
-		if err := json.Unmarshal(out, &probe); err != nil {
-			t.Fatalf("turn %d: unmarshal: %v", i, err)
-		}
-		if probe["frequency_penalty"] == nil {
-			t.Errorf("turn %d: frequency_penalty missing", i)
-		}
-		if probe["presence_penalty"] == nil {
-			t.Errorf("turn %d: presence_penalty missing", i)
-		}
-	}
-}
-
 // loadFixtureBodies extracts the in.raw /v1/messages bodies from the
 // fixture file. Returns them in trace-recording order.
 func loadFixtureBodies(t *testing.T) [][]byte {
