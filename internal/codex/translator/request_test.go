@@ -426,6 +426,101 @@ func TestRoundTrip_BashExecCommandPreservesCommandKey(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_ReplacesEditAndWriteWithApplyPatch(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[
+            {"name":"Edit","description":"e","input_schema":{"type":"object"}},
+            {"name":"Write","description":"w","input_schema":{"type":"object"}}
+        ]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if bytes.Contains(out, []byte(`"name":"Edit"`)) {
+		t.Errorf("Edit should be replaced by apply_patch")
+	}
+	if bytes.Contains(out, []byte(`"name":"Write"`)) {
+		t.Errorf("Write should be replaced by apply_patch")
+	}
+	if !bytes.Contains(out, []byte(`"name":"apply_patch"`)) {
+		t.Errorf("apply_patch should be present")
+	}
+}
+
+func TestTranslateRequest_ForwardSynthesizesEditDiff(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"do edit"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"foo.go","old_string":"old\n","new_string":"new\n"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+        ],
+        "tools":[{"name":"Edit","description":"e","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"name":"apply_patch"`)) {
+		t.Errorf("history Edit should become apply_patch function_call")
+	}
+	if !bytes.Contains(out, []byte(`-old`)) || !bytes.Contains(out, []byte(`+new`)) {
+		t.Errorf("synthesized diff missing -old/+new lines:\n%s", out)
+	}
+}
+
+func TestRoundTrip_EditApplyPatchPreservesContent(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"edit foo"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"foo.go","old_string":"old\n","new_string":"new\n"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+        ],
+        "tools":[{"name":"Edit","description":"e","input_schema":{"type":"object"}}]
+    }`)
+	fwd, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	var probe struct {
+		Input []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(fwd, &probe); err != nil {
+		t.Fatalf("unmarshal forward: %v", err)
+	}
+	var argsJSON string
+	for _, it := range probe.Input {
+		if it.Type == "function_call" && it.Name == "apply_patch" {
+			argsJSON = it.Arguments
+			break
+		}
+	}
+	if argsJSON == "" {
+		t.Fatalf("no apply_patch in forward output")
+	}
+	name, args, ok := translator.ApplyPatchReverse(argsJSON)
+	if !ok {
+		t.Fatalf("applyPatchReverse failed on synthesized diff")
+	}
+	if name != "Edit" {
+		t.Errorf("round-trip name = %q, want Edit", name)
+	}
+	if args["old_string"] != "old\n" {
+		t.Errorf("round-trip old_string = %q, want \"old\\n\"", args["old_string"])
+	}
+	if args["new_string"] != "new\n" {
+		t.Errorf("round-trip new_string = %q, want \"new\\n\"", args["new_string"])
+	}
+}
+
 func jsonEqual(a, b any) bool {
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)
