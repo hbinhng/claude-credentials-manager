@@ -310,10 +310,18 @@ func translateToolChoice(tc *anthropicToolChoice, tools []codexTool) any {
 	case "any":
 		return "required"
 	case "tool":
-		// Drop if name not in tools[] per spec §5.4.
+		// Apply forward rename so "Bash" resolves to "exec_command"
+		// after Phase 4's rename. Without this, callers sending
+		// tool_choice:{type:"tool",name:"Bash"} would silently lose the
+		// forced-tool constraint because out.Tools no longer contains
+		// "Bash".
+		resolvedName := tc.Name
+		if r, ok := lookupForwardRename(tc.Name); ok {
+			resolvedName = r.To
+		}
 		for _, t := range tools {
-			if t.Name == tc.Name {
-				return map[string]any{"type": "function", "name": tc.Name}
+			if t.Name == resolvedName {
+				return map[string]any{"type": "function", "name": resolvedName}
 			}
 		}
 		return nil

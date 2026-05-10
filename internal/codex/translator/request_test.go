@@ -913,3 +913,48 @@ func TestTranslateRequest_DropsHistoricalToolUseForDroppedTools(t *testing.T) {
 		t.Errorf("Bash function_call should survive as exec_command after forward rename")
 	}
 }
+
+func TestTranslateRequest_ToolChoiceForBashResolvesToExecCommand(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object"}}],
+        "tool_choice":{"type":"tool","name":"Bash"}
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		ToolChoice map[string]any `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if probe.ToolChoice == nil {
+		t.Fatalf("tool_choice was dropped (should have been renamed Bash → exec_command)")
+	}
+	if probe.ToolChoice["type"] != "function" {
+		t.Errorf("tool_choice.type = %v, want function", probe.ToolChoice["type"])
+	}
+	if probe.ToolChoice["name"] != "exec_command" {
+		t.Errorf("tool_choice.name = %v, want exec_command", probe.ToolChoice["name"])
+	}
+}
+
+func TestTranslateRequest_ToolChoiceForUnknownToolReturnsNil(t *testing.T) {
+	// Sanity check the existing miss path still works.
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[{"name":"Bash","description":"x","input_schema":{"type":"object"}}],
+        "tool_choice":{"type":"tool","name":"NoSuchTool"}
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if bytes.Contains(out, []byte(`"tool_choice"`)) {
+		t.Errorf("tool_choice should have been omitted for unknown tool name; got:\n%s", out)
+	}
+}
