@@ -426,6 +426,53 @@ func TestRoundTrip_BashExecCommandPreservesCommandKey(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_StripsNullArgs(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Glob","input":{"pattern":"**/*.go","options":null}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+        ],
+        "tools":[{"name":"Glob","description":"g","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	// Unmarshal and inspect the function_call arguments string directly.
+	var probe struct {
+		Input []struct {
+			Type      string `json:"type"`
+			Arguments string `json:"arguments,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var args string
+	for _, it := range probe.Input {
+		if it.Type == "function_call" {
+			args = it.Arguments
+			break
+		}
+	}
+	if args == "" {
+		t.Fatalf("no function_call found in output")
+	}
+	// Parse the inner JSON arguments string.
+	var argMap map[string]any
+	if err := json.Unmarshal([]byte(args), &argMap); err != nil {
+		t.Fatalf("unmarshal arguments: %v", err)
+	}
+	if _, ok := argMap["options"]; ok {
+		t.Errorf("null arg 'options' should be stripped, got args: %s", args)
+	}
+	if _, ok := argMap["pattern"]; !ok {
+		t.Errorf("non-null arg 'pattern' should be retained, got args: %s", args)
+	}
+}
+
 func jsonEqual(a, b any) bool {
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)

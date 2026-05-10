@@ -201,6 +201,26 @@ func reverseRenameArgs(codexName, argsJSON string) string {
 	return string(b)
 }
 
+// stripNullArgs returns a shallow copy of args with keys whose value
+// is JSON null removed. Used on the forward path to clean up tool_use
+// arguments before they reach chatgpt.com, and on the reverse path
+// (via sanitizeJSONStringForTool) to clean up the model's tool_use
+// arguments before they reach Claude Code.
+func stripNullArgs(args any) any {
+	m, ok := args.(map[string]any)
+	if !ok {
+		return args
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if v == nil {
+			continue
+		}
+		out[k] = v
+	}
+	return out
+}
+
 // applyForwardArgRename rewrites the keys of args via the forward
 // rename map for the given Claude tool name. If the tool has no
 // mapping, args is returned unchanged. If args is nil, returns nil.
