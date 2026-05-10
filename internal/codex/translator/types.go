@@ -126,7 +126,9 @@ type codexRequest struct {
 	Reasoning      *codexReasoning `json:"reasoning,omitempty"`
 	Store          bool            `json:"store"`
 	ServiceTier    string          `json:"service_tier,omitempty"`
-	PromptCacheKey string          `json:"prompt_cache_key,omitempty"`
+	PromptCacheKey   string          `json:"prompt_cache_key,omitempty"`
+	FrequencyPenalty *float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty  *float64        `json:"presence_penalty,omitempty"`
 }
 
 type codexInput struct {

@@ -35,5 +35,7 @@
     }
   ],
   "instructions": "You are a ChatGPT agent.",
-  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342"
+  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342",
+  "frequency_penalty": 0.4,
+  "presence_penalty": 0.4
 }

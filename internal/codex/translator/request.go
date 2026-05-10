@@ -59,6 +59,14 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 		out.PromptCacheKey = opts.SessionID
 	}
 
+	// Anti-repetition pressure. Codex CLI sends nothing → chatgpt.com
+	// defaults both penalties to 0.0 → loops on non-Anthropic models.
+	// Spec §Phase 1: hardcoded 0.4 (half the API range maximum).
+	fp := 0.4
+	pp := 0.4
+	out.FrequencyPenalty = &fp
+	out.PresencePenalty = &pp
+
 	// messages[] → input[]
 	for _, m := range in.Messages {
 		appended, err := appendMessageInput(&out, m)
