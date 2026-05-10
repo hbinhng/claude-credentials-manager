@@ -128,12 +128,18 @@ func (t *StreamTranslator) run(ctx context.Context, src io.Reader, dst io.Writer
 }
 
 type codexEvent struct {
-	Type   string           `json:"type"`
-	Item   *codexOutputItem `json:"item,omitempty"`
-	Delta  string           `json:"delta,omitempty"`
-	Usage  *codexUsage      `json:"usage,omitempty"`
-	Status string           `json:"status,omitempty"` // for response.completed
-	Index  int              `json:"output_index,omitempty"`
+	Type     string             `json:"type"`
+	Item     *codexOutputItem   `json:"item,omitempty"`
+	Delta    string             `json:"delta,omitempty"`
+	Usage    *codexUsage        `json:"usage,omitempty"`
+	Status   string             `json:"status,omitempty"` // for response.completed
+	Index    int                `json:"output_index,omitempty"`
+	Response *codexResponseInfo `json:"response,omitempty"` // for response.created
+}
+
+type codexResponseInfo struct {
+	ID string `json:"id"`
+	// We only need the ID; other fields (object, status, …) are ignored.
 }
 
 type codexOutputItem struct {
@@ -164,10 +170,17 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 			return nil
 		}
 		t.messageStarted = true
+		msgID := t.opts.MessageID
+		if ev.Response != nil && ev.Response.ID != "" {
+			// Translate chatgpt.com's resp_<id> to Anthropic-shape msg_<id>.
+			// Strip the resp_ prefix if present so we don't double-prefix.
+			upstreamID := strings.TrimPrefix(ev.Response.ID, "resp_")
+			msgID = "msg_" + upstreamID
+		}
 		body, _ := json.Marshal(map[string]any{
 			"type": "message_start",
 			"message": map[string]any{
-				"id":          t.opts.MessageID,
+				"id":          msgID,
 				"type":        "message",
 				"role":        "assistant",
 				"model":       t.opts.Model,
