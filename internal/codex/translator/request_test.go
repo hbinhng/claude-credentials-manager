@@ -667,3 +667,56 @@ func TestTranslateRequest_DoesNotDropToolsWithSimilarPrefix(t *testing.T) {
 		t.Errorf("TaskFoo should pass through (not in drop list)")
 	}
 }
+
+func TestTranslateRequest_DropsHistoricalToolUseForDroppedTools(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"do thing"},
+            {"role":"assistant","content":[
+                {"type":"tool_use","id":"toolu_1","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}},
+                {"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}
+            ]},
+            {"role":"user","content":[
+                {"type":"tool_result","tool_use_id":"toolu_1","content":"Updated task #1 status"},
+                {"type":"tool_result","tool_use_id":"toolu_2","content":"file listing"}
+            ]}
+        ],
+        "tools":[
+            {"name":"TaskUpdate","description":"x","input_schema":{"type":"object"}},
+            {"name":"Bash","description":"y","input_schema":{"type":"object"}}
+        ]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		Input []struct {
+			Type   string `json:"type"`
+			Name   string `json:"name,omitempty"`
+			CallID string `json:"call_id,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	for _, it := range probe.Input {
+		if it.Type == "function_call" && it.Name == "TaskUpdate" {
+			t.Errorf("historical TaskUpdate function_call must be dropped, found: %+v", it)
+		}
+		if it.Type == "function_call_output" && it.CallID == "toolu_1" {
+			t.Errorf("orphan tool_result for dropped TaskUpdate must be filtered too, found: %+v", it)
+		}
+	}
+	// Bash function_call should survive.
+	var foundBash bool
+	for _, it := range probe.Input {
+		if it.Type == "function_call" && it.Name == "Bash" {
+			foundBash = true
+		}
+	}
+	if !foundBash {
+		t.Errorf("Bash function_call should survive")
+	}
+}
