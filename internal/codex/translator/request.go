@@ -243,14 +243,21 @@ func stripStoredPrefix(id string) string {
 }
 
 // stringifyToolResult flattens tool_result content into the single
-// string codex's function_call_output.output expects. Claude Code
+// string codex's function_call_output.output expects and caps it at
+// toolResultMaxBytes on a whitespace boundary to avoid blowing
+// chatgpt.com's per-turn input limit.
+func stringifyToolResult(content any) string {
+	return truncateAtWordBoundary(rawStringifyToolResult(content), toolResultMaxBytes)
+}
+
+// rawStringifyToolResult is the core flattening logic. Claude Code
 // emits arrays mixing {type:"text"} and {type:"image"} blocks (e.g.
 // from Bash and FileReadTool). Text is concatenated newline-separated;
 // base64 images are passed through verbatim as data URIs so codex
 // sees them rather than silently losing the image. Non-base64 image
 // sources (url) are dropped, matching the message-content handling
 // in appendMessageInput.
-func stringifyToolResult(content any) string {
+func rawStringifyToolResult(content any) string {
 	switch v := content.(type) {
 	case string:
 		return v

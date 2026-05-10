@@ -1131,3 +1131,50 @@ func TestTranslateRequest_DoesNotDoubleEmitViewImage(t *testing.T) {
 		t.Errorf("view_image should appear exactly once when user pre-supplied it; got %d", count)
 	}
 }
+
+func TestTranslateRequest_TruncatesOverLongToolResult(t *testing.T) {
+	huge := strings.Repeat("a b c ", 20000) // ~120KB
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Glob","input":{"pattern":"*"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":` + asJSONStringRT(huge) + `}]}
+        ],
+        "tools":[{"name":"Glob","description":"g","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		Input []struct {
+			Type   string `json:"type"`
+			Output string `json:"output,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var output string
+	for _, it := range probe.Input {
+		if it.Type == "function_call_output" {
+			output = it.Output
+			break
+		}
+	}
+	if output == "" {
+		t.Fatalf("no function_call_output in input[]")
+	}
+	if len(output) >= len(huge) {
+		t.Errorf("tool_result not truncated: output len = %d, input len = %d", len(output), len(huge))
+	}
+	if len(output) > 64*1024+8 {
+		t.Errorf("tool_result truncation overshot 64KB cap, got %d bytes", len(output))
+	}
+}
+
+func asJSONStringRT(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}

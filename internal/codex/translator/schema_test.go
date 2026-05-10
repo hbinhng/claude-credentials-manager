@@ -54,3 +54,53 @@ func TestSanitizeJSONStringForTool_UnknownToolPassthrough(t *testing.T) {
 		t.Errorf("unknown tool should pass through, got %v", got)
 	}
 }
+
+func TestStripNullArgs_DropsNullKey(t *testing.T) {
+	in := map[string]any{"keep": "x", "drop": nil}
+	got := stripNullArgs(in).(map[string]any)
+	if _, ok := got["drop"]; ok {
+		t.Errorf("drop key should be removed")
+	}
+	if got["keep"] != "x" {
+		t.Errorf("keep key should survive")
+	}
+}
+
+func TestStripNullArgs_PreservesEmptyString(t *testing.T) {
+	in := map[string]any{"x": ""}
+	got := stripNullArgs(in).(map[string]any)
+	if _, ok := got["x"]; !ok {
+		t.Errorf("empty string is not null; should survive")
+	}
+}
+
+func TestStripNullArgs_NonMapPassthrough(t *testing.T) {
+	// Non-map values pass through unchanged (identity return).
+	in := "just a string"
+	got := stripNullArgs(in)
+	if got != in {
+		t.Errorf("non-map arg should pass through unchanged, got %v", got)
+	}
+}
+
+func TestTruncateAtWordBoundary_Short(t *testing.T) {
+	if got := truncateAtWordBoundary("hello", 100); got != "hello" {
+		t.Errorf("short input should pass through, got %q", got)
+	}
+}
+
+func TestTruncateAtWordBoundary_CutAtLastSpace(t *testing.T) {
+	in := "hello there friend"
+	got := truncateAtWordBoundary(in, 12)
+	if got != "hello there" {
+		t.Errorf("truncate(12) = %q, want \"hello there\"", got)
+	}
+}
+
+func TestTruncateAtWordBoundary_NoSpaceFallsBackToHardCut(t *testing.T) {
+	in := "abcdefghij"
+	got := truncateAtWordBoundary(in, 5)
+	if got != "abcde" {
+		t.Errorf("no-space input truncate(5) = %q, want \"abcde\"", got)
+	}
+}
