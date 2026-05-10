@@ -58,6 +58,19 @@ type toolRename struct {
 	OutputSchema       map[string]any    // codex's hand-written schema
 }
 
+// codexViewImageSchema mirrors codex-rs/core/src/tools/handlers/view_image_spec.rs.
+var codexViewImageSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"path": map[string]any{
+			"type":        "string",
+			"description": "Filesystem path to the image or PDF.",
+		},
+	},
+	"required":             []any{"path"},
+	"additionalProperties": false,
+}
+
 // codexExecCommandSchema is the input schema for codex's exec_command
 // tool. Mirrors the upstream codex-rs definition (shell.rs:91) but
 // uses the keys codex's protocol actually expects on the wire.
@@ -82,7 +95,6 @@ var codexExecCommandSchema = map[string]any{
 }
 
 // toolRenameMap is keyed by the Claude tool name (forward direction).
-// Phase 4 ships only the Bash entry; later phases append.
 var toolRenameMap = map[string]toolRename{
 	"Bash": {
 		From:               "Bash",
@@ -90,6 +102,17 @@ var toolRenameMap = map[string]toolRename{
 		ParamRename:        map[string]string{"command": "cmd"},
 		ParamReverseRename: map[string]string{"cmd": "command"},
 		OutputSchema:       codexExecCommandSchema,
+	},
+	// Read is a special case: we EMIT BOTH `Read` (kept verbatim for
+	// text reads) AND `view_image` (codex's image/PDF tool). The
+	// forward path adds view_image as a synthetic extra entry; the
+	// reverse path renames view_image → Read and `path` → `file_path`.
+	"Read": {
+		From:               "Read",
+		To:                 "view_image",
+		ParamRename:        nil, // forward keeps Read tool_use unchanged
+		ParamReverseRename: map[string]string{"path": "file_path"},
+		OutputSchema:       codexViewImageSchema,
 	},
 }
 
@@ -122,11 +145,17 @@ func lookupReverseRename(codexName string) (toolRename, bool) {
 }
 
 // applyForwardToolDef returns the codex tool entry for a Claude tool.
-// If the tool has a rename mapping, the codex name + hand-written
-// schema are used; otherwise the Claude tool is forwarded verbatim
-// (with the existing default-* helpers applied).
+// If the tool has a rename mapping with a non-empty ParamRename map,
+// the Claude tool is fully replaced with the codex name + hand-written
+// schema (e.g. Bash → exec_command). If the rename has an empty
+// ParamRename map (e.g. Read), the Claude tool is forwarded verbatim;
+// the caller is responsible for also emitting the synthetic codex entry.
 func applyForwardToolDef(in anthropicTool) codexTool {
-	if r, ok := lookupForwardRename(in.Name); ok {
+	if r, ok := lookupForwardRename(in.Name); ok && len(r.ParamRename) > 0 {
+		// Renames with a non-empty ParamRename map fully replace the
+		// Claude tool (Bash → exec_command). Renames with an empty
+		// ParamRename map are "additive" (Read keeps its entry, but
+		// view_image is also emitted by the caller).
 		return codexTool{
 			Type:        "function",
 			Name:        r.To,

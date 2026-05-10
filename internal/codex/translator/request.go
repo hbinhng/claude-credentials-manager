@@ -91,12 +91,25 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 
 	// tools → flat function tools
 	if len(in.Tools) > 0 {
-		out.Tools = make([]codexTool, 0, len(in.Tools))
+		out.Tools = make([]codexTool, 0, len(in.Tools)+1)
+		readPresent := false
 		for _, t := range in.Tools {
 			if isDroppedClaudeTool(t.Name) {
 				continue
 			}
 			out.Tools = append(out.Tools, applyForwardToolDef(t))
+			if t.Name == "Read" {
+				readPresent = true
+			}
+		}
+		if readPresent {
+			r := toolRenameMap["Read"]
+			out.Tools = append(out.Tools, codexTool{
+				Type:        "function",
+				Name:        r.To,
+				Description: "Open a local image or PDF for visual inspection.",
+				Parameters:  r.OutputSchema,
+			})
 		}
 	}
 
