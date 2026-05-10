@@ -84,3 +84,71 @@ func TestToolRename_NoMappingForGlob(t *testing.T) {
 		t.Errorf("Glob reverse lookup should miss")
 	}
 }
+
+func TestToolRename_LookupReverseRenameExecCommand(t *testing.T) {
+	r, ok := lookupReverseRename("exec_command")
+	if !ok {
+		t.Fatalf("lookupReverseRename(exec_command) = !ok")
+	}
+	if r.From != "Bash" {
+		t.Errorf("From = %q, want Bash", r.From)
+	}
+	if r.To != "exec_command" {
+		t.Errorf("To = %q, want exec_command", r.To)
+	}
+}
+
+func TestToolRename_LookupReverseRenameMiss(t *testing.T) {
+	_, ok := lookupReverseRename("unknown_tool")
+	if ok {
+		t.Errorf("lookupReverseRename(unknown_tool) should miss")
+	}
+}
+
+func TestApplyForwardArgRename_NonMapArgsPassThrough(t *testing.T) {
+	// When args is not a map[string]any, it should pass through unchanged.
+	result := applyForwardArgRename("Bash", "a plain string")
+	if result != "a plain string" {
+		t.Errorf("non-map args should pass through; got %v", result)
+	}
+}
+
+func TestApplyForwardArgRename_NilArgsPassThrough(t *testing.T) {
+	// nil args with a valid rename entry should return nil unchanged.
+	result := applyForwardArgRename("Bash", nil)
+	if result != nil {
+		t.Errorf("nil args should return nil; got %v", result)
+	}
+}
+
+func TestApplyForwardArgRename_NoMappingPassThrough(t *testing.T) {
+	// Tool with no rename mapping: args returned verbatim.
+	args := map[string]any{"pattern": "*.go"}
+	result := applyForwardArgRename("Glob", args)
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any result; got %T", result)
+	}
+	if m["pattern"] != "*.go" {
+		t.Errorf("pattern = %v, want *.go", m["pattern"])
+	}
+}
+
+func TestApplyForwardArgRename_UnknownKeysPassThrough(t *testing.T) {
+	// A Bash call with command + unknown keys: command→cmd, others pass through.
+	args := map[string]any{"command": "ls", "workdir": "/tmp"}
+	result := applyForwardArgRename("Bash", args)
+	m, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected map[string]any result; got %T", result)
+	}
+	if m["cmd"] != "ls" {
+		t.Errorf("cmd = %v, want ls", m["cmd"])
+	}
+	if m["workdir"] != "/tmp" {
+		t.Errorf("workdir = %v, want /tmp", m["workdir"])
+	}
+	if _, exists := m["command"]; exists {
+		t.Errorf("command key should be renamed to cmd, not kept")
+	}
+}
