@@ -194,7 +194,11 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				msgContent = nil
 			}
 			callName := b.Name
-			if r, ok := lookupForwardRename(b.Name); ok {
+			// Only replacement renames (non-empty ParamRename) rewrite the
+			// call name. Additive renames (Read↔view_image, where Read is
+			// kept verbatim AND view_image is added) leave the historical
+			// call as-is.
+			if r, ok := lookupForwardRename(b.Name); ok && len(r.ParamRename) > 0 {
 				callName = r.To
 			}
 			renamedInput := applyForwardArgRename(b.Name, b.Input)
@@ -327,13 +331,12 @@ func translateToolChoice(tc *anthropicToolChoice, tools []codexTool) any {
 	case "any":
 		return "required"
 	case "tool":
-		// Apply forward rename so "Bash" resolves to "exec_command"
-		// after Phase 4's rename. Without this, callers sending
-		// tool_choice:{type:"tool",name:"Bash"} would silently lose the
-		// forced-tool constraint because out.Tools no longer contains
-		// "Bash".
+		// Replacement renames (non-empty ParamRename) swap the name —
+		// Bash → exec_command. Additive renames (Read↔view_image, where
+		// Read remains in out.Tools) keep the original name so the
+		// caller's force-Read intent is preserved.
 		resolvedName := tc.Name
-		if r, ok := lookupForwardRename(tc.Name); ok {
+		if r, ok := lookupForwardRename(tc.Name); ok && len(r.ParamRename) > 0 {
 			resolvedName = r.To
 		}
 		for _, t := range tools {
