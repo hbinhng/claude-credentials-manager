@@ -19,40 +19,8 @@ type toolRename struct {
 	OutputSchema       map[string]any    // codex's hand-written schema
 }
 
-// codexExecCommandSchema is the input schema for codex's exec_command
-// tool. Mirrors the upstream codex-rs definition (shell.rs:91) but
-// uses the keys codex's protocol actually expects on the wire.
-var codexExecCommandSchema = map[string]any{
-	"type": "object",
-	"properties": map[string]any{
-		"cmd": map[string]any{
-			"type":        "string",
-			"description": "The shell command to execute.",
-		},
-		"workdir": map[string]any{
-			"type":        "string",
-			"description": "Working directory for the command.",
-		},
-		"yield_time_ms": map[string]any{
-			"type":        "integer",
-			"description": "How long to let the command run before yielding.",
-		},
-	},
-	"required":             []any{"cmd"},
-	"additionalProperties": false,
-}
-
 // toolRenameMap is keyed by the Claude tool name (forward direction).
-// Phase 4 ships only the Bash entry; later phases append.
-var toolRenameMap = map[string]toolRename{
-	"Bash": {
-		From:               "Bash",
-		To:                 "exec_command",
-		ParamRename:        map[string]string{"command": "cmd"},
-		ParamReverseRename: map[string]string{"cmd": "command"},
-		OutputSchema:       codexExecCommandSchema,
-	},
-}
+var toolRenameMap = map[string]toolRename{}
 
 // reverseRenameLookup is built once at init time for O(1) reverse
 // lookups by codex name.

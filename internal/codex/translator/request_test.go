@@ -2,7 +2,6 @@ package translator_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -362,51 +361,6 @@ func TestTranslateRequest_ToolResultPrecedingContent(t *testing.T) {
 	}
 }
 
-func TestRoundTrip_BashExecCommandPreservesCommandKey(t *testing.T) {
-	// Forward: Bash{command:"ls"} → exec_command{cmd:"ls"}
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[
-            {"role":"user","content":"run ls"},
-            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"output"}]}
-        ],
-        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object"}}]
-    }`)
-	fwd, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest forward: %v", err)
-	}
-	// The cmd key is inside a JSON-encoded arguments string, so it appears
-	// with escaped quotes in the output bytes.
-	if !bytes.Contains(fwd, []byte(`\"cmd\":`)) {
-		t.Fatalf("forward translation missing cmd key:\n%s", fwd)
-	}
-
-	// Reverse: model emits exec_command{cmd:"ls"} → Anthropic event
-	// with Bash{command:"ls"}.
-	sse := strings.Join([]string{
-		`data: {"type":"response.created"}`,
-		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec_command"}}`,
-		`data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":\"ls\"}"}`,
-		`data: {"type":"response.function_call_arguments.done"}`,
-		`data: {"type":"response.completed","status":"completed"}`,
-		``,
-	}, "\n\n")
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
-	var out bytes.Buffer
-	if err := st.Pipe(context.Background(), strings.NewReader(sse), &out); err != nil {
-		t.Fatalf("Pipe reverse: %v", err)
-	}
-	// The rewritten args are emitted as a single partial_json delta; the JSON
-	// string value has escaped quotes, so we check for the escaped form.
-	if !strings.Contains(out.String(), `\"command\":`) {
-		t.Errorf("reverse translation missing command key:\n%s", out.String())
-	}
-	if !strings.Contains(out.String(), `"name":"Bash"`) {
-		t.Errorf("reverse translation missing Bash name:\n%s", out.String())
-	}
-}
 
 func jsonEqual(a, b any) bool {
 	ja, _ := json.Marshal(a)
@@ -414,80 +368,6 @@ func jsonEqual(a, b any) bool {
 	return string(ja) == string(jb)
 }
 
-func TestTranslateRequest_ForwardRenamesBashToolDefinition(t *testing.T) {
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[{"role":"user","content":"hi"}],
-        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}]
-    }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	if bytes.Contains(out, []byte(`"name":"Bash"`)) {
-		t.Errorf("outbound still contains Bash; expected exec_command")
-	}
-	if !bytes.Contains(out, []byte(`"name":"exec_command"`)) {
-		t.Errorf("outbound missing exec_command")
-	}
-	if !bytes.Contains(out, []byte(`"cmd"`)) {
-		t.Errorf("outbound schema missing cmd key")
-	}
-}
-
-func TestTranslateRequest_ForwardRenamesAssistantBashToolUseInHistory(t *testing.T) {
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[
-            {"role":"user","content":"run ls"},
-            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la"}}]},
-            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"file listing"}]}
-        ],
-        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object"}}]
-    }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	var probe struct {
-		Input []struct {
-			Type      string `json:"type"`
-			Name      string `json:"name,omitempty"`
-			Arguments string `json:"arguments,omitempty"`
-		} `json:"input"`
-	}
-	if err := json.Unmarshal(out, &probe); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	var fc *struct {
-		Type      string
-		Name      string
-		Arguments string
-	}
-	for _, it := range probe.Input {
-		if it.Type == "function_call" {
-			tmp := struct {
-				Type      string
-				Name      string
-				Arguments string
-			}{it.Type, it.Name, it.Arguments}
-			fc = &tmp
-			break
-		}
-	}
-	if fc == nil {
-		t.Fatalf("no function_call in input[]")
-	}
-	if fc.Name != "exec_command" {
-		t.Errorf("function_call.name = %q, want exec_command", fc.Name)
-	}
-	if !strings.Contains(fc.Arguments, `"cmd":"ls -la"`) {
-		t.Errorf("function_call.arguments missing cmd key, got %q", fc.Arguments)
-	}
-	if strings.Contains(fc.Arguments, `"command"`) {
-		t.Errorf("function_call.arguments should not contain `command` key after rename")
-	}
-}
 
 func TestTranslateRequest_HoistSystemToInstructions(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","system":"be helpful","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
@@ -786,33 +666,6 @@ func TestTranslateRequest_DropsAllReminderTextBlock(t *testing.T) {
 	}
 }
 
-func TestTranslateRequest_ToolChoiceForBashResolvesToExecCommand(t *testing.T) {
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[{"role":"user","content":"hi"}],
-        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object"}}],
-        "tool_choice":{"type":"tool","name":"Bash"}
-    }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	var probe struct {
-		ToolChoice map[string]any `json:"tool_choice"`
-	}
-	if err := json.Unmarshal(out, &probe); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if probe.ToolChoice == nil {
-		t.Fatalf("tool_choice was dropped (should have been renamed Bash → exec_command)")
-	}
-	if probe.ToolChoice["type"] != "function" {
-		t.Errorf("tool_choice.type = %v, want function", probe.ToolChoice["type"])
-	}
-	if probe.ToolChoice["name"] != "exec_command" {
-		t.Errorf("tool_choice.name = %v, want exec_command", probe.ToolChoice["name"])
-	}
-}
 
 func TestTranslateRequest_ToolChoiceForUnknownToolReturnsNil(t *testing.T) {
 	// Sanity check the existing miss path still works.
