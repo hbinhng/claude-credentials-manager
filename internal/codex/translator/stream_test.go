@@ -500,6 +500,29 @@ func TestStream_PassesThroughUnknownToolName(t *testing.T) {
 	}
 }
 
+func TestStream_ReverseRenameViewImageToRead(t *testing.T) {
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"view_image"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"path\":\"./img.png\"}"}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if !strings.Contains(out.String(), `"name":"Read"`) {
+		t.Errorf("output should contain tool_use.name=Read:\n%s", out.String())
+	}
+	// Note: file_path appears double-encoded inside partial_json — search escaped form.
+	if !strings.Contains(out.String(), `\"file_path\":\"./img.png\"`) {
+		t.Errorf("output should rename path to file_path (escaped form):\n%s", out.String())
+	}
+}
+
 // normalize strips trailing whitespace per line and tolerates \r\n vs \n.
 func normalize(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")

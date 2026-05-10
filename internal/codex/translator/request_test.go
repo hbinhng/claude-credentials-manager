@@ -958,3 +958,21 @@ func TestTranslateRequest_ToolChoiceForUnknownToolReturnsNil(t *testing.T) {
 		t.Errorf("tool_choice should have been omitted for unknown tool name; got:\n%s", out)
 	}
 }
+
+func TestTranslateRequest_AddsViewImageWhenReadPresent(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[{"name":"Read","description":"read file","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if !bytes.Contains(out, []byte(`"name":"Read"`)) {
+		t.Errorf("Read should be retained alongside view_image")
+	}
+	if !bytes.Contains(out, []byte(`"name":"view_image"`)) {
+		t.Errorf("view_image should be added when Read is present")
+	}
+}
