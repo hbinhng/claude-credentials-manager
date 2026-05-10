@@ -546,6 +546,74 @@ func TestStream_SanitizesEmptyPagesOnRead(t *testing.T) {
 	}
 }
 
+// TestStream_MessageStartUsesUpstreamResponseID verifies that the message_start
+// event carries an id translated from the upstream response.id field.
+func TestStream_MessageStartUsesUpstreamResponseID(t *testing.T) {
+	in := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_abc123","status":"in_progress"}}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if !strings.Contains(out.String(), `"id":"msg_abc123"`) {
+		t.Errorf("message_start should carry msg_abc123 (translated from resp_abc123); got:\n%s", out.String())
+	}
+}
+
+// TestStream_MessageStartFallsBackToOptsMessageID verifies that when the upstream
+// response.created event has no id, StreamOpts.MessageID is used as the fallback.
+func TestStream_MessageStartFallsBackToOptsMessageID(t *testing.T) {
+	// If upstream's response.created has no id (shouldn't happen in practice),
+	// fall back to StreamOpts.MessageID.
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fallback", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if !strings.Contains(out.String(), `"id":"msg_fallback"`) {
+		t.Errorf("message_start should use opts.MessageID when upstream has no id; got:\n%s", out.String())
+	}
+}
+
+// TestStream_TwoConsecutiveResponsesHaveDistinctMessageIDs is the core regression
+// test for the output-loop fix: two turns must produce distinct message ids so
+// Claude Code's normalizeMessagesForAPI does not fold them into a single assistant
+// message.
+func TestStream_TwoConsecutiveResponsesHaveDistinctMessageIDs(t *testing.T) {
+	runOne := func(respID string) string {
+		in := strings.Join([]string{
+			`data: {"type":"response.created","response":{"id":"` + respID + `"}}`,
+			`data: {"type":"response.completed","status":"completed"}`,
+			``,
+		}, "\n\n")
+		st := translator.NewStreamTranslator(translator.StreamOpts{Model: "claude-opus-4-7"})
+		var out bytes.Buffer
+		_ = st.Pipe(context.Background(), strings.NewReader(in), &out)
+		return out.String()
+	}
+	a := runOne("resp_AAAA")
+	b := runOne("resp_BBBB")
+	if !strings.Contains(a, `"id":"msg_AAAA"`) {
+		t.Errorf("response A should have msg_AAAA: %s", a)
+	}
+	if !strings.Contains(b, `"id":"msg_BBBB"`) {
+		t.Errorf("response B should have msg_BBBB: %s", b)
+	}
+	// Sanity: ids must be distinct between responses.
+	if !strings.Contains(a, "msg_AAAA") || !strings.Contains(b, "msg_BBBB") {
+		t.Errorf("ids must be distinct between responses")
+	}
+}
+
 // normalize strips trailing whitespace per line and tolerates \r\n vs \n.
 func normalize(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
