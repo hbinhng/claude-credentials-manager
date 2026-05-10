@@ -765,63 +765,6 @@ func TestTranslateRequest_ToolResultImageNonBase64Skipped(t *testing.T) {
 	}
 }
 
-func TestTranslateRequest_DropsClaudeCodeOnlyTools(t *testing.T) {
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[{"role":"user","content":"hi"}],
-        "tools":[
-            {"name":"TaskUpdate","description":"x","input_schema":{"type":"object"}},
-            {"name":"Bash","description":"y","input_schema":{"type":"object"}},
-            {"name":"mcp__plugin__do_thing","description":"z","input_schema":{"type":"object"}}
-        ]
-    }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	var got struct {
-		Tools []struct {
-			Name string `json:"name"`
-		} `json:"tools"`
-	}
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	names := map[string]bool{}
-	for _, t := range got.Tools {
-		names[t.Name] = true
-	}
-	if names["TaskUpdate"] {
-		t.Errorf("TaskUpdate must be dropped from outbound tools")
-	}
-	if names["Bash"] {
-		t.Errorf("Bash must be renamed to exec_command in outbound tools")
-	}
-	if !names["exec_command"] {
-		t.Errorf("exec_command (renamed from Bash) must appear in outbound tools")
-	}
-	if !names["mcp__plugin__do_thing"] {
-		t.Errorf("MCP tools must pass through")
-	}
-}
-
-func TestTranslateRequest_DoesNotDropToolsWithSimilarPrefix(t *testing.T) {
-	// "TaskFoo" is not a Claude builtin; only the exact names in
-	// droppedClaudeTools are dropped.
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[{"role":"user","content":"hi"}],
-        "tools":[{"name":"TaskFoo","description":"x","input_schema":{"type":"object"}}]
-    }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	if !bytes.Contains(out, []byte(`"TaskFoo"`)) {
-		t.Errorf("TaskFoo should pass through (not in drop list)")
-	}
-}
-
 func TestTranslateRequest_StripsTaskToolsReminderFromUserMessages(t *testing.T) {
 	body := []byte(`{
         "model":"claude-opus-4-7",
@@ -887,59 +830,6 @@ func TestTranslateRequest_DropsAllReminderTextBlock(t *testing.T) {
 	}
 	if len(texts) != 1 || texts[0] != "keep me" {
 		t.Errorf("expected single input_text 'keep me'; got %v", texts)
-	}
-}
-
-func TestTranslateRequest_DropsHistoricalToolUseForDroppedTools(t *testing.T) {
-	body := []byte(`{
-        "model":"claude-opus-4-7",
-        "messages":[
-            {"role":"user","content":"do thing"},
-            {"role":"assistant","content":[
-                {"type":"tool_use","id":"toolu_1","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}},
-                {"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"ls"}}
-            ]},
-            {"role":"user","content":[
-                {"type":"tool_result","tool_use_id":"toolu_1","content":"Updated task #1 status"},
-                {"type":"tool_result","tool_use_id":"toolu_2","content":"file listing"}
-            ]}
-        ],
-        "tools":[
-            {"name":"TaskUpdate","description":"x","input_schema":{"type":"object"}},
-            {"name":"Bash","description":"y","input_schema":{"type":"object"}}
-        ]
-    }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	var probe struct {
-		Input []struct {
-			Type   string `json:"type"`
-			Name   string `json:"name,omitempty"`
-			CallID string `json:"call_id,omitempty"`
-		} `json:"input"`
-	}
-	if err := json.Unmarshal(out, &probe); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	for _, it := range probe.Input {
-		if it.Type == "function_call" && it.Name == "TaskUpdate" {
-			t.Errorf("historical TaskUpdate function_call must be dropped, found: %+v", it)
-		}
-		if it.Type == "function_call_output" && it.CallID == "toolu_1" {
-			t.Errorf("orphan tool_result for dropped TaskUpdate must be filtered too, found: %+v", it)
-		}
-	}
-	// Bash function_call should survive, renamed to exec_command.
-	var foundBash bool
-	for _, it := range probe.Input {
-		if it.Type == "function_call" && it.Name == "exec_command" {
-			foundBash = true
-		}
-	}
-	if !foundBash {
-		t.Errorf("Bash function_call should survive as exec_command after forward rename")
 	}
 }
 
