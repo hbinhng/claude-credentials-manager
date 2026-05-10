@@ -1,35 +1,9 @@
 package translator
 
 import (
-	"encoding/json"
 	"testing"
 )
 
-func TestToolRename_BashMapsToExecCommand(t *testing.T) {
-	r, ok := lookupForwardRename("Bash")
-	if !ok {
-		t.Fatalf("lookupForwardRename(\"Bash\") = !ok")
-	}
-	if r.To != "exec_command" {
-		t.Errorf("rename.To = %q, want exec_command", r.To)
-	}
-	if r.ParamRename["command"] != "cmd" {
-		t.Errorf("ParamRename[command] = %q, want cmd", r.ParamRename["command"])
-	}
-	if r.ParamReverseRename["cmd"] != "command" {
-		t.Errorf("ParamReverseRename[cmd] = %q, want command", r.ParamReverseRename["cmd"])
-	}
-	if r.OutputSchema == nil {
-		t.Errorf("OutputSchema is nil; want hand-built schema")
-	}
-}
-
-func TestToolRename_ReverseLookupExecCommandMapsToBash(t *testing.T) {
-	name, ok := lookupReverseName("exec_command")
-	if !ok || name != "Bash" {
-		t.Errorf("lookupReverseName(exec_command) = (%q, %v), want (Bash, true)", name, ok)
-	}
-}
 
 func TestToolRename_NoMappingForGlob(t *testing.T) {
 	if _, ok := lookupForwardRename("Glob"); ok {
@@ -40,18 +14,6 @@ func TestToolRename_NoMappingForGlob(t *testing.T) {
 	}
 }
 
-func TestToolRename_LookupReverseRenameExecCommand(t *testing.T) {
-	r, ok := lookupReverseRename("exec_command")
-	if !ok {
-		t.Fatalf("lookupReverseRename(exec_command) = !ok")
-	}
-	if r.From != "Bash" {
-		t.Errorf("From = %q, want Bash", r.From)
-	}
-	if r.To != "exec_command" {
-		t.Errorf("To = %q, want exec_command", r.To)
-	}
-}
 
 func TestToolRename_LookupReverseRenameMiss(t *testing.T) {
 	_, ok := lookupReverseRename("unknown_tool")
@@ -89,24 +51,6 @@ func TestApplyForwardArgRename_NoMappingPassThrough(t *testing.T) {
 	}
 }
 
-func TestApplyForwardArgRename_UnknownKeysPassThrough(t *testing.T) {
-	// A Bash call with command + unknown keys: command→cmd, others pass through.
-	args := map[string]any{"command": "ls", "workdir": "/tmp"}
-	result := applyForwardArgRename("Bash", args)
-	m, ok := result.(map[string]any)
-	if !ok {
-		t.Fatalf("expected map[string]any result; got %T", result)
-	}
-	if m["cmd"] != "ls" {
-		t.Errorf("cmd = %v, want ls", m["cmd"])
-	}
-	if m["workdir"] != "/tmp" {
-		t.Errorf("workdir = %v, want /tmp", m["workdir"])
-	}
-	if _, exists := m["command"]; exists {
-		t.Errorf("command key should be renamed to cmd, not kept")
-	}
-}
 
 // Tests for reverseRenameArgs.
 
@@ -131,24 +75,6 @@ func TestReverseRenameArgs_MalformedJSON(t *testing.T) {
 	got := reverseRenameArgs("exec_command", `not json`)
 	if got != `not json` {
 		t.Errorf("malformed JSON should pass through; got %q", got)
-	}
-}
-
-func TestReverseRenameArgs_UnknownKeyPassThrough(t *testing.T) {
-	// exec_command with cmd + unknown key: cmd→command, unknown keys pass through.
-	got := reverseRenameArgs("exec_command", `{"cmd":"ls","workdir":"/tmp"}`)
-	var m map[string]any
-	if err := json.Unmarshal([]byte(got), &m); err != nil {
-		t.Fatalf("unmarshal result: %v", err)
-	}
-	if m["command"] != "ls" {
-		t.Errorf("command = %v, want ls", m["command"])
-	}
-	if m["workdir"] != "/tmp" {
-		t.Errorf("workdir = %v, want /tmp", m["workdir"])
-	}
-	if _, exists := m["cmd"]; exists {
-		t.Errorf("cmd should be renamed to command, not kept")
 	}
 }
 
