@@ -156,11 +156,18 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 	for _, b := range m.Content {
 		switch b.Type {
 		case "text":
+			text := b.Text
+			if role == "user" {
+				text = stripDroppedReminders(text)
+			}
+			if text == "" || strings.TrimSpace(text) == "" {
+				continue
+			}
 			cType := "input_text"
 			if role == "assistant" {
 				cType = "output_text"
 			}
-			msgContent = append(msgContent, codexContent{Type: cType, Text: b.Text})
+			msgContent = append(msgContent, codexContent{Type: cType, Text: text})
 		case "image":
 			if b.Source != nil && b.Source.Type == "base64" {
 				dataURL := "data:" + b.Source.MediaType + ";base64," + b.Source.Data
