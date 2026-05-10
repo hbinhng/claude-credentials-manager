@@ -167,6 +167,9 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				msgContent = append(msgContent, codexContent{Type: "input_image", ImageURL: dataURL})
 			}
 		case "tool_use":
+			if isDroppedClaudeTool(b.Name) {
+				continue // historical call to a dropped tool — skip
+			}
 			// Becomes its own function_call input item; emit message
 			// content first if any has accumulated, then the function_call.
 			if len(msgContent) > 0 {
