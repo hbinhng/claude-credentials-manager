@@ -93,6 +93,7 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 	if len(in.Tools) > 0 {
 		out.Tools = make([]codexTool, 0, len(in.Tools)+1)
 		readPresent := false
+		viewImagePresent := false
 		for _, t := range in.Tools {
 			if isDroppedClaudeTool(t.Name) {
 				continue
@@ -101,8 +102,11 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 			if t.Name == "Read" {
 				readPresent = true
 			}
+			if t.Name == "view_image" {
+				viewImagePresent = true
+			}
 		}
-		if readPresent {
+		if readPresent && !viewImagePresent {
 			r := toolRenameMap["Read"]
 			out.Tools = append(out.Tools, codexTool{
 				Type:        "function",

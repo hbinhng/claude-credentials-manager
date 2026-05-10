@@ -976,3 +976,39 @@ func TestTranslateRequest_AddsViewImageWhenReadPresent(t *testing.T) {
 		t.Errorf("view_image should be added when Read is present")
 	}
 }
+
+func TestTranslateRequest_DoesNotDoubleEmitViewImage(t *testing.T) {
+	// If the user-supplied tools[] already contains a tool named
+	// view_image (e.g. an MCP tool with that name), don't append the
+	// synthetic codex view_image too — that would put two entries
+	// with the same name on the wire.
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[
+            {"name":"Read","description":"r","input_schema":{"type":"object"}},
+            {"name":"view_image","description":"user's","input_schema":{"type":"object"}}
+        ]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		Tools []struct {
+			Name string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var count int
+	for _, tt := range probe.Tools {
+		if tt.Name == "view_image" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("view_image should appear exactly once when user pre-supplied it; got %d", count)
+	}
+}
