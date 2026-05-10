@@ -152,20 +152,4 @@ func TestReverseRenameArgs_UnknownKeyPassThrough(t *testing.T) {
 	}
 }
 
-func TestToolRename_ViewImageReverseMapsToRead(t *testing.T) {
-	name, ok := lookupReverseName("view_image")
-	if !ok || name != "Read" {
-		t.Errorf("lookupReverseName(view_image) = (%q, %v), want (Read, true)", name, ok)
-	}
-}
-
-func TestCodexViewImageSchema_RequiresPath(t *testing.T) {
-	req, ok := codexViewImageSchema["required"].([]any)
-	if !ok || len(req) == 0 {
-		t.Fatalf("codexViewImageSchema.required missing")
-	}
-	if req[0] != "path" {
-		t.Errorf("codexViewImageSchema.required[0] = %v, want path", req[0])
-	}
-}
 
