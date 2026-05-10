@@ -437,6 +437,69 @@ func (e *errorReader) Read(_ []byte) (int, error) {
 	return 0, io.ErrUnexpectedEOF
 }
 
+// TestStream_ReverseRenameExecCommandToBash verifies that a model-emitted
+// exec_command function_call is translated back to tool_use{Bash} and that
+// the cmd argument is renamed back to command.
+func TestStream_ReverseRenameExecCommandToBash(t *testing.T) {
+	// Synthesize a codex SSE stream where the model calls exec_command
+	// with cmd="ls -la". The Anthropic output must surface as Bash
+	// with input.command="ls -la".
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"exec_command"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"cmd\":"}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":"\"ls -la\"}"}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"name":"Bash"`) {
+		t.Errorf("Anthropic output missing tool_use.name=Bash:\n%s", body)
+	}
+	if strings.Contains(body, `"name":"exec_command"`) {
+		t.Errorf("Anthropic output should NOT contain exec_command:\n%s", body)
+	}
+	// The rewritten args are emitted as a single partial_json delta; the JSON
+	// string value has escaped quotes, so we check for the escaped form.
+	if !strings.Contains(body, `\"command\":`) {
+		t.Errorf("final args missing command key (renamed from cmd):\n%s", body)
+	}
+}
+
+// TestStream_PassesThroughUnknownToolName verifies that a function_call with
+// an unrecognized tool name (e.g. Glob) is passed through unchanged.
+func TestStream_PassesThroughUnknownToolName(t *testing.T) {
+	in := strings.Join([]string{
+		`data: {"type":"response.created"}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":"Glob"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"pattern\":\"**/*.go\"}"}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m2", Model: "claude-opus-4-7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	body := out.String()
+	if !strings.Contains(body, `"name":"Glob"`) {
+		t.Errorf("Glob should pass through unchanged:\n%s", body)
+	}
+	// Args are emitted verbatim via partial_json; the JSON string value has
+	// escaped quotes, so we check for the escaped form as it appears in the
+	// SSE body.
+	if !strings.Contains(body, `\"pattern\":`) {
+		t.Errorf("Glob args should pass through (escaped form expected):\n%s", body)
+	}
+}
+
 // normalize strips trailing whitespace per line and tolerates \r\n vs \n.
 func normalize(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
