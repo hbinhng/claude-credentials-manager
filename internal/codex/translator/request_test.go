@@ -360,6 +360,24 @@ func TestTranslateRequest_ToolResultPrecedingContent(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_SetsAntiRepetitionPenalties(t *testing.T) {
+	body := []byte(`{"model":"claude-opus-4-7","messages":[{"role":"user","content":"hi"}]}`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if fp, ok := got["frequency_penalty"].(float64); !ok || fp != 0.4 {
+		t.Errorf("frequency_penalty = %v, want 0.4", got["frequency_penalty"])
+	}
+	if pp, ok := got["presence_penalty"].(float64); !ok || pp != 0.4 {
+		t.Errorf("presence_penalty = %v, want 0.4", got["presence_penalty"])
+	}
+}
+
 func jsonEqual(a, b any) bool {
 	ja, _ := json.Marshal(a)
 	jb, _ := json.Marshal(b)
