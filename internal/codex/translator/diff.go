@@ -1,5 +1,16 @@
 package translator
 
+// NOTE: This file's functions are currently DORMANT — Phase 6 of the
+// codex loop comprehensive-fix originally planned to use them to
+// translate Anthropic Edit/Write into codex's apply_patch tool, but
+// the design got the wire format wrong. Codex's apply_patch is a
+// Freeform/Custom tool with a Lark grammar
+// (codex-rs/core/src/tools/handlers/apply_patch.lark — `*** Begin
+// Patch ... *** End Patch` envelope), not a JSON function with a
+// unified-diff arg. These helpers are kept for any future redesigned
+// Phase 6 that emits the correct grammar. Do not remove without
+// confirming nothing in a future branch depends on them.
+
 import (
 	"errors"
 	"fmt"

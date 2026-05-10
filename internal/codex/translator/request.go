@@ -91,16 +91,11 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 
 	// tools → flat function tools
 	if len(in.Tools) > 0 {
-		out.Tools = make([]codexTool, 0, len(in.Tools)+2)
+		out.Tools = make([]codexTool, 0, len(in.Tools)+1)
 		readPresent := false
 		viewImagePresent := false
-		editOrWritePresent := false
 		for _, t := range in.Tools {
 			if isDroppedClaudeTool(t.Name) {
-				continue
-			}
-			if isEditOrWrite(t.Name) {
-				editOrWritePresent = true
 				continue
 			}
 			out.Tools = append(out.Tools, applyForwardToolDef(t))
@@ -118,14 +113,6 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 				Name:        r.To,
 				Description: "Open a local image or PDF for visual inspection.",
 				Parameters:  r.OutputSchema,
-			})
-		}
-		if editOrWritePresent {
-			out.Tools = append(out.Tools, codexTool{
-				Type:        "function",
-				Name:        "apply_patch",
-				Description: "Apply a unified-diff patch to a file.",
-				Parameters:  codexApplyPatchSchema,
 			})
 		}
 	}
@@ -207,35 +194,20 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				msgContent = nil
 			}
 			callName := b.Name
-			var argsStr string
-			if isEditOrWrite(b.Name) {
-				if synth, ok := editToolUseToApplyPatchArgs(b.Name, b.Input); ok {
-					callName = "apply_patch"
-					argsStr = synth
-				} else {
-					// Fallback: forward unchanged. Reachable when b.Input is not a
-					// map[string]any (e.g. JSON null) — model produced malformed
-					// arguments. Claude Code will surface an unknown-tool error.
-					raw, _ := json.Marshal(b.Input)
-					argsStr = string(raw)
-				}
-			} else {
-				// Only replacement renames (non-empty ParamRename) rewrite the
-				// call name. Additive renames (Read↔view_image, where Read is
-				// kept verbatim AND view_image is added) leave the historical
-				// call as-is.
-				if r, ok := lookupForwardRename(b.Name); ok && len(r.ParamRename) > 0 {
-					callName = r.To
-				}
-				renamedInput := applyForwardArgRename(b.Name, b.Input)
-				raw, _ := json.Marshal(renamedInput)
-				argsStr = string(raw)
+			// Only replacement renames (non-empty ParamRename) rewrite the
+			// call name. Additive renames (Read↔view_image, where Read is
+			// kept verbatim AND view_image is added) leave the historical
+			// call as-is.
+			if r, ok := lookupForwardRename(b.Name); ok && len(r.ParamRename) > 0 {
+				callName = r.To
 			}
+			renamedInput := applyForwardArgRename(b.Name, b.Input)
+			args, _ := json.Marshal(renamedInput)
 			out.Input = append(out.Input, codexInput{
 				Type:      "function_call",
 				CallID:    stripStoredPrefix(b.ID),
 				Name:      callName,
-				Arguments: argsStr,
+				Arguments: string(args),
 			})
 		case "tool_result":
 			if len(msgContent) > 0 {

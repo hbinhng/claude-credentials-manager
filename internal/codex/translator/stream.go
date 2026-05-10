@@ -222,54 +222,6 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 
 	case "response.function_call_arguments.done":
 		var emissions []emission
-		if t.currentToolRenameTo == "apply_patch" {
-			claudeName, claudeArgs, ok := applyPatchReverse(t.argBuffer.String())
-			if ok {
-				prevIdx := t.currentBlockIdx
-				stopBody, _ := json.Marshal(map[string]any{
-					"type":  "content_block_stop",
-					"index": prevIdx,
-				})
-				emissions = append(emissions, emission{name: "content_block_stop", data: string(stopBody)})
-
-				newIdx := t.nextBlockIndex
-				t.nextBlockIndex++
-				t.currentBlockIdx = newIdx
-				startBody, _ := json.Marshal(map[string]any{
-					"type":  "content_block_start",
-					"index": newIdx,
-					"content_block": map[string]any{
-						"type":  "tool_use",
-						"id":    fmt.Sprintf("call_%s_%d", claudeName, newIdx),
-						"name":  claudeName,
-						"input": map[string]any{},
-					},
-				})
-				emissions = append(emissions, emission{name: "content_block_start", data: string(startBody)})
-				renamedJSON, _ := json.Marshal(claudeArgs)
-				deltaBody, _ := json.Marshal(map[string]any{
-					"type":  "content_block_delta",
-					"index": newIdx,
-					"delta": map[string]any{"type": "input_json_delta", "partial_json": string(renamedJSON)},
-				})
-				emissions = append(emissions, emission{name: "content_block_delta", data: string(deltaBody)})
-				t.currentToolRenameTo = ""
-				t.argBuffer.Reset()
-				emissions = append(emissions, t.closeBlock()...)
-				return emissions
-			}
-			// Fallback: emit apply_patch's args verbatim.
-			body, _ := json.Marshal(map[string]any{
-				"type":  "content_block_delta",
-				"index": t.currentBlockIdx,
-				"delta": map[string]any{"type": "input_json_delta", "partial_json": t.argBuffer.String()},
-			})
-			emissions = append(emissions, emission{name: "content_block_delta", data: string(body)})
-			t.currentToolRenameTo = ""
-			t.argBuffer.Reset()
-			emissions = append(emissions, t.closeBlock()...)
-			return emissions
-		}
 		if t.currentToolRenameTo != "" {
 			renamed := reverseRenameArgs(t.currentToolRenameTo, t.argBuffer.String())
 			body, _ := json.Marshal(map[string]any{
@@ -341,11 +293,6 @@ func (t *StreamTranslator) openBlock(ev codexEvent) []emission {
 		if claude, ok := lookupReverseName(ev.Item.Name); ok {
 			callName = claude
 			t.currentToolRenameTo = ev.Item.Name
-			t.argBuffer.Reset()
-		}
-		if ev.Item.Name == "apply_patch" {
-			callName = "apply_patch" // tentative; rewritten later
-			t.currentToolRenameTo = "apply_patch"
 			t.argBuffer.Reset()
 		}
 		content = map[string]any{
