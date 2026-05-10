@@ -213,7 +213,9 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 					callName = "apply_patch"
 					argsStr = synth
 				} else {
-					// Fallback: forward unchanged.
+					// Fallback: forward unchanged. Reachable when b.Input is not a
+					// map[string]any (e.g. JSON null) — model produced malformed
+					// arguments. Claude Code will surface an unknown-tool error.
 					raw, _ := json.Marshal(b.Input)
 					argsStr = string(raw)
 				}

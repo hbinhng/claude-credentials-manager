@@ -327,6 +327,81 @@ func TestApplyPatchReverseInternal_DiffKindUnknown(t *testing.T) {
 	_ = diffKindUnknown
 }
 
+func TestRoundTrip_EditApplyPatchPreservesContent(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"edit foo"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Edit","input":{"file_path":"foo.go","old_string":"old\n","new_string":"new\n"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"ok"}]}
+        ],
+        "tools":[{"name":"Edit","description":"e","input_schema":{"type":"object"}}]
+    }`)
+	fwd, err := TranslateRequest(body, RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	var probe struct {
+		Input []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(fwd, &probe); err != nil {
+		t.Fatalf("unmarshal forward: %v", err)
+	}
+	var argsJSON string
+	for _, it := range probe.Input {
+		if it.Type == "function_call" && it.Name == "apply_patch" {
+			argsJSON = it.Arguments
+			break
+		}
+	}
+	if argsJSON == "" {
+		t.Fatalf("no apply_patch in forward output")
+	}
+	name, args, ok := applyPatchReverse(argsJSON)
+	if !ok {
+		t.Fatalf("applyPatchReverse failed on synthesized diff")
+	}
+	if name != "Edit" {
+		t.Errorf("round-trip name = %q, want Edit", name)
+	}
+	if args["old_string"] != "old\n" {
+		t.Errorf("round-trip old_string = %q, want \"old\\n\"", args["old_string"])
+	}
+	if args["new_string"] != "new\n" {
+		t.Errorf("round-trip new_string = %q, want \"new\\n\"", args["new_string"])
+	}
+}
+
+func TestApplyPatchReverse_MultiHunkUsesFirstEdit(t *testing.T) {
+	// Two-hunk diff. v1 surfaces only the first edit; this test locks
+	// that documented behavior so silent regressions are caught.
+	diff := "--- a/foo.go\n+++ b/foo.go\n@@\n-old1\n+new1\n@@\n-old2\n+new2\n"
+	argsJSON := `{"patch":` + jsonString(diff) + `,"filename":"foo.go"}`
+	name, args, ok := applyPatchReverse(argsJSON)
+	if !ok {
+		t.Fatalf("applyPatchReverse failed on multi-hunk diff")
+	}
+	if name != "Edit" {
+		t.Errorf("name = %q, want Edit", name)
+	}
+	if got := args["old_string"]; got != "old1\n" {
+		t.Errorf("first-hunk old_string = %q, want \"old1\\n\" (multi-hunk should pick first only)", got)
+	}
+	if got := args["new_string"]; got != "new1\n" {
+		t.Errorf("first-hunk new_string = %q, want \"new1\\n\"", got)
+	}
+}
+
+// jsonString returns s wrapped as a JSON string literal.
+func jsonString(s string) string {
+	b, _ := json.Marshal(s)
+	return string(b)
+}
+
 func TestCodexApplyPatchSchema_RequiresPatchAndFilename(t *testing.T) {
 	req, ok := codexApplyPatchSchema["required"].([]any)
 	if !ok || len(req) != 2 {
