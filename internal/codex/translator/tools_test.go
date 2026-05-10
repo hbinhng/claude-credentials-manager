@@ -49,3 +49,38 @@ func TestIsDroppedClaudeTool(t *testing.T) {
 		t.Error("expected mcp__plugin__foo NOT to be dropped")
 	}
 }
+
+func TestToolRename_BashMapsToExecCommand(t *testing.T) {
+	r, ok := lookupForwardRename("Bash")
+	if !ok {
+		t.Fatalf("lookupForwardRename(\"Bash\") = !ok")
+	}
+	if r.To != "exec_command" {
+		t.Errorf("rename.To = %q, want exec_command", r.To)
+	}
+	if r.ParamRename["command"] != "cmd" {
+		t.Errorf("ParamRename[command] = %q, want cmd", r.ParamRename["command"])
+	}
+	if r.ParamReverseRename["cmd"] != "command" {
+		t.Errorf("ParamReverseRename[cmd] = %q, want command", r.ParamReverseRename["cmd"])
+	}
+	if r.OutputSchema == nil {
+		t.Errorf("OutputSchema is nil; want hand-built schema")
+	}
+}
+
+func TestToolRename_ReverseLookupExecCommandMapsToBash(t *testing.T) {
+	name, ok := lookupReverseName("exec_command")
+	if !ok || name != "Bash" {
+		t.Errorf("lookupReverseName(exec_command) = (%q, %v), want (Bash, true)", name, ok)
+	}
+}
+
+func TestToolRename_NoMappingForGlob(t *testing.T) {
+	if _, ok := lookupForwardRename("Glob"); ok {
+		t.Errorf("Glob should have no rename mapping")
+	}
+	if _, ok := lookupReverseName("Glob"); ok {
+		t.Errorf("Glob reverse lookup should miss")
+	}
+}
