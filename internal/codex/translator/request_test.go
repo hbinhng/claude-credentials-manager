@@ -977,6 +977,78 @@ func TestTranslateRequest_AddsViewImageWhenReadPresent(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_HistoricalReadToolUseStaysReadNotViewImage(t *testing.T) {
+	// Phase 5: Read is an ADDITIVE rename (out.Tools has both Read and
+	// view_image). Historical tool_use{name:"Read"} blocks must NOT be
+	// rewritten to view_image; they must stay as Read on the wire.
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"open file"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"./foo.go"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"file contents"}]}
+        ],
+        "tools":[{"name":"Read","description":"r","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		Input []struct {
+			Type string `json:"type"`
+			Name string `json:"name,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var foundRead, foundViewImage bool
+	for _, it := range probe.Input {
+		if it.Type == "function_call" {
+			switch it.Name {
+			case "Read":
+				foundRead = true
+			case "view_image":
+				foundViewImage = true
+			}
+		}
+	}
+	if !foundRead {
+		t.Errorf("historical Read tool_use should remain as Read function_call, not rewritten")
+	}
+	if foundViewImage {
+		t.Errorf("historical Read tool_use must NOT be rewritten to view_image (additive rename, not replacement)")
+	}
+}
+
+func TestTranslateRequest_ToolChoiceForReadStaysAsRead(t *testing.T) {
+	// Phase 5: tool_choice:{type:"tool",name:"Read"} must NOT be flipped
+	// to view_image because Read is still in out.Tools.
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[{"name":"Read","description":"r","input_schema":{"type":"object"}}],
+        "tool_choice":{"type":"tool","name":"Read"}
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		ToolChoice map[string]any `json:"tool_choice"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if probe.ToolChoice == nil {
+		t.Fatalf("tool_choice was dropped")
+	}
+	if probe.ToolChoice["name"] != "Read" {
+		t.Errorf("tool_choice.name = %v, want Read (additive rename should not flip)", probe.ToolChoice["name"])
+	}
+}
+
 func TestTranslateRequest_DoesNotDoubleEmitViewImage(t *testing.T) {
 	// If the user-supplied tools[] already contains a tool named
 	// view_image (e.g. an MCP tool with that name), don't append the
