@@ -216,8 +216,7 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		case t.currentToolRenameTo != "":
 			// Renamed tool (Bash, view_image): rename keys then sanitize.
 			renamedJSON := reverseRenameArgs(t.currentToolRenameTo, t.argBuffer.String())
-			claudeName, _ := lookupReverseName(t.currentToolRenameTo)
-			renamedJSON = sanitizeJSONStringForTool(claudeName, renamedJSON)
+			renamedJSON = sanitizeJSONStringForTool(t.currentBlockClaudeName, renamedJSON)
 			body, _ := json.Marshal(map[string]any{
 				"type":  "content_block_delta",
 				"index": t.currentBlockIdx,
