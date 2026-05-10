@@ -5,6 +5,11 @@
 // See spec §5 (request translation) and §6 (stream translation).
 package translator
 
+import (
+	"encoding/json"
+	"fmt"
+)
+
 // Anthropic request shape — the inbound /v1/messages body.
 type anthropicRequest struct {
 	Model         string                 `json:"model"`
@@ -23,8 +28,45 @@ type anthropicRequest struct {
 }
 
 type anthropicMessage struct {
-	Role    string                 `json:"role"` // "user" | "assistant"
+	Role    string                  `json:"role"` // "user" | "assistant"
 	Content []anthropicContentBlock `json:"content"`
+}
+
+// UnmarshalJSON normalizes the Anthropic Messages API's dual content
+// shape: `content` may be a JSON string (shorthand for a single text
+// block) OR an array of content blocks. We accept both and always
+// store the array form internally so the rest of the translator can
+// iterate uniformly.
+func (m *anthropicMessage) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		// coverage: unreachable — Go's json decoder only invokes
+		// UnmarshalJSON with syntactically valid JSON object slices.
+		return err
+	}
+	m.Role = raw.Role
+	if len(raw.Content) == 0 || string(raw.Content) == "null" {
+		m.Content = nil
+		return nil
+	}
+	switch raw.Content[0] {
+	case '"':
+		var s string
+		if err := json.Unmarshal(raw.Content, &s); err != nil {
+			// coverage: unreachable — RawMessage starting with '"' is
+			// already a syntactically valid JSON string.
+			return err
+		}
+		m.Content = []anthropicContentBlock{{Type: "text", Text: s}}
+		return nil
+	case '[':
+		return json.Unmarshal(raw.Content, &m.Content)
+	default:
+		return fmt.Errorf("translator: messages[].content must be a string or array, got %s", string(raw.Content[:1]))
+	}
 }
 
 type anthropicContentBlock struct {
