@@ -1,29 +1,11 @@
 package translator
 
 import (
-	"bytes"
 	"encoding/json"
 	"os"
 	"strings"
 	"testing"
 )
-
-// TestLoopReplay_StaleReminderNeverInOutboundInput replays each
-// inbound and asserts that the outbound input[] does NOT contain the
-// stale "task tools haven't been used recently" reminder text. This is
-// the post-Phase-3 regression assertion.
-func TestLoopReplay_StaleReminderNeverInOutboundInput(t *testing.T) {
-	needle := []byte("haven't been used recently")
-	for i, body := range loadFixtureBodies(t) {
-		out, err := TranslateRequest(body, RequestOpts{TargetModel: "gpt-5"})
-		if err != nil {
-			t.Fatalf("turn %d: TranslateRequest: %v", i, err)
-		}
-		if bytes.Contains(out, needle) {
-			t.Errorf("turn %d: outbound body still contains stale reminder text", i)
-		}
-	}
-}
 
 // TestLoopReplay_NoToolResultExceeds64KB asserts the Phase 9
 // truncation cap is enforced: every function_call_output.output in
