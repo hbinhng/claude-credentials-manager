@@ -86,7 +86,12 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 	if len(in.Tools) > 0 {
 		out.Tools = make([]codexTool, 0, len(in.Tools))
 		for _, t := range in.Tools {
-			out.Tools = append(out.Tools, applyForwardToolDef(t))
+			out.Tools = append(out.Tools, codexTool{
+				Type:        "function",
+				Name:        t.Name,
+				Description: defaultDescription(t.Description),
+				Parameters:  defaultParameters(t.InputSchema),
+			})
 		}
 	}
 
@@ -160,16 +165,11 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
 				msgContent = nil
 			}
-			callName := b.Name
-			if r, ok := lookupForwardRename(b.Name); ok {
-				callName = r.To
-			}
-			renamedInput := applyForwardArgRename(b.Name, b.Input)
-			args, _ := json.Marshal(renamedInput)
+			args, _ := json.Marshal(b.Input)
 			out.Input = append(out.Input, codexInput{
 				Type:      "function_call",
 				CallID:    stripStoredPrefix(b.ID),
-				Name:      callName,
+				Name:      b.Name,
 				Arguments: string(args),
 			})
 		case "tool_result":
@@ -301,18 +301,9 @@ func translateToolChoice(tc *anthropicToolChoice, tools []codexTool) any {
 	case "any":
 		return "required"
 	case "tool":
-		// Apply forward rename so "Bash" resolves to "exec_command"
-		// after Phase 4's rename. Without this, callers sending
-		// tool_choice:{type:"tool",name:"Bash"} would silently lose the
-		// forced-tool constraint because out.Tools no longer contains
-		// "Bash".
-		resolvedName := tc.Name
-		if r, ok := lookupForwardRename(tc.Name); ok {
-			resolvedName = r.To
-		}
 		for _, t := range tools {
-			if t.Name == resolvedName {
-				return map[string]any{"type": "function", "name": resolvedName}
+			if t.Name == tc.Name {
+				return map[string]any{"type": "function", "name": tc.Name}
 			}
 		}
 		return nil
