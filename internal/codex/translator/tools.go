@@ -165,6 +165,8 @@ func reverseRenameArgs(codexName, argsJSON string) string {
 	}
 	b, err := json.Marshal(out)
 	if err != nil {
+		// Unreachable: out is a map[string]any populated from a successful
+		// Unmarshal, so all values are JSON-representable. Defensive return.
 		return argsJSON
 	}
 	return string(b)

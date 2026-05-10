@@ -1,6 +1,9 @@
 package translator
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestDroppedClaudeTools_ContainsLoopDrivers(t *testing.T) {
 	mustHave := []string{
@@ -150,5 +153,49 @@ func TestApplyForwardArgRename_UnknownKeysPassThrough(t *testing.T) {
 	}
 	if _, exists := m["command"]; exists {
 		t.Errorf("command key should be renamed to cmd, not kept")
+	}
+}
+
+// Tests for reverseRenameArgs.
+
+func TestReverseRenameArgs_NoMapping(t *testing.T) {
+	// A tool with no reverse rename mapping passes args through unchanged.
+	got := reverseRenameArgs("Glob", `{"pattern":"*.go"}`)
+	if got != `{"pattern":"*.go"}` {
+		t.Errorf("no-mapping tool should pass through; got %q", got)
+	}
+}
+
+func TestReverseRenameArgs_UnknownTool(t *testing.T) {
+	// A completely unknown codex tool (not in the reverse map) passes through.
+	got := reverseRenameArgs("nonexistent_tool", `{"x":1}`)
+	if got != `{"x":1}` {
+		t.Errorf("unknown tool should pass through; got %q", got)
+	}
+}
+
+func TestReverseRenameArgs_MalformedJSON(t *testing.T) {
+	// Malformed JSON is returned unchanged.
+	got := reverseRenameArgs("exec_command", `not json`)
+	if got != `not json` {
+		t.Errorf("malformed JSON should pass through; got %q", got)
+	}
+}
+
+func TestReverseRenameArgs_UnknownKeyPassThrough(t *testing.T) {
+	// exec_command with cmd + unknown key: cmd→command, unknown keys pass through.
+	got := reverseRenameArgs("exec_command", `{"cmd":"ls","workdir":"/tmp"}`)
+	var m map[string]any
+	if err := json.Unmarshal([]byte(got), &m); err != nil {
+		t.Fatalf("unmarshal result: %v", err)
+	}
+	if m["command"] != "ls" {
+		t.Errorf("command = %v, want ls", m["command"])
+	}
+	if m["workdir"] != "/tmp" {
+		t.Errorf("workdir = %v, want /tmp", m["workdir"])
+	}
+	if _, exists := m["cmd"]; exists {
+		t.Errorf("cmd should be renamed to command, not kept")
 	}
 }
