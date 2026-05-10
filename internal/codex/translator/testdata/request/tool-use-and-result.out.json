@@ -22,7 +22,7 @@
     {
       "type": "function_call_output",
       "call_id": "tool-abc123",
-      "output": "Sunny, 22°C"
+      "output": "Sunny, 22\u00b0C"
     }
   ],
   "tools": [
@@ -41,7 +41,5 @@
     }
   ],
   "instructions": "You are a ChatGPT agent.",
-  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342",
-  "frequency_penalty": 0.4,
-  "presence_penalty": 0.4
+  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342"
 }

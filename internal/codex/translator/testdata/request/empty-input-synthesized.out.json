@@ -14,7 +14,5 @@
       ]
     }
   ],
-  "instructions": "You are a ChatGPT agent.",
-  "frequency_penalty": 0.4,
-  "presence_penalty": 0.4
+  "instructions": "You are a ChatGPT agent."
 }
