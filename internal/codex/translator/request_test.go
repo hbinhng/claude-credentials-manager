@@ -385,6 +385,81 @@ func jsonEqual(a, b any) bool {
 	return string(ja) == string(jb)
 }
 
+func TestTranslateRequest_ForwardRenamesBashToolDefinition(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[{"role":"user","content":"hi"}],
+        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object","properties":{"command":{"type":"string"}}}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	if bytes.Contains(out, []byte(`"name":"Bash"`)) {
+		t.Errorf("outbound still contains Bash; expected exec_command")
+	}
+	if !bytes.Contains(out, []byte(`"name":"exec_command"`)) {
+		t.Errorf("outbound missing exec_command")
+	}
+	if !bytes.Contains(out, []byte(`"cmd"`)) {
+		t.Errorf("outbound schema missing cmd key")
+	}
+}
+
+func TestTranslateRequest_ForwardRenamesAssistantBashToolUseInHistory(t *testing.T) {
+	body := []byte(`{
+        "model":"claude-opus-4-7",
+        "messages":[
+            {"role":"user","content":"run ls"},
+            {"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls -la"}}]},
+            {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"file listing"}]}
+        ],
+        "tools":[{"name":"Bash","description":"run shell","input_schema":{"type":"object"}}]
+    }`)
+	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var probe struct {
+		Input []struct {
+			Type      string `json:"type"`
+			Name      string `json:"name,omitempty"`
+			Arguments string `json:"arguments,omitempty"`
+		} `json:"input"`
+	}
+	if err := json.Unmarshal(out, &probe); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	var fc *struct {
+		Type      string
+		Name      string
+		Arguments string
+	}
+	for _, it := range probe.Input {
+		if it.Type == "function_call" {
+			tmp := struct {
+				Type      string
+				Name      string
+				Arguments string
+			}{it.Type, it.Name, it.Arguments}
+			fc = &tmp
+			break
+		}
+	}
+	if fc == nil {
+		t.Fatalf("no function_call in input[]")
+	}
+	if fc.Name != "exec_command" {
+		t.Errorf("function_call.name = %q, want exec_command", fc.Name)
+	}
+	if !strings.Contains(fc.Arguments, `"cmd":"ls -la"`) {
+		t.Errorf("function_call.arguments missing cmd key, got %q", fc.Arguments)
+	}
+	if strings.Contains(fc.Arguments, `"command"`) {
+		t.Errorf("function_call.arguments should not contain `command` key after rename")
+	}
+}
+
 func TestTranslateRequest_HoistSystemToInstructions(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","system":"be helpful","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
 	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
@@ -643,8 +718,11 @@ func TestTranslateRequest_DropsClaudeCodeOnlyTools(t *testing.T) {
 	if names["TaskUpdate"] {
 		t.Errorf("TaskUpdate must be dropped from outbound tools")
 	}
-	if !names["Bash"] {
-		t.Errorf("Bash must survive (renamed in Phase 4)")
+	if names["Bash"] {
+		t.Errorf("Bash must be renamed to exec_command in outbound tools")
+	}
+	if !names["exec_command"] {
+		t.Errorf("exec_command (renamed from Bash) must appear in outbound tools")
 	}
 	if !names["mcp__plugin__do_thing"] {
 		t.Errorf("MCP tools must pass through")
@@ -777,14 +855,14 @@ func TestTranslateRequest_DropsHistoricalToolUseForDroppedTools(t *testing.T) {
 			t.Errorf("orphan tool_result for dropped TaskUpdate must be filtered too, found: %+v", it)
 		}
 	}
-	// Bash function_call should survive.
+	// Bash function_call should survive, renamed to exec_command.
 	var foundBash bool
 	for _, it := range probe.Input {
-		if it.Type == "function_call" && it.Name == "Bash" {
+		if it.Type == "function_call" && it.Name == "exec_command" {
 			foundBash = true
 		}
 	}
 	if !foundBash {
-		t.Errorf("Bash function_call should survive")
+		t.Errorf("Bash function_call should survive as exec_command after forward rename")
 	}
 }

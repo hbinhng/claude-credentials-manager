@@ -96,12 +96,7 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 			if isDroppedClaudeTool(t.Name) {
 				continue
 			}
-			out.Tools = append(out.Tools, codexTool{
-				Type:        "function",
-				Name:        t.Name,
-				Description: defaultDescription(t.Description),
-				Parameters:  defaultParameters(t.InputSchema),
-			})
+			out.Tools = append(out.Tools, applyForwardToolDef(t))
 		}
 	}
 
@@ -177,17 +172,20 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 			if isDroppedClaudeTool(b.Name) {
 				continue // historical call to a dropped tool — skip
 			}
-			// Becomes its own function_call input item; emit message
-			// content first if any has accumulated, then the function_call.
 			if len(msgContent) > 0 {
 				out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
 				msgContent = nil
 			}
-			args, _ := json.Marshal(b.Input)
+			callName := b.Name
+			if r, ok := lookupForwardRename(b.Name); ok {
+				callName = r.To
+			}
+			renamedInput := applyForwardArgRename(b.Name, b.Input)
+			args, _ := json.Marshal(renamedInput)
 			out.Input = append(out.Input, codexInput{
 				Type:      "function_call",
 				CallID:    stripStoredPrefix(b.ID),
-				Name:      b.Name,
+				Name:      callName,
 				Arguments: string(args),
 			})
 		case "tool_result":

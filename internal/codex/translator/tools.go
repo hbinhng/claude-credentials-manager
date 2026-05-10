@@ -118,3 +118,47 @@ func lookupReverseRename(codexName string) (toolRename, bool) {
 	r, ok := reverseRenameLookup[codexName]
 	return r, ok
 }
+
+// applyForwardToolDef returns the codex tool entry for a Claude tool.
+// If the tool has a rename mapping, the codex name + hand-written
+// schema are used; otherwise the Claude tool is forwarded verbatim
+// (with the existing default-* helpers applied).
+func applyForwardToolDef(in anthropicTool) codexTool {
+	if r, ok := lookupForwardRename(in.Name); ok {
+		return codexTool{
+			Type:        "function",
+			Name:        r.To,
+			Description: defaultDescription(in.Description),
+			Parameters:  r.OutputSchema,
+		}
+	}
+	return codexTool{
+		Type:        "function",
+		Name:        in.Name,
+		Description: defaultDescription(in.Description),
+		Parameters:  defaultParameters(in.InputSchema),
+	}
+}
+
+// applyForwardArgRename rewrites the keys of args via the forward
+// rename map for the given Claude tool name. If the tool has no
+// mapping, args is returned unchanged. If args is nil, returns nil.
+func applyForwardArgRename(claudeName string, args any) any {
+	r, ok := lookupForwardRename(claudeName)
+	if !ok || len(r.ParamRename) == 0 {
+		return args
+	}
+	m, ok := args.(map[string]any)
+	if !ok {
+		return args
+	}
+	out := make(map[string]any, len(m))
+	for k, v := range m {
+		if nk, hit := r.ParamRename[k]; hit {
+			out[nk] = v
+		} else {
+			out[k] = v
+		}
+	}
+	return out
+}
