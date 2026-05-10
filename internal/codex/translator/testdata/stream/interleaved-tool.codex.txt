@@ -12,6 +12,6 @@ data: {"type":"response.function_call_arguments.delta","delta":"{\"query\":\"Par
 
 data: {"type":"response.function_call_arguments.done"}
 
-data: {"type":"response.completed","status":"completed","usage":{"input_tokens":30,"output_tokens":10}}
+data: {"type":"response.completed","status":"completed","response":{"id":"resp_4","usage":{"input_tokens":30,"output_tokens":10}}}
 
 data: [DONE]

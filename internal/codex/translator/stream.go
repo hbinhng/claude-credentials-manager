@@ -131,15 +131,14 @@ type codexEvent struct {
 	Type     string             `json:"type"`
 	Item     *codexOutputItem   `json:"item,omitempty"`
 	Delta    string             `json:"delta,omitempty"`
-	Usage    *codexUsage        `json:"usage,omitempty"`
 	Status   string             `json:"status,omitempty"` // for response.completed
 	Index    int                `json:"output_index,omitempty"`
-	Response *codexResponseInfo `json:"response,omitempty"` // for response.created
+	Response *codexResponseInfo `json:"response,omitempty"` // for response.created and response.completed
 }
 
 type codexResponseInfo struct {
-	ID string `json:"id"`
-	// We only need the ID; other fields (object, status, …) are ignored.
+	ID    string      `json:"id"`
+	Usage *codexUsage `json:"usage,omitempty"` // populated on response.completed
 }
 
 type codexOutputItem struct {
@@ -363,20 +362,24 @@ func (t *StreamTranslator) flushMessageDelta(ev codexEvent) []emission {
 		"input_tokens":  0,
 		"output_tokens": 0,
 	}
-	if ev.Usage != nil {
-		usageOut["input_tokens"] = ev.Usage.InputTokens
-		usageOut["output_tokens"] = ev.Usage.OutputTokens
+	var usage *codexUsage
+	if ev.Response != nil {
+		usage = ev.Response.Usage
+	}
+	if usage != nil {
+		usageOut["input_tokens"] = usage.InputTokens
+		usageOut["output_tokens"] = usage.OutputTokens
 		cachedRead := 0
-		if ev.Usage.InputTokensDetails != nil {
-			cachedRead = ev.Usage.InputTokensDetails.CachedTokens
+		if usage.InputTokensDetails != nil {
+			cachedRead = usage.InputTokensDetails.CachedTokens
 		}
 		if cachedRead > 0 {
 			usageOut["cache_read_input_tokens"] = cachedRead
 		}
 		// Store for FinalUsage getter.
 		t.usage = &anthropicUsage{
-			InputTokens:          ev.Usage.InputTokens,
-			OutputTokens:         ev.Usage.OutputTokens,
+			InputTokens:          usage.InputTokens,
+			OutputTokens:         usage.OutputTokens,
 			CacheReadInputTokens: cachedRead,
 		}
 	}
