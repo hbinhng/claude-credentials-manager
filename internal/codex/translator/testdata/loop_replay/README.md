@@ -11,3 +11,8 @@ TaskUpdate loop documented in
 The Phase 10 regression test (`loopreg_test.go`) replays this fixture
 through `TranslateRequest` and asserts that post-fix translator output
 preserves the four invariants Phases 1, 2, 3, and 9 ship.
+
+## Anonymization
+
+- Author email replaced with `author@example.com`.
+- Session UUIDs replaced with `00000000-0000-0000-0000-000000000001`.
