@@ -450,3 +450,84 @@ func TestTranslateRequest_NoPromptCacheKeyWhenSessionIDEmpty(t *testing.T) {
 		t.Errorf("expected no prompt_cache_key in output when SessionID is empty: %s", string(got))
 	}
 }
+
+// The Anthropic Messages API allows messages[].content to be either a
+// JSON string (shorthand for a single text block) OR an array of
+// content blocks. The translator must accept both shapes.
+func TestTranslateRequest_MessageContentAsString(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":"Hello world"}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"input_text"`) {
+		t.Errorf("expected input_text content type in output: %s", string(got))
+	}
+	if !strings.Contains(string(got), `"Hello world"`) {
+		t.Errorf("expected the string content to appear as text: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_MessageContentAsString_AssistantRole(t *testing.T) {
+	// Assistant string content should be normalized into an output_text block.
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello back"}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"output_text"`) {
+		t.Errorf("expected output_text content type for assistant string content: %s", string(got))
+	}
+	if !strings.Contains(string(got), `"hello back"`) {
+		t.Errorf("expected the assistant string content to appear: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_MessageContentAsEmptyString(t *testing.T) {
+	// Empty string content should still parse and synthesize a placeholder
+	// (text block is empty but the message itself is preserved).
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":""}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"input"`) {
+		t.Errorf("expected an input array in output: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_MessageContentNull(t *testing.T) {
+	// Explicit null content → nil Content slice; empty input synthesized.
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":null}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"continue"`) {
+		t.Errorf("expected synthesized placeholder when all content is null: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_MessageContentMissing(t *testing.T) {
+	// content key missing entirely → nil Content slice; empty input synthesized.
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user"}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `"continue"`) {
+		t.Errorf("expected synthesized placeholder when content is missing: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_MessageContentInvalidType(t *testing.T) {
+	// Non-string, non-array content (number/object) is rejected.
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":42}]}`
+	_, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err == nil {
+		t.Fatalf("expected error for numeric content, got none")
+	}
+	if !strings.Contains(err.Error(), "must be a string or array") {
+		t.Errorf("expected shape error, got: %v", err)
+	}
+}
