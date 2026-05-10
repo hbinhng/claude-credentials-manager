@@ -142,10 +142,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 		switch b.Type {
 		case "text":
 			text := b.Text
-			if role == "user" {
-				text = stripDroppedReminders(text)
-			}
-			if text == "" || strings.TrimSpace(text) == "" {
+			if text == "" {
 				continue
 			}
 			cType := "input_text"
