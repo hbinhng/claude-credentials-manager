@@ -179,7 +179,6 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 				out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
 				msgContent = nil
 			}
-			cleaned := stripNullArgs(b.Input)
 			callName := b.Name
 			// Only replacement renames (non-empty ParamRename) rewrite the
 			// call name. Additive renames (Read↔view_image, where Read is
@@ -188,7 +187,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 			if r, ok := lookupForwardRename(b.Name); ok && len(r.ParamRename) > 0 {
 				callName = r.To
 			}
-			renamedInput := applyForwardArgRename(b.Name, cleaned)
+			renamedInput := applyForwardArgRename(b.Name, b.Input)
 			args, _ := json.Marshal(renamedInput)
 			out.Input = append(out.Input, codexInput{
 				Type:      "function_call",

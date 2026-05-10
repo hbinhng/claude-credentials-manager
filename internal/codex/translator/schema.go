@@ -39,28 +39,22 @@ func sanitizeToolArguments(toolName string, args map[string]any) map[string]any 
 }
 
 // sanitizeJSONStringForTool decodes argsJSON as a JSON object, applies
-// the tool's sanitizer (if registered) and always strips null-valued
-// keys via stripNullArgs, then re-encodes. If decoding or encoding
+// the tool's sanitizer, and re-encodes. If decoding or encoding
 // fails, returns argsJSON unchanged. Used by the stream translator
 // where args travel as opaque JSON strings.
 func sanitizeJSONStringForTool(toolName, argsJSON string) string {
+	if _, ok := argSanitizers[toolName]; !ok {
+		return argsJSON
+	}
 	var raw map[string]any
 	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
 		return argsJSON
 	}
-	if _, ok := argSanitizers[toolName]; ok {
-		raw = sanitizeToolArguments(toolName, raw)
-	}
-	cleaned, ok := stripNullArgs(raw).(map[string]any)
-	if !ok {
-		// Unreachable: raw is map[string]any, so stripNullArgs always
-		// returns map[string]any. Defensive fallback.
-		cleaned = raw
-	}
-	out, err := json.Marshal(cleaned)
+	raw = sanitizeToolArguments(toolName, raw)
+	out, err := json.Marshal(raw)
 	if err != nil {
-		// Unreachable: cleaned is map[string]any populated from a
-		// successful Unmarshal, so all values are JSON-representable.
+		// Unreachable: raw is a map[string]any populated from a successful
+		// Unmarshal, so all values are JSON-representable. Defensive return.
 		return argsJSON
 	}
 	return string(out)
