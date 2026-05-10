@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // RequestOpts configures TranslateRequest. Per spec
@@ -200,24 +201,48 @@ func stripStoredPrefix(id string) string {
 	return id
 }
 
+// stringifyToolResult flattens tool_result content into the single
+// string codex's function_call_output.output expects. Claude Code
+// emits arrays mixing {type:"text"} and {type:"image"} blocks (e.g.
+// from Bash and FileReadTool). Text is concatenated newline-separated;
+// base64 images are passed through verbatim as data URIs so codex
+// sees them rather than silently losing the image. Non-base64 image
+// sources (url) are dropped, matching the message-content handling
+// in appendMessageInput.
 func stringifyToolResult(content any) string {
 	switch v := content.(type) {
 	case string:
 		return v
 	case []any:
-		// Best-effort: serialize each item's text or just JSON-encode.
-		out := ""
+		var parts []string
 		for _, item := range v {
 			m, ok := item.(map[string]any)
 			if !ok {
 				continue
 			}
-			if txt, _ := m["text"].(string); txt != "" {
-				out += txt
+			switch t, _ := m["type"].(string); t {
+			case "text":
+				if txt, _ := m["text"].(string); txt != "" {
+					parts = append(parts, txt)
+				}
+			case "image":
+				src, ok := m["source"].(map[string]any)
+				if !ok {
+					continue
+				}
+				if st, _ := src["type"].(string); st != "base64" {
+					continue
+				}
+				mt, _ := src["media_type"].(string)
+				data, _ := src["data"].(string)
+				if data == "" {
+					continue
+				}
+				parts = append(parts, "data:"+mt+";base64,"+data)
 			}
 		}
-		if out != "" {
-			return out
+		if len(parts) > 0 {
+			return strings.Join(parts, "\n")
 		}
 	}
 	if content != nil {

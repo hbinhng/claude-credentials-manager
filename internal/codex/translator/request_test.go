@@ -531,3 +531,66 @@ func TestTranslateRequest_MessageContentInvalidType(t *testing.T) {
 		t.Errorf("expected shape error, got: %v", err)
 	}
 }
+
+// Claude Code's Bash and FileReadTool emit tool_result content as
+// arrays containing a mix of {type:"text"} and {type:"image"} blocks.
+// The translator must preserve image data URIs verbatim in the
+// stringified output so codex sees them, not silently drop them.
+func TestTranslateRequest_ToolResultImageBase64(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), `data:image/png;base64,iVBORw0KGgo=`) {
+		t.Errorf("expected base64 data URI in output: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_ToolResultMixedTextImage(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"file1.txt"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BASE64DATA"}},{"type":"text","text":"file2.txt"}]}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(string(got), "file1.txt") {
+		t.Errorf("expected first text block in output: %s", string(got))
+	}
+	if !strings.Contains(string(got), "file2.txt") {
+		t.Errorf("expected second text block in output: %s", string(got))
+	}
+	if !strings.Contains(string(got), `data:image/jpeg;base64,BASE64DATA`) {
+		t.Errorf("expected image data URI in output: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_ToolResultImageEmptyData(t *testing.T) {
+	// Image block with empty data field is dropped (no data URI emitted).
+	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}]}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(string(got), "data:image/png") {
+		t.Errorf("empty-data image should not produce a data URI: %s", string(got))
+	}
+	if !strings.Contains(string(got), "hello") {
+		t.Errorf("text part should still be preserved: %s", string(got))
+	}
+}
+
+func TestTranslateRequest_ToolResultImageNonBase64Skipped(t *testing.T) {
+	// Image with non-base64 source (e.g., url type) is dropped, matching
+	// the message-content handling in appendMessageInput.
+	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}]}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(string(got), "data:") {
+		t.Errorf("URL-source image should not produce a data URI: %s", string(got))
+	}
+	if strings.Contains(string(got), "example.com") {
+		t.Errorf("URL-source image should be dropped, not passed through: %s", string(got))
+	}
+}
