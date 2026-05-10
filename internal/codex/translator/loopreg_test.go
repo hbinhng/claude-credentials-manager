@@ -1,6 +1,8 @@
 package translator
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"os"
 	"strings"
@@ -32,6 +34,105 @@ func TestLoopReplay_NoToolResultExceeds64KB(t *testing.T) {
 			}
 		}
 	}
+}
+
+// TestLoopReplay_DistinctMessageIDsPerTurn replays each turn's
+// upstream response events through StreamTranslator and asserts
+// that the outbound message_start event for each turn carries a
+// non-empty, distinct id. This locks the fix from commit 769769d:
+// without translation of chatgpt.com's response.id into a unique
+// Anthropic msg_<id>, Claude Code's normalizeMessagesForAPI merges
+// assistant turns into one accumulated message and triggers the
+// observed output loop.
+func TestLoopReplay_DistinctMessageIDsPerTurn(t *testing.T) {
+	turns := loadFixtureTurns(t)
+	if len(turns) == 0 {
+		t.Fatalf("no turns loaded")
+	}
+
+	seen := make(map[string]int, len(turns))
+	for i, sse := range turns {
+		tr := NewStreamTranslator(StreamOpts{
+			Model:     "test-model",
+			MessageID: "msg_fallback",
+		})
+		var out bytes.Buffer
+		if err := tr.Pipe(context.Background(), strings.NewReader(sse), &out); err != nil {
+			t.Fatalf("turn %d: Pipe: %v", i, err)
+		}
+
+		// Find the message_start payload and extract message.id.
+		var startID string
+		for _, line := range strings.Split(out.String(), "\n") {
+			rest, ok := strings.CutPrefix(line, "data: ")
+			if !ok {
+				continue
+			}
+			if !strings.Contains(rest, `"message_start"`) {
+				continue
+			}
+			var env struct {
+				Message struct {
+					ID string `json:"id"`
+				} `json:"message"`
+			}
+			if err := json.Unmarshal([]byte(rest), &env); err != nil {
+				t.Fatalf("turn %d: unmarshal message_start: %v", i, err)
+			}
+			startID = env.Message.ID
+			break
+		}
+		if startID == "" {
+			t.Fatalf("turn %d: no message_start.id found in output:\n%s", i, out.String())
+		}
+		if prev, dup := seen[startID]; dup {
+			t.Fatalf("turn %d duplicates id from turn %d: %q", i, prev, startID)
+		}
+		seen[startID] = i
+	}
+}
+
+// loadFixtureTurns reconstructs one SSE stream per turn from the
+// fixture's upstream.resp.event lines. Groups events by reqId in
+// trace-recording order; returns a slice of SSE strings ready to feed
+// to StreamTranslator.Pipe.
+func loadFixtureTurns(t *testing.T) []string {
+	t.Helper()
+	raw, err := os.ReadFile("testdata/loop_replay/sample.jsonl")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	// Preserve first-seen order of reqIds.
+	var order []string
+	events := make(map[string][]string)
+	for _, ln := range strings.Split(string(raw), "\n") {
+		if len(ln) == 0 || ln[0] != '{' {
+			continue
+		}
+		var l struct {
+			Dir   string `json:"dir"`
+			ReqID string `json:"reqId"`
+			Data  string `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(ln), &l); err != nil {
+			continue
+		}
+		if l.Dir != "upstream.resp.event" {
+			continue
+		}
+		if _, seen := events[l.ReqID]; !seen {
+			order = append(order, l.ReqID)
+		}
+		events[l.ReqID] = append(events[l.ReqID], l.Data)
+	}
+	turns := make([]string, 0, len(order))
+	for _, id := range order {
+		// Reassemble SSE: each fixture line is one complete event body
+		// (e.g. "event: response.created\ndata: {...}"). Join with the
+		// SSE event terminator "\n\n" and append a final terminator.
+		turns = append(turns, strings.Join(events[id], "\n\n")+"\n\n")
+	}
+	return turns
 }
 
 // loadFixtureBodies extracts the in.raw /v1/messages bodies from the
