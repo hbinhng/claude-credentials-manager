@@ -3,6 +3,7 @@ package translator
 import (
 	"reflect"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestSanitizeToolArguments_DropsEmptyPagesOnRead(t *testing.T) {
@@ -47,7 +48,9 @@ func TestSanitizeJSONStringForTool_MalformedJSONPassthrough(t *testing.T) {
 }
 
 func TestSanitizeJSONStringForTool_UnknownToolPassthrough(t *testing.T) {
-	// No sanitizer registered → passthrough without decoding.
+	// No sanitizer registered → stripNullArgs-only path; for non-null
+	// inputs the result is semantically identical (the unmarshal/marshal
+	// round-trip is identity).
 	in := `{"x":""}`
 	got := sanitizeJSONStringForTool("UnknownTool", in)
 	if got != in {
@@ -102,5 +105,31 @@ func TestTruncateAtWordBoundary_NoSpaceFallsBackToHardCut(t *testing.T) {
 	got := truncateAtWordBoundary(in, 5)
 	if got != "abcde" {
 		t.Errorf("no-space input truncate(5) = %q, want \"abcde\"", got)
+	}
+}
+
+func TestTruncateAtWordBoundary_PreservesUTF8AfterHardCut(t *testing.T) {
+	// 5 ASCII bytes + 3-byte CJK rune = 8 bytes; max=7 lands inside the rune.
+	in := "abcde" + "\xe7\x95\x8c"
+	if utf8.RuneCountInString(in) != 6 {
+		t.Fatalf("test setup wrong: rune count = %d", utf8.RuneCountInString(in))
+	}
+	got := truncateAtWordBoundary(in, 7)
+	if !utf8.ValidString(got) {
+		t.Errorf("truncated output is invalid UTF-8: %q", got)
+	}
+	// Expected behavior: back up to the rune boundary at byte 5.
+	if got != "abcde" {
+		t.Errorf("truncate(7) = %q, want \"abcde\"", got)
+	}
+}
+
+func TestTruncateAtWordBoundary_LeadingWhitespaceOnlyDropsToEmpty(t *testing.T) {
+	// String starts with whitespace at byte 0, no other whitespace.
+	in := "\nabcdefghij"
+	got := truncateAtWordBoundary(in, 5)
+	// lastWhitespaceIndex returns 0; with the i>=0 guard, cut[:0] = "".
+	if got != "" {
+		t.Errorf("truncate(5) on leading-whitespace-only input = %q, want empty (whitespace boundary at index 0)", got)
 	}
 }
