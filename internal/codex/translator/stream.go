@@ -239,6 +239,17 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 	return nil
 }
 
+// openBlock translates a codex `response.output_item.added` event
+// into a single Anthropic `content_block_start`. Codex's protocol
+// (codex-rs/protocol/src/models.rs ResponseItem::Message) carries
+// `content: Vec<ContentItem>` — meaning a single Message item could
+// in theory hold multiple blocks. In practice, chatgpt.com always
+// emits one block per output_item.added event (verified against
+// codex-rs/core/tests/common/responses.rs), so we open exactly one
+// block per event. If chatgpt.com ever starts emitting multi-block
+// messages we'd see codex's `content_index` field on delta events
+// (codex-rs/protocol/src/protocol.rs:1858) carrying non-zero values
+// — that's the signal to revisit this assumption.
 func (t *StreamTranslator) openBlock(ev codexEvent) []emission {
 	if ev.Item == nil {
 		return nil
