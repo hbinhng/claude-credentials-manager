@@ -201,6 +201,122 @@ func reverseRenameArgs(codexName, argsJSON string) string {
 	return string(b)
 }
 
+// codexApplyPatchSchema mirrors codex-rs/core/src/tools/handlers/apply_patch_spec.rs.
+var codexApplyPatchSchema = map[string]any{
+	"type": "object",
+	"properties": map[string]any{
+		"patch": map[string]any{
+			"type":        "string",
+			"description": "Unified-diff patch describing the change.",
+		},
+		"filename": map[string]any{
+			"type":        "string",
+			"description": "Target filename.",
+		},
+	},
+	"required":             []any{"patch", "filename"},
+	"additionalProperties": false,
+}
+
+// editToolNames are the Claude tools Phase 6 collapses into apply_patch.
+var editToolNames = map[string]struct{}{
+	"Edit":  {},
+	"Write": {},
+}
+
+func isEditOrWrite(name string) bool {
+	_, ok := editToolNames[name]
+	return ok
+}
+
+// editToolUseToApplyPatchArgs synthesizes apply_patch arguments from a
+// Claude tool_use{Edit|Write, input}. Returns ("", false) on input
+// shape mismatch — caller falls back to passthrough.
+func editToolUseToApplyPatchArgs(toolName string, input any) (string, bool) {
+	m, ok := input.(map[string]any)
+	if !ok {
+		return "", false
+	}
+	filename, _ := m["file_path"].(string)
+	if filename == "" {
+		return "", false
+	}
+	var diff string
+	switch toolName {
+	case "Edit":
+		oldStr, _ := m["old_string"].(string)
+		newStr, _ := m["new_string"].(string)
+		if oldStr == "" && newStr == "" {
+			return "", false
+		}
+		diff = synthesizeUnifiedDiff(filename, oldStr, newStr)
+	case "Write":
+		content, _ := m["content"].(string)
+		diff = synthesizeFileCreateDiff(filename, content)
+	default:
+		return "", false
+	}
+	args, err := json.Marshal(map[string]any{"patch": diff, "filename": filename})
+	if err != nil {
+		// Unreachable: map[string]any with string values always marshals
+		// successfully. Defensive guard retained for safety.
+		return "", false
+	}
+	return string(args), true
+}
+
+// ApplyPatchReverse parses argsJSON (apply_patch arguments) and
+// returns the Anthropic tool name + args map to surface to Claude
+// Code. On parse failure or unsupported diff, returns ("", nil, false)
+// — caller falls back to passthrough.
+// Exported so the round-trip test in request_test.go can call it directly.
+func ApplyPatchReverse(argsJSON string) (claudeName string, claudeArgs map[string]any, ok bool) {
+	return applyPatchReverse(argsJSON)
+}
+
+// applyPatchReverse is the unexported implementation used by the stream translator.
+func applyPatchReverse(argsJSON string) (claudeName string, claudeArgs map[string]any, ok bool) {
+	var raw struct {
+		Patch    string `json:"patch"`
+		Filename string `json:"filename"`
+	}
+	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
+		return "", nil, false
+	}
+	if raw.Patch == "" {
+		return "", nil, false
+	}
+	parsed, err := parseUnifiedDiff(raw.Patch)
+	if err != nil {
+		return "", nil, false
+	}
+	switch parsed.kind {
+	case diffKindCreate:
+		return "Write", map[string]any{
+			"file_path": parsed.filename,
+			"content":   parsed.fileContent,
+		}, true
+	case diffKindEdit:
+		if len(parsed.edits) == 0 {
+			// Unreachable: parseUnifiedDiff returns an error (not diffKindEdit)
+			// when there are no -/+ lines. Defensive guard retained for safety.
+			return "", nil, false
+		}
+		// Multi-hunk: surface only the first edit. Future work may emit
+		// multiple parallel tool_use blocks; v1 just picks the first.
+		e := parsed.edits[0]
+		return "Edit", map[string]any{
+			"file_path":  parsed.filename,
+			"old_string": e.oldString,
+			"new_string": e.newString,
+		}, true
+	}
+	// Unreachable: parseUnifiedDiff only returns diffKindUnknown=0 for the
+	// zero value, which cannot occur because errors take the early return path
+	// and all successful parses produce diffKindEdit or diffKindCreate.
+	return "", nil, false
+}
+
 // applyForwardArgRename rewrites the keys of args via the forward
 // rename map for the given Claude tool name. If the tool has no
 // mapping, args is returned unchanged. If args is nil, returns nil.
