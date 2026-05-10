@@ -4,6 +4,8 @@
 // Phase 4+) maps overlapping tools to their codex shape.
 package translator
 
+import "encoding/json"
+
 // droppedClaudeTools enumerates Claude Code builtin tools that codex
 // has no analog for. They are stripped from outbound `tools[]` so the
 // model cannot call them — preventing silent-no-op loops like the
@@ -138,6 +140,34 @@ func applyForwardToolDef(in anthropicTool) codexTool {
 		Description: defaultDescription(in.Description),
 		Parameters:  defaultParameters(in.InputSchema),
 	}
+}
+
+// reverseRenameArgs takes a codex tool name and a JSON-encoded
+// arguments string, renames keys via ParamReverseRename, and returns
+// the re-serialized JSON. Returns the input unchanged if the tool has
+// no rename mapping or the JSON is malformed.
+func reverseRenameArgs(codexName, argsJSON string) string {
+	r, ok := lookupReverseRename(codexName)
+	if !ok || len(r.ParamReverseRename) == 0 {
+		return argsJSON
+	}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &raw); err != nil {
+		return argsJSON
+	}
+	out := make(map[string]any, len(raw))
+	for k, v := range raw {
+		if nk, hit := r.ParamReverseRename[k]; hit {
+			out[nk] = v
+		} else {
+			out[k] = v
+		}
+	}
+	b, err := json.Marshal(out)
+	if err != nil {
+		return argsJSON
+	}
+	return string(b)
 }
 
 // applyForwardArgRename rewrites the keys of args via the forward
