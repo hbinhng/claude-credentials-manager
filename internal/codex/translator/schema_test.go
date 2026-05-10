@@ -48,41 +48,11 @@ func TestSanitizeJSONStringForTool_MalformedJSONPassthrough(t *testing.T) {
 }
 
 func TestSanitizeJSONStringForTool_UnknownToolPassthrough(t *testing.T) {
-	// No sanitizer registered → stripNullArgs-only path; for non-null
-	// inputs the result is semantically identical (the unmarshal/marshal
-	// round-trip is identity).
+	// No sanitizer registered → early return; argsJSON passes through unchanged.
 	in := `{"x":""}`
 	got := sanitizeJSONStringForTool("UnknownTool", in)
 	if got != in {
 		t.Errorf("unknown tool should pass through, got %v", got)
-	}
-}
-
-func TestStripNullArgs_DropsNullKey(t *testing.T) {
-	in := map[string]any{"keep": "x", "drop": nil}
-	got := stripNullArgs(in).(map[string]any)
-	if _, ok := got["drop"]; ok {
-		t.Errorf("drop key should be removed")
-	}
-	if got["keep"] != "x" {
-		t.Errorf("keep key should survive")
-	}
-}
-
-func TestStripNullArgs_PreservesEmptyString(t *testing.T) {
-	in := map[string]any{"x": ""}
-	got := stripNullArgs(in).(map[string]any)
-	if _, ok := got["x"]; !ok {
-		t.Errorf("empty string is not null; should survive")
-	}
-}
-
-func TestStripNullArgs_NonMapPassthrough(t *testing.T) {
-	// Non-map values pass through unchanged (identity return).
-	in := "just a string"
-	got := stripNullArgs(in)
-	if got != in {
-		t.Errorf("non-map arg should pass through unchanged, got %v", got)
 	}
 }
 
