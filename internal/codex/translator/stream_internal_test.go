@@ -239,3 +239,41 @@ func TestApply_OutputItemDone_ClosesOpenBlock(t *testing.T) {
 		}
 	})
 }
+
+// TestApply_ReasoningTextDelta_InsideReasoningBlock verifies that
+// response.reasoning_text.delta (the non-summary variant in codex-rs
+// vocabulary) is treated as a thinking_delta when a reasoning block
+// is open, and dropped otherwise.
+func TestApply_ReasoningTextDelta_InsideReasoningBlock(t *testing.T) {
+	t.Run("inside_reasoning_block_emits_thinking_delta", func(t *testing.T) {
+		tr := NewStreamTranslator(StreamOpts{MessageID: "msg_x", Model: "m"})
+		_ = tr.apply(codexEvent{Type: "response.created", Response: &codexResponseInfo{ID: "resp_x"}})
+		_ = tr.apply(codexEvent{
+			Type: "response.output_item.added",
+			Item: &codexOutputItem{Type: "reasoning", ID: "rs_x"},
+		})
+		em := tr.apply(codexEvent{Type: "response.reasoning_text.delta", Delta: "hmm"})
+		if len(em) != 1 || em[0].name != "content_block_delta" {
+			t.Fatalf("expected [content_block_delta], got %+v", em)
+		}
+		if !strings.Contains(em[0].data, `"thinking_delta"`) {
+			t.Errorf("expected thinking_delta payload, got %s", em[0].data)
+		}
+		if !strings.Contains(em[0].data, `"thinking":"hmm"`) {
+			t.Errorf("expected delta text to be carried, got %s", em[0].data)
+		}
+	})
+
+	t.Run("outside_reasoning_block_drops_silently", func(t *testing.T) {
+		tr := NewStreamTranslator(StreamOpts{MessageID: "msg_x", Model: "m"})
+		_ = tr.apply(codexEvent{Type: "response.created", Response: &codexResponseInfo{ID: "resp_x"}})
+		_ = tr.apply(codexEvent{
+			Type: "response.output_item.added",
+			Item: &codexOutputItem{Type: "message", ID: "msg_x"},
+		})
+		em := tr.apply(codexEvent{Type: "response.reasoning_text.delta", Delta: "should not appear"})
+		if len(em) != 0 {
+			t.Errorf("expected no emissions when not in reasoning block, got %+v", em)
+		}
+	})
+}
