@@ -242,7 +242,9 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		// the summary handler so we don't drop reasoning if the
 		// upstream protocol ever shifts. Guard on currentType so a
 		// stray delta outside a reasoning block can't corrupt a
-		// message/tool block.
+		// message/tool block. Block closure is handled by
+		// response.output_item.done (the defensive close added in
+		// the same fix).
 		if t.currentType != "reasoning" {
 			return nil
 		}
