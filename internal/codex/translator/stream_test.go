@@ -694,6 +694,82 @@ func TestStream_DropsEmptyReadPages(t *testing.T) {
 	}
 }
 
+// TestStreamTranslator_EOFSafetyNet_OpenBlockAtEOF verifies that
+// when the upstream stream ends without any terminal event but a
+// content block is still open, run() finalizes the stream so Claude
+// Code receives a well-formed message_stop.
+func TestStreamTranslator_EOFSafetyNet_OpenBlockAtEOF(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_eof"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_eof"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	tr := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fb", Model: "m"})
+	var out bytes.Buffer
+	if err := tr.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"event: message_start",
+		"event: content_block_start",
+		"event: content_block_stop",
+		`"stop_reason":"end_turn"`,
+		"event: message_stop",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output missing %q\nfull output:\n%s", want, got)
+		}
+	}
+}
+
+// TestStreamTranslator_EOFSafetyNet_EmptyInput verifies that the
+// safety net is a no-op when the stream is empty (no message_start
+// was ever emitted).
+func TestStreamTranslator_EOFSafetyNet_EmptyInput(t *testing.T) {
+	tr := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fb", Model: "m"})
+	var out bytes.Buffer
+	if err := tr.Pipe(context.Background(), strings.NewReader(""), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("expected empty output, got %q", out.String())
+	}
+}
+
+// TestStreamTranslator_EOFSafetyNet_CreatedThenEOF verifies that
+// when response.created lands but no block is opened before EOF,
+// the safety net still emits message_delta + message_stop (and NO
+// stray content_block_stop, since no block was ever opened).
+func TestStreamTranslator_EOFSafetyNet_CreatedThenEOF(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_co"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	tr := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fb", Model: "m"})
+	var out bytes.Buffer
+	if err := tr.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "event: message_start") {
+		t.Errorf("missing message_start; got %q", got)
+	}
+	if !strings.Contains(got, "event: message_stop") {
+		t.Errorf("missing message_stop; got %q", got)
+	}
+	if strings.Contains(got, "event: content_block_stop") {
+		t.Errorf("unexpected content_block_stop (no block was open); got %q", got)
+	}
+}
+
 // normalize strips trailing whitespace per line and tolerates \r\n vs \n.
 func normalize(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")

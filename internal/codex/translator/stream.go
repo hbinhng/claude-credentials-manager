@@ -127,8 +127,24 @@ func (t *StreamTranslator) run(ctx context.Context, src io.Reader, dst io.Writer
 			}
 		}
 	}
-	if err := scanner.Err(); err != nil && !errors.Is(err, io.EOF) {
-		return err
+	scanErr := scanner.Err()
+
+	// Safety net: if we ever wrote message_start but didn't reach a
+	// terminal event (response.completed / .incomplete / .failed),
+	// finalize the stream here so the SSE output is well-formed
+	// regardless of the exit path (EOF, [DONE], scanner error, or
+	// ctx done partway through). end_turn is the honest fallback —
+	// the real stop_reason and usage are unknowable in this branch.
+	if t.messageStarted && !t.messageEnded {
+		for _, em := range t.finalize("end_turn", nil) {
+			if err := writeSSE(dst, em.name, em.data); err != nil {
+				return err
+			}
+		}
+	}
+
+	if scanErr != nil && !errors.Is(scanErr, io.EOF) {
+		return scanErr
 	}
 	return nil
 }
