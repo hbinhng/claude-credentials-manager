@@ -435,6 +435,24 @@ func mapIncompleteReason(reason string) string {
 	return "end_turn"
 }
 
+// mapFailedCode translates the chatgpt.com response.failed
+// "error.code" string into an Anthropic-shape error.type. Unknown
+// codes collapse to "api_error". The upstream error.message is
+// passed through verbatim by callers — only the type is mapped.
+func mapFailedCode(code string) string {
+	switch code {
+	case "context_length_exceeded":
+		return "request_too_large"
+	case "insufficient_quota", "rate_limit_exceeded":
+		return "rate_limit_error"
+	case "server_overloaded":
+		return "overloaded_error"
+	case "invalid_prompt", "cyber_policy":
+		return "invalid_request_error"
+	}
+	return "api_error"
+}
+
 func writeSSE(w io.Writer, name, data string) error {
 	if _, err := io.WriteString(w, "event: "+name+"\n"); err != nil {
 		return err
