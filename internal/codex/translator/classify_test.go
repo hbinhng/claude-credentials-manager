@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -349,5 +350,25 @@ func TestClassifyStream_ContextCancel(t *testing.T) {
 	}
 	if dec.Overflow {
 		t.Errorf("Overflow = true, want false when ctx is canceled")
+	}
+}
+
+func TestClassifyStream_Fixture_OverflowEmptyReasoning(t *testing.T) {
+	data, err := os.ReadFile("testdata/classify/overflow-empty-reasoning.codex.txt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	dec, _, _, err := translator.ClassifyStream(context.Background(), bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ClassifyStream: %v", err)
+	}
+	if !dec.Overflow {
+		t.Errorf("Overflow = false on real-trace fixture, want true")
+	}
+	if dec.InputTokens != 271521 {
+		t.Errorf("InputTokens = %d, want 271521", dec.InputTokens)
+	}
+	if dec.Limit != 271552 {
+		t.Errorf("Limit = %d, want 271552 (271521 + 31)", dec.Limit)
 	}
 }

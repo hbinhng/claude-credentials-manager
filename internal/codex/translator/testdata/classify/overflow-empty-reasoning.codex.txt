@@ -1,0 +1,11 @@
+data: {"type":"response.created","response":{"id":"resp_real1","status":"in_progress"}}
+
+data: {"type":"response.in_progress","response":{"id":"resp_real1","status":"in_progress"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_real1","type":"reasoning","summary":[]}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_real1","type":"reasoning","summary":[]}}
+
+data: {"type":"response.incomplete","response":{"id":"resp_real1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":271521,"output_tokens":31,"output_tokens_details":{"reasoning_tokens":31}}}}
+
+data: [DONE]
