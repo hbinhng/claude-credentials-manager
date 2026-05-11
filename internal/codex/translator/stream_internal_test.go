@@ -128,3 +128,25 @@ func TestMapIncompleteReason(t *testing.T) {
 		})
 	}
 }
+
+func TestMapFailedCode(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"context_length_exceeded", "request_too_large"},
+		{"insufficient_quota", "rate_limit_error"},
+		{"rate_limit_exceeded", "rate_limit_error"},
+		{"server_overloaded", "overloaded_error"},
+		{"invalid_prompt", "invalid_request_error"},
+		{"cyber_policy", "invalid_request_error"},
+		{"", "api_error"},
+		{"some_other_code", "api_error"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := mapFailedCode(tc.in); got != tc.want {
+				t.Errorf("mapFailedCode(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
