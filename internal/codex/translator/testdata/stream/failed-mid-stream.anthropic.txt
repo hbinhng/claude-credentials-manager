@@ -8,5 +8,14 @@ event: content_block_delta
 data: {"delta":{"text":"Starting to answer...","type":"text_delta"},"index":0,"type":"content_block_delta"}
 
 event: error
-data: {"error":{"message":"codex upstream returned response.failed","type":"api_error"},"type":"error"}
+data: {"error":{"message":"server is overloaded","type":"overloaded_error"},"type":"error"}
+
+event: content_block_stop
+data: {"index":0,"type":"content_block_stop"}
+
+event: message_delta
+data: {"delta":{"stop_reason":"end_turn","stop_sequence":null},"type":"message_delta","usage":{"input_tokens":0,"output_tokens":0}}
+
+event: message_stop
+data: {"type":"message_stop"}
 

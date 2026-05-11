@@ -170,6 +170,36 @@ func TestFinalize_Idempotent(t *testing.T) {
 // no inner _text.done to close the block). When no block is open
 // (the common case: inner _text.done already closed it), the event
 // emits nothing.
+// TestApply_Failed_EmptyErrorFallback verifies that response.failed
+// with no error object still produces a well-formed terminal close
+// using a generic "codex upstream returned response.failed" message.
+func TestApply_Failed_EmptyErrorFallback(t *testing.T) {
+	tr := NewStreamTranslator(StreamOpts{MessageID: "msg_x", Model: "m"})
+	_ = tr.apply(codexEvent{Type: "response.created", Response: &codexResponseInfo{ID: "resp_x"}})
+	em := tr.apply(codexEvent{Type: "response.failed"})
+
+	// Expect: [error, message_delta, message_stop]. No content_block_stop
+	// because no block was open.
+	if len(em) != 3 {
+		t.Fatalf("expected 3 emissions, got %d: %+v", len(em), em)
+	}
+	if em[0].name != "error" {
+		t.Errorf("emission 0: want error, got %q", em[0].name)
+	}
+	if !strings.Contains(em[0].data, `"type":"api_error"`) {
+		t.Errorf("emission 0 should map to api_error, got %s", em[0].data)
+	}
+	if !strings.Contains(em[0].data, "codex upstream returned response.failed") {
+		t.Errorf("emission 0 should carry fallback message, got %s", em[0].data)
+	}
+	if em[1].name != "message_delta" || em[2].name != "message_stop" {
+		t.Errorf("expected message_delta then message_stop, got %q then %q", em[1].name, em[2].name)
+	}
+	if !tr.messageEnded {
+		t.Error("messageEnded should be true after response.failed")
+	}
+}
+
 func TestApply_OutputItemDone_ClosesOpenBlock(t *testing.T) {
 	t.Run("open_block_is_closed", func(t *testing.T) {
 		tr := NewStreamTranslator(StreamOpts{MessageID: "msg_x", Model: "m"})

@@ -4,6 +4,6 @@ data: {"type":"response.output_item.added","output_index":0,"item":{"type":"mess
 
 data: {"type":"response.output_text.delta","delta":"Starting to answer..."}
 
-data: {"type":"response.failed","error":{"code":"server_error","message":"internal error"}}
+data: {"type":"response.failed","response":{"id":"resp_5","status":"failed","error":{"code":"server_overloaded","message":"server is overloaded"}}}
 
 data: [DONE]
