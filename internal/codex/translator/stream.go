@@ -420,6 +420,21 @@ func mapStopReason(status, lastBlockType string) string {
 	return "end_turn"
 }
 
+// mapIncompleteReason translates the chatgpt.com response.incomplete
+// "incomplete_details.reason" string into an Anthropic stop_reason.
+// Unknown / empty reasons collapse to "end_turn" — staying inside
+// Anthropic's stop_reason enum is required for Claude Code to render
+// the partial assistant message.
+func mapIncompleteReason(reason string) string {
+	switch reason {
+	case "max_output_tokens":
+		return "max_tokens"
+	case "content_filter":
+		return "refusal"
+	}
+	return "end_turn"
+}
+
 func writeSSE(w io.Writer, name, data string) error {
 	if _, err := io.WriteString(w, "event: "+name+"\n"); err != nil {
 		return err

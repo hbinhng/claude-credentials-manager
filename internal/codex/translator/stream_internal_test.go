@@ -109,3 +109,22 @@ func TestTruncateAtWordBoundary_LeadingWhitespaceOnlyDropsToEmpty(t *testing.T) 
 		t.Errorf("truncate(5) on leading-whitespace-only input = %q, want empty (whitespace boundary at index 0)", got)
 	}
 }
+
+func TestMapIncompleteReason(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"max_output_tokens", "max_tokens"},
+		{"content_filter", "refusal"},
+		{"", "end_turn"},
+		{"unknown", "end_turn"},
+		{"some_future_reason_we_dont_know_yet", "end_turn"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.in, func(t *testing.T) {
+			if got := mapIncompleteReason(tc.in); got != tc.want {
+				t.Errorf("mapIncompleteReason(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
