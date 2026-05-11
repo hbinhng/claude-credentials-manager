@@ -634,6 +634,64 @@ func TestStream_MessageDeltaUsageMissingFallsBackToZero(t *testing.T) {
 	}
 }
 
+// TestStream_DropsEmptyReadPages exercises the narrow workaround for
+// codex models emitting Read({pages:""}) on non-PDF reads. The
+// outbound input_json_delta should carry the args without the
+// empty-string pages key, so Claude Code's validator does not reject
+// and the model does not need to retry.
+func TestStream_DropsEmptyReadPages(t *testing.T) {
+	in := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_1"}}`,
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"Read"}}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":"{\"file_path\":\"./foo.go\","}`,
+		`data: {"type":"response.function_call_arguments.delta","delta":"\"pages\":\"\"}"}`,
+		`data: {"type":"response.function_call_arguments.done"}`,
+		`data: {"type":"response.completed","status":"completed"}`,
+		``,
+	}, "\n\n")
+	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4.7"})
+	var out bytes.Buffer
+	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
+		t.Fatalf("Pipe: %v", err)
+	}
+	body := out.String()
+	// Collect partial_json substrings across the emitted deltas.
+	var partials []string
+	for _, line := range strings.Split(body, "\n") {
+		rest, ok := strings.CutPrefix(line, "data: ")
+		if !ok {
+			continue
+		}
+		if !strings.Contains(rest, `"input_json_delta"`) {
+			continue
+		}
+		var env struct {
+			Delta struct {
+				PartialJSON string `json:"partial_json"`
+			} `json:"delta"`
+		}
+		if err := json.Unmarshal([]byte(rest), &env); err != nil {
+			t.Fatalf("unmarshal delta: %v\n%s", err, rest)
+		}
+		partials = append(partials, env.Delta.PartialJSON)
+	}
+	assembled := strings.Join(partials, "")
+	if strings.Contains(assembled, `"pages"`) {
+		t.Errorf("assembled input still contains pages key:\n%s", assembled)
+	}
+	if !strings.Contains(assembled, `"file_path":"./foo.go"`) {
+		t.Errorf("assembled input missing file_path:\n%s", assembled)
+	}
+	// Sanity: the assembled JSON must parse cleanly.
+	var got map[string]any
+	if err := json.Unmarshal([]byte(assembled), &got); err != nil {
+		t.Fatalf("assembled JSON does not parse: %v\n%s", err, assembled)
+	}
+	if _, ok := got["pages"]; ok {
+		t.Errorf("pages key still present after drop: %v", got)
+	}
+}
+
 // normalize strips trailing whitespace per line and tolerates \r\n vs \n.
 func normalize(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
