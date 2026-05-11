@@ -29,6 +29,15 @@ type StreamTranslator struct {
 	messageEnded    bool
 	stopReason      string
 	usage           *anthropicUsage
+
+	// WORKAROUND: codex models emit Read({pages:""}) on non-PDF reads;
+	// Claude Code's validator rejects with "Invalid pages parameter"
+	// and the model retries without the field. Suppress the retry by
+	// buffering Read args until .done, then dropping an empty pages
+	// key before emitting. Scoped to Read only — every other tool
+	// continues to stream deltas verbatim.
+	bufferReadArgs bool
+	readArgBuf     strings.Builder
 }
 
 type anthropicUsage struct {
@@ -216,6 +225,10 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.closeBlock()
 
 	case "response.function_call_arguments.delta":
+		if t.bufferReadArgs {
+			t.readArgBuf.WriteString(ev.Delta)
+			return nil
+		}
 		body, _ := json.Marshal(map[string]any{
 			"type":  "content_block_delta",
 			"index": t.currentBlockIdx,
@@ -224,6 +237,17 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return []emission{{name: "content_block_delta", data: string(body)}}
 
 	case "response.function_call_arguments.done":
+		if t.bufferReadArgs {
+			t.bufferReadArgs = false
+			partial := dropEmptyReadPages(t.readArgBuf.String())
+			t.readArgBuf.Reset()
+			body, _ := json.Marshal(map[string]any{
+				"type":  "content_block_delta",
+				"index": t.currentBlockIdx,
+				"delta": map[string]any{"type": "input_json_delta", "partial_json": partial},
+			})
+			return append([]emission{{name: "content_block_delta", data: string(body)}}, t.closeBlock()...)
+		}
 		return t.closeBlock()
 
 	case "response.completed":
@@ -278,6 +302,10 @@ func (t *StreamTranslator) openBlock(ev codexEvent) []emission {
 	case "reasoning":
 		content = map[string]any{"type": "thinking", "thinking": ""}
 	case "function_call":
+		if ev.Item.Name == "Read" {
+			t.bufferReadArgs = true
+			t.readArgBuf.Reset()
+		}
 		content = map[string]any{
 			"type":  "tool_use",
 			"id":    ev.Item.CallID,
@@ -354,6 +382,32 @@ func (t *StreamTranslator) flushMessageDelta(ev codexEvent) []emission {
 		"usage": usageOut,
 	})
 	return []emission{{name: "message_delta", data: string(body)}}
+}
+
+// dropEmptyReadPages parses argsJSON as a JSON object and returns a
+// re-encoded form with the "pages" key removed when its value is the
+// empty string. Returns argsJSON unchanged on parse failure or when
+// no transformation is needed. See the bufferReadArgs comment on
+// StreamTranslator for the rationale.
+func dropEmptyReadPages(argsJSON string) string {
+	var args map[string]any
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
+		return argsJSON
+	}
+	v, present := args["pages"]
+	if !present {
+		return argsJSON
+	}
+	s, isString := v.(string)
+	if !isString || s != "" {
+		return argsJSON
+	}
+	delete(args, "pages")
+	out, err := json.Marshal(args)
+	if err != nil {
+		return argsJSON
+	}
+	return string(out)
 }
 
 func mapStopReason(status, lastBlockType string) string {
