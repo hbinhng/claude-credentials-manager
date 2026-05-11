@@ -342,22 +342,31 @@ func (t *StreamTranslator) closeBlock() []emission {
 	return []emission{{name: "content_block_stop", data: string(body)}}
 }
 
+// flushMessageDelta emits a message_delta from a codexEvent, deriving
+// the stop_reason from the event status and the currently-open block
+// type. Kept as a thin wrapper over flushMessageDeltaWithStop so the
+// response.completed case can stay event-driven.
 func (t *StreamTranslator) flushMessageDelta(ev codexEvent) []emission {
-	// Use currentType if a block is still open; fall back to lastClosedType.
-	// This handles the common case where the final block was already closed by
-	// its _done event before response.completed arrives.
 	blockType := t.currentType
 	if blockType == "" {
 		blockType = t.lastClosedType
 	}
 	stop := mapStopReason(ev.Status, blockType)
-	usageOut := map[string]any{
-		"input_tokens":  0,
-		"output_tokens": 0,
-	}
 	var usage *codexUsage
 	if ev.Response != nil {
 		usage = ev.Response.Usage
+	}
+	return t.flushMessageDeltaWithStop(stop, usage)
+}
+
+// flushMessageDeltaWithStop emits a message_delta with an explicit
+// stop_reason and usage. New terminal handlers (response.incomplete,
+// response.failed, the EOF safety net) call this directly because
+// their stop_reason isn't derivable from a codexEvent alone.
+func (t *StreamTranslator) flushMessageDeltaWithStop(stopReason string, usage *codexUsage) []emission {
+	usageOut := map[string]any{
+		"input_tokens":  0,
+		"output_tokens": 0,
 	}
 	if usage != nil {
 		usageOut["input_tokens"] = usage.InputTokens
@@ -369,7 +378,6 @@ func (t *StreamTranslator) flushMessageDelta(ev codexEvent) []emission {
 		if cachedRead > 0 {
 			usageOut["cache_read_input_tokens"] = cachedRead
 		}
-		// Store for FinalUsage getter.
 		t.usage = &anthropicUsage{
 			InputTokens:          usage.InputTokens,
 			OutputTokens:         usage.OutputTokens,
@@ -378,7 +386,7 @@ func (t *StreamTranslator) flushMessageDelta(ev codexEvent) []emission {
 	}
 	body, _ := json.Marshal(map[string]any{
 		"type":  "message_delta",
-		"delta": map[string]any{"stop_reason": stop, "stop_sequence": nil},
+		"delta": map[string]any{"stop_reason": stopReason, "stop_sequence": nil},
 		"usage": usageOut,
 	})
 	return []emission{{name: "message_delta", data: string(body)}}
