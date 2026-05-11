@@ -43,7 +43,6 @@ var classifyFirstByteTimeout = 30 * time.Second
 func ClassifyStream(ctx context.Context, src io.Reader) (StreamDecision, []byte, io.Reader, error) {
 	br := bufio.NewReader(src)
 	var replay []byte
-	var sawActionableContent bool
 
 	deadline := time.Now().Add(classifyFirstByteTimeout)
 
@@ -83,7 +82,6 @@ func ClassifyStream(ctx context.Context, src io.Reader) (StreamDecision, []byte,
 		switch ev.Type {
 		case "response.output_text.delta",
 			"response.function_call_arguments.delta":
-			sawActionableContent = true
 			return StreamDecision{}, replay, br, nil
 
 		case "response.completed", "response.failed":
@@ -98,7 +96,7 @@ func ClassifyStream(ctx context.Context, src io.Reader) (StreamDecision, []byte,
 				}
 				usage = ev.Response.Usage
 			}
-			if reason == "max_output_tokens" && !sawActionableContent {
+			if reason == "max_output_tokens" {
 				dec := StreamDecision{Overflow: true}
 				if usage != nil {
 					dec.InputTokens = usage.InputTokens
