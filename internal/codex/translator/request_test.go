@@ -747,6 +747,60 @@ func TestResolveReasoningEffort_NoSignalDefaultsToNone(t *testing.T) {
 	}
 }
 
+func TestTranslateRequest_ReasoningSummaryAndIncludeWhenEffortOn(t *testing.T) {
+	// When effort is non-none, summary="auto" and include=["reasoning.encrypted_content"]
+	// must be emitted to match codex CLI's request shape.
+	body := `{"model":"claude-opus-4.7","output_config":{"effort":"high"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("reasoning missing: %s", got)
+	}
+	if eff, _ := reas["effort"].(string); eff != "high" {
+		t.Errorf("effort=%q, want high", eff)
+	}
+	if sum, _ := reas["summary"].(string); sum != "auto" {
+		t.Errorf("summary=%q, want auto", sum)
+	}
+	inc, _ := m["include"].([]any)
+	if len(inc) != 1 || inc[0] != "reasoning.encrypted_content" {
+		t.Errorf("include=%v, want [reasoning.encrypted_content]", inc)
+	}
+}
+
+func TestTranslateRequest_NoSummaryOrIncludeWhenEffortNone(t *testing.T) {
+	// When effort is "none", summary and include must be omitted.
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("TranslateRequest: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(got, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("reasoning missing: %s", got)
+	}
+	if eff, _ := reas["effort"].(string); eff != "none" {
+		t.Errorf("effort=%q, want none", eff)
+	}
+	if _, ok := reas["summary"]; ok {
+		t.Errorf("summary should be omitted when effort=none, got: %v", reas["summary"])
+	}
+	if _, ok := m["include"]; ok {
+		t.Errorf("include should be omitted when effort=none, got: %v", m["include"])
+	}
+}
+
 func TestResolveReasoningEffort_ThinkingDisabledDefaultsToNone(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","thinking":{"type":"disabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
 	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})

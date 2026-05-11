@@ -101,8 +101,17 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 	}
 
 	// Always emit reasoning.effort — defaults to "none" when the
-	// client expressed no thinking intent.
-	out.Reasoning = &codexReasoning{Effort: resolveReasoningEffort(&in)}
+	// client expressed no thinking intent. When effort is non-none,
+	// also send summary="auto" and include=["reasoning.encrypted_content"]
+	// to match codex CLI's request shape; without these chatgpt.com
+	// paces the budget such that the model reasons silently and
+	// returns response.incomplete{max_output_tokens} with empty output.
+	effort := resolveReasoningEffort(&in)
+	out.Reasoning = &codexReasoning{Effort: effort}
+	if effort != "none" {
+		out.Reasoning.Summary = "auto"
+		out.Include = []string{"reasoning.encrypted_content"}
+	}
 
 	return json.Marshal(out)
 }
