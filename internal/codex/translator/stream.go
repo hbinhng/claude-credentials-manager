@@ -235,6 +235,24 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 	case "response.reasoning_summary_text.done":
 		return t.closeBlock()
 
+	case "response.reasoning_text.delta":
+		// Forward-compat: codex-rs distinguishes reasoning_text from
+		// reasoning_summary_text in its vocabulary, but chatgpt.com's
+		// chat endpoint only emits the summary variant today. Mirror
+		// the summary handler so we don't drop reasoning if the
+		// upstream protocol ever shifts. Guard on currentType so a
+		// stray delta outside a reasoning block can't corrupt a
+		// message/tool block.
+		if t.currentType != "reasoning" {
+			return nil
+		}
+		body, _ := json.Marshal(map[string]any{
+			"type":  "content_block_delta",
+			"index": t.currentBlockIdx,
+			"delta": map[string]any{"type": "thinking_delta", "thinking": ev.Delta},
+		})
+		return []emission{{name: "content_block_delta", data: string(body)}}
+
 	case "response.function_call_arguments.delta":
 		if t.bufferReadArgs {
 			t.readArgBuf.WriteString(ev.Delta)
