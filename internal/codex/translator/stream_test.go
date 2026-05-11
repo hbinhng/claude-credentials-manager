@@ -159,8 +159,10 @@ func TestStreamTranslator_FinalUsage_NoCompleted(t *testing.T) {
 }
 
 // TestStreamTranslator_DropIgnoredEvents verifies that response.in_progress,
-// response.content_part.added, response.reasoning_summary_part.added, and
-// response.output_item.done are silently dropped.
+// response.content_part.added, and response.reasoning_summary_part.added are
+// silently dropped. (response.output_item.done used to be in this list but
+// is now a defensive close — exercised here on the no-op path since the
+// block has already been closed by response.output_text.done.)
 func TestStreamTranslator_DropIgnoredEvents(t *testing.T) {
 	input := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"r1"}}`,
