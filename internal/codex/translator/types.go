@@ -132,6 +132,12 @@ type codexRequest struct {
 	Tools          []codexTool     `json:"tools,omitempty"`
 	ToolChoice     any             `json:"tool_choice,omitempty"`
 	Reasoning      *codexReasoning `json:"reasoning,omitempty"`
+	// Include matches what codex CLI sends when reasoning is active:
+	// ["reasoning.encrypted_content"]. Without this, chatgpt.com paces
+	// the reasoning budget differently and on long inputs with high
+	// effort can return response.incomplete{max_output_tokens} with no
+	// visible output (see codex-rs/core/src/client.rs:build_responses_request).
+	Include          []string `json:"include,omitempty"`
 	Store          bool            `json:"store"`
 	ServiceTier    string          `json:"service_tier,omitempty"`
 	PromptCacheKey   string          `json:"prompt_cache_key,omitempty"`
@@ -163,5 +169,10 @@ type codexTool struct {
 }
 
 type codexReasoning struct {
-	Effort string `json:"effort"` // "low" | "medium" | "high" | "xhigh"
+	Effort  string `json:"effort"`            // "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+	// Summary matches codex CLI's default ("auto"). Omitted when
+	// effort is "none". Without it, chatgpt.com defaults to no
+	// summary emission, causing the model to reason silently and
+	// hit max_output_tokens with empty summary:[] output.
+	Summary string `json:"summary,omitempty"`
 }

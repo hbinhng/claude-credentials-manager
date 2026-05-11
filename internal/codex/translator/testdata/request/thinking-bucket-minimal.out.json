@@ -15,8 +15,10 @@
     }
   ],
   "reasoning": {
-    "effort": "minimal"
+    "effort": "minimal",
+    "summary": "auto"
   },
+  "include": ["reasoning.encrypted_content"],
   "instructions": "You are a ChatGPT agent.",
   "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342"
 }
