@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
 )
@@ -237,5 +238,75 @@ func TestClassifyStream_DoneMarkerSkipped(t *testing.T) {
 	dec, _, _ := runClassify(t, input)
 	if dec.Overflow {
 		t.Errorf("Overflow = true, want false ([DONE] marker followed by EOF)")
+	}
+}
+
+func TestClassifyStream_Fallthrough_EOF(t *testing.T) {
+	// Upstream closes before emitting any decisive event. Classifier
+	// must return non-overflow with nil error so the caller can fall
+	// through to streaming and let the translator's EOF safety net
+	// handle whatever's left.
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.in_progress","response":{"id":"r1"}}`,
+		``,
+	}, "\n")
+	dec, replay, rem, err := translator.ClassifyStream(context.Background(), strings.NewReader(input))
+	if err != nil {
+		t.Fatalf("err = %v, want nil on EOF", err)
+	}
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false on EOF fallthrough")
+	}
+	rest, _ := io.ReadAll(rem)
+	got := append([]byte{}, replay...)
+	got = append(got, rest...)
+	if !bytes.Equal(got, []byte(input)) {
+		t.Errorf("round-trip mismatch: got %q, want %q", got, input)
+	}
+}
+
+func TestClassifyStream_Fallthrough_Timeout(t *testing.T) {
+	// Override the timeout to a tiny value, then feed a slow reader
+	// that blocks after a non-decisive event. The classifier must
+	// return non-overflow when the deadline is hit.
+	t.Cleanup(func() { translator.SetClassifyFirstByteTimeoutForTest(30 * time.Second) })
+	translator.SetClassifyFirstByteTimeoutForTest(50 * time.Millisecond)
+
+	pr, pw := io.Pipe()
+	go func() {
+		// Write one non-decisive event, then sleep past the timeout
+		// without writing anything else and without closing.
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\"}\n\n"))
+		time.Sleep(500 * time.Millisecond)
+		_ = pw.Close()
+	}()
+
+	dec, _, _, err := translator.ClassifyStream(context.Background(), pr)
+	if err != nil {
+		t.Fatalf("err = %v, want nil on timeout fallthrough", err)
+	}
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false on timeout fallthrough")
+	}
+}
+
+func TestClassifyStream_ContextCancel(t *testing.T) {
+	// Cancel the context while the reader is blocked. Classifier must
+	// return the ctx error so the caller can surface a 502 (or similar).
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	defer pr.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // cancel before starting so the first ctx check fires
+
+	dec, _, _, err := translator.ClassifyStream(ctx, pr)
+	if err == nil {
+		t.Fatalf("err = nil, want context.Canceled")
+	}
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false when ctx is canceled")
 	}
 }
