@@ -583,16 +583,22 @@ func TestCodexShare_ClientCancellation(t *testing.T) {
 	setupHomeWithCcm(t)
 
 	// upstream: streams slowly, watches for context cancellation.
+	// The classifier (translator.ClassifyStream) needs to see a
+	// decisive event before the terminal commits headers downstream,
+	// so emit a content delta upfront — mirrors real chatgpt.com
+	// behavior where the first text/tool delta arrives quickly. After
+	// that, block on ctx to assert cancellation propagation.
 	upstreamCancelledC := make(chan struct{})
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Start streaming — first event.
 		w.Header().Set("Content-Type", "text/event-stream")
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			t.Error("upstream ResponseWriter is not a Flusher")
 			return
 		}
-		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n")
 		flusher.Flush()
 
 		// Wait for context cancellation (client disconnected).
