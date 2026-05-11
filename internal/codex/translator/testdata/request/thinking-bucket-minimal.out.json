@@ -1,0 +1,22 @@
+{
+  "model": "gpt-5-codex",
+  "stream": true,
+  "store": false,
+  "input": [
+    {
+      "type": "message",
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "solve this"
+        }
+      ]
+    }
+  ],
+  "reasoning": {
+    "effort": "minimal"
+  },
+  "instructions": "You are a ChatGPT agent.",
+  "prompt_cache_key": "019e0a01-5569-7480-8945-f61f37958342"
+}
