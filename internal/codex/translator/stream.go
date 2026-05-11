@@ -251,11 +251,16 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.closeBlock()
 
 	case "response.completed":
-		var em []emission
-		em = append(em, t.flushMessageDelta(ev)...)
-		em = append(em, emission{name: "message_stop", data: `{"type":"message_stop"}`})
-		t.messageEnded = true
-		return em
+		blockType := t.currentType
+		if blockType == "" {
+			blockType = t.lastClosedType
+		}
+		stop := mapStopReason(ev.Status, blockType)
+		var usage *codexUsage
+		if ev.Response != nil {
+			usage = ev.Response.Usage
+		}
+		return t.finalize(stop, usage)
 
 	case "response.failed":
 		errBody, _ := json.Marshal(map[string]any{
@@ -340,6 +345,26 @@ func (t *StreamTranslator) closeBlock() []emission {
 		"index": idx,
 	})
 	return []emission{{name: "content_block_stop", data: string(body)}}
+}
+
+// finalize centralizes the close sequence for terminal events.
+// Closes any open content block, emits message_delta with the given
+// stop_reason+usage, then emits message_stop and marks the message
+// ended. Idempotent: returns nil if the message is already ended.
+//
+// Every terminal handler (response.completed, response.incomplete,
+// response.failed) and the run() EOF safety net go through this so
+// the SSE stream is guaranteed to terminate cleanly with a
+// message_stop event.
+func (t *StreamTranslator) finalize(stopReason string, usage *codexUsage) []emission {
+	if t.messageEnded {
+		return nil
+	}
+	em := t.closeBlock()
+	em = append(em, t.flushMessageDeltaWithStop(stopReason, usage)...)
+	em = append(em, emission{name: "message_stop", data: `{"type":"message_stop"}`})
+	t.messageEnded = true
+	return em
 }
 
 // flushMessageDelta emits a message_delta from a codexEvent, deriving
