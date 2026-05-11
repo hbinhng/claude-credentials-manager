@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
+	"github.com/hbinhng/claude-credentials-manager/internal/clog"
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/spf13/cobra"
 )
@@ -21,7 +22,16 @@ Environment variables:
   CCM_HOME        Override the data directory (default: ~/.ccm). When set,
                   this path is used directly — no .ccm suffix is appended.
   CCM_PROXY       HTTP proxy for upstream Anthropic / OpenAI calls.
-  CCM_SERVE_TOKEN Auth token for ` + "`ccm serve`" + ` when bound to a non-loopback host.`,
+  CCM_SERVE_TOKEN Auth token for ` + "`ccm serve`" + ` when bound to a non-loopback host.
+  CCM_LOG_FILE    Redirect every diagnostic / log line and the new trace
+                  output to this file (append, mode 0600). Banners and
+                  tickets stay on stdout / terminal. Bad path → warning,
+                  fall back to stderr.
+  CCM_TRACE       When set to 1/true, emit one JSONL line per inbound
+                  request body, outbound upstream request, upstream SSE
+                  event, and outbound SSE event. Useful for debugging
+                  ccm share / ccm launch pipelines. Pairs with
+                  CCM_LOG_FILE for off-terminal capture.`,
 	PersistentPreRunE: rootPersistentPreRunE,
 }
 
@@ -54,6 +64,8 @@ func rootPersistentPreRunE(cmd *cobra.Command, _ []string) error {
 }
 
 func Execute() {
+	clog.Init()
+	defer clog.Close()
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

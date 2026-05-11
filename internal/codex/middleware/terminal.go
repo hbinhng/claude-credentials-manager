@@ -29,7 +29,11 @@ import (
 // TerminalOpts configures the codex terminal handler.
 type TerminalOpts struct {
 	Cred        *store.Credential
-	Transport   *transport.Transport
+	// Transport is anything that can execute HTTP requests. The
+	// production caller passes *transport.Transport (codex's bogdanfinn
+	// TLS client). The share proxy may wrap it via trace.WrapDoer
+	// when CCM_TRACE=1 is set.
+	Transport   transport.Doer
 	Bundle      *identity.Bundle
 	// UpstreamURL overrides the codex backend (default "https://chatgpt.com").
 	// Test-only; production callers leave it blank.
