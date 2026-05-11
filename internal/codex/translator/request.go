@@ -100,13 +100,9 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 		out.ToolChoice = translateToolChoice(in.ToolChoice, out.Tools)
 	}
 
-	// thinking.budget_tokens → reasoning.effort
-	if in.Thinking != nil && in.Thinking.Type == "enabled" {
-		eff := bucketEffort(in.Thinking.BudgetTokens)
-		if eff != "" {
-			out.Reasoning = &codexReasoning{Effort: eff}
-		}
-	}
+	// Always emit reasoning.effort — defaults to "none" when the
+	// client expressed no thinking intent.
+	out.Reasoning = &codexReasoning{Effort: resolveReasoningEffort(&in)}
 
 	return json.Marshal(out)
 }
@@ -311,19 +307,41 @@ func translateToolChoice(tc *anthropicToolChoice, tools []codexTool) any {
 	return nil
 }
 
-func bucketEffort(budget int) string {
-	switch {
-	case budget <= 0:
-		return ""
-	case budget <= 1024:
-		return "low"
-	case budget <= 10240:
-		return "medium"
-	case budget < 131072:
-		return "high"
-	default:
-		return "xhigh"
+// resolveReasoningEffort returns the codex reasoning effort label
+// for the request. Always returns a non-empty value — defaults to
+// "none" when the client expressed no thinking intent.
+//
+// Priority:
+//  1. output_config.effort label (1:1 map; max/xhigh → xhigh).
+//     Unknown labels fall through to budget bucketing.
+//  2. thinking.type == "enabled" with budget_tokens → bucket.
+//  3. Default: "none".
+func resolveReasoningEffort(req *anthropicRequest) string {
+	if req.OutputConfig != nil {
+		switch req.OutputConfig.Effort {
+		case "low", "medium", "high":
+			return req.OutputConfig.Effort
+		case "max", "xhigh":
+			return "xhigh"
+		}
 	}
+	if req.Thinking != nil && req.Thinking.Type == "enabled" {
+		switch b := req.Thinking.BudgetTokens; {
+		case b <= 0:
+			return "none"
+		case b <= 256:
+			return "minimal"
+		case b <= 1024:
+			return "low"
+		case b <= 10240:
+			return "medium"
+		case b <= 131071:
+			return "high"
+		default:
+			return "xhigh"
+		}
+	}
+	return "none"
 }
 
 // toolResultMaxBytes caps the size of a forwarded tool_result string.
