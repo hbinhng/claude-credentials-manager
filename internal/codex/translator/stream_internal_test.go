@@ -163,3 +163,49 @@ func TestFinalize_Idempotent(t *testing.T) {
 		t.Errorf("expected nil from finalize on already-ended message, got %v", got)
 	}
 }
+
+// TestApply_OutputItemDone_ClosesOpenBlock verifies that
+// response.output_item.done emits a content_block_stop when a block
+// is still open (the captured-bug scenario: empty reasoning summary,
+// no inner _text.done to close the block). When no block is open
+// (the common case: inner _text.done already closed it), the event
+// emits nothing.
+func TestApply_OutputItemDone_ClosesOpenBlock(t *testing.T) {
+	t.Run("open_block_is_closed", func(t *testing.T) {
+		tr := NewStreamTranslator(StreamOpts{MessageID: "msg_x", Model: "m"})
+		// Set up: message_start emitted, reasoning block open.
+		_ = tr.apply(codexEvent{Type: "response.created", Response: &codexResponseInfo{ID: "resp_x"}})
+		_ = tr.apply(codexEvent{
+			Type: "response.output_item.added",
+			Item: &codexOutputItem{Type: "reasoning", ID: "rs_x"},
+		})
+		if tr.currentBlockIdx < 0 {
+			t.Fatalf("setup failed: expected open block")
+		}
+		em := tr.apply(codexEvent{Type: "response.output_item.done"})
+		if len(em) != 1 || em[0].name != "content_block_stop" {
+			t.Fatalf("expected [content_block_stop], got %+v", em)
+		}
+		if tr.currentBlockIdx >= 0 {
+			t.Errorf("block should be closed, currentBlockIdx=%d", tr.currentBlockIdx)
+		}
+	})
+
+	t.Run("no_open_block_emits_nothing", func(t *testing.T) {
+		tr := NewStreamTranslator(StreamOpts{MessageID: "msg_x", Model: "m"})
+		// Setup with a block that's been opened and closed normally.
+		_ = tr.apply(codexEvent{Type: "response.created", Response: &codexResponseInfo{ID: "resp_x"}})
+		_ = tr.apply(codexEvent{
+			Type: "response.output_item.added",
+			Item: &codexOutputItem{Type: "message", ID: "msg_x"},
+		})
+		_ = tr.apply(codexEvent{Type: "response.output_text.done"}) // closes the block
+		if tr.currentBlockIdx >= 0 {
+			t.Fatalf("setup failed: block should be closed")
+		}
+		em := tr.apply(codexEvent{Type: "response.output_item.done"})
+		if len(em) != 0 {
+			t.Errorf("expected no emissions when no block open, got %+v", em)
+		}
+	})
+}

@@ -294,10 +294,20 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		}
 		return t.finalize(mapIncompleteReason(reason), usage)
 
+	case "response.output_item.done":
+		// Defensive close. When the inner _text.done / _arguments.done
+		// already closed the block this is a no-op (closeBlock returns
+		// nil when currentBlockIdx < 0). When the item has no inner
+		// content (e.g. an empty reasoning summary: []), this is the
+		// only event that closes the block — without it the stream
+		// ends with an open content block and Claude Code rejects it
+		// as "API returned an empty or malformed response (HTTP 200)".
+		return t.closeBlock()
+
 	// Dropped event types:
-	// response.content_part.added   — parent output_item.added already opened the block
-	// response.reasoning_summary_part.added — same reason
-	// response.output_item.done     — block is closed by inner _text.done / _arguments.done
+	// response.content_part.added           — parent output_item.added already opened the block
+	// response.content_part.done            — closed by inner _text.done / _arguments.done; output_item.done is the safety net
+	// response.reasoning_summary_part.added — parent output_item.added already opened the block
 	}
 	return nil
 }
