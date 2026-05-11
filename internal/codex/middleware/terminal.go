@@ -200,14 +200,31 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Streaming SSE path.
+	// Streaming SSE path: classify first so we can translate codex's
+	// context-overflow signal (response.incomplete{max_output_tokens}
+	// with no actionable delta) into an Anthropic-shape 400 that
+	// Claude Code's reactive-compact path recognizes. See
+	// docs/superpowers/specs/2026-05-11-codex-overflow-translation-design.md.
+	decision, replay, remaining, err := translator.ClassifyStream(r.Context(), resp.Body)
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream: "+err.Error())
+		return
+	}
+	if decision.Overflow {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("prompt is too long: %d tokens > %d maximum",
+				decision.InputTokens, decision.Limit))
+		return
+	}
+
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(resp.StatusCode)
 	if f, ok := w.(http.Flusher); ok {
 		f.Flush()
 	}
-	if err := st.Pipe(r.Context(), resp.Body, w); err != nil && r.Context().Err() == nil {
+	piped := io.MultiReader(bytes.NewReader(replay), remaining)
+	if err := st.Pipe(r.Context(), piped, w); err != nil && r.Context().Err() == nil {
 		// Best-effort error event after partial stream.
 		errBody := `{"type":"error","error":{"type":"api_error","message":"stream interrupted: ` + err.Error() + `"}}`
 		_, _ = io.WriteString(w, "event: error\ndata: "+errBody+"\n\n")
