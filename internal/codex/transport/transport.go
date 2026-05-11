@@ -127,6 +127,14 @@ func New(opts Options) (*Transport, error) {
 	return &Transport{client: c}, nil
 }
 
+// Doer is the small surface the codex Terminal needs from its
+// transport. Defining it here lets callers (e.g. the share proxy)
+// substitute a wrapper — for instance, the trace recorder — without
+// depending on the concrete *Transport type.
+type Doer interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
 // Do executes req via the bogdanfinn TLS client and returns a stdlib
 // *http.Response. Internally we convert stdlib types to bogdanfinn's
 // fhttp types around the call. Streaming bodies and context cancellation

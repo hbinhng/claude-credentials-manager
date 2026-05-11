@@ -567,6 +567,56 @@ if it was not already on
 .BR PATH .
 .SH ENVIRONMENT
 .TP
+.B CCM_LOG_FILE
+Redirect every diagnostic and log line to a file. When set to a
+writable path, ccm opens the file in append mode (0600) and rewires
+.B os.Stderr
+and the
+.B log
+package's default destination to it. Stdout is unaffected, so the
+share ticket and the live banner ("Share session for X is live",
+"ccm serve N is live") stay on the user's terminal as usual. On open
+failure (bad path, permission denied) ccm prints a single warning to
+the original stderr and falls back to leaving everything on stderr —
+the failure never aborts the running command.
+.TP
+.B CCM_TRACE
+When set to
+.BR 1 ", " true ", or " TRUE ,
+emit one JSONL line per:
+.RS
+.IP \(bu 4
+inbound request body
+.RB ( dir : " in.raw" ),
+.IP \(bu 4
+outbound upstream request
+.RB ( dir : " upstream.req" ),
+.IP \(bu 4
+each upstream SSE event
+.RB ( dir : " upstream.resp.event" ),
+.IP \(bu 4
+each outbound SSE event written back to the client
+.RB ( dir : " out.event" ).
+.RE
+.IP
+Each line carries a per-request
+.B reqId
+(UUIDv7) so the four streams can be correlated by piping the file
+through
+.BR jq .
+Sensitive request headers
+.RB ( Authorization ", " Cookie ", " Set-Cookie ", " Proxy-Authorization )
+are replaced with
+.B [REDACTED]
+in trace output. Bodies are NOT truncated — for traffic that
+includes images or long tool results, the trace file may grow large.
+.IP
+Pairs naturally with
+.B CCM_LOG_FILE
+for off-terminal capture: set both to send the full trace to a file
+while keeping the live ticket on the terminal. Provider-agnostic —
+trace emits for both claude and codex traffic.
+.TP
 .B CCM_HOME
 Override ccm's data directory. When set to a non-empty path, that path
 replaces

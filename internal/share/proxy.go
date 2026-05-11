@@ -24,6 +24,7 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/pipeline"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/trace"
 )
 
 // identityHeaderAllowlist enumerates the request headers that identify a
@@ -332,9 +333,13 @@ func (p *Proxy) handleSessionDie(reason string) {
 func (p *Proxy) terminalForProvider() http.Handler {
 	switch p.provider {
 	case "codex":
+		// Wrap the codex transport with the trace recorder when
+		// CCM_TRACE=1 is set; transparent passthrough otherwise.
+		var doer transport.Doer = p.codexTransport
+		doer = trace.WrapDoer(doer)
 		return codexmw.NewTerminal(codexmw.TerminalOpts{
 			Cred:         p.cred(),
-			Transport:    p.codexTransport,
+			Transport:    doer,
 			Bundle:       identity.New(p.cred()),
 			UpstreamURL:  p.codexUpstreamURL,
 			BearerSrc:    p.bearerSrc,
@@ -359,11 +364,18 @@ func (p *Proxy) terminalForProvider() http.Handler {
 // Task 16 will wire bearerSrc for the codex terminal, which delegates
 // auth to the pipeline rather than handling it inline.
 func (p *Proxy) pipelineHandler(terminal http.Handler) http.Handler {
-	steps := []pipeline.Step{
+	steps := []pipeline.Step{}
+	// NewTrace is the outermost step: every request gets a reqId and
+	// in.raw / out.event lines emitted under CCM_TRACE=1 regardless
+	// of provider or auth outcome.
+	if trace.Enabled() {
+		steps = append(steps, middleware.NewTrace())
+	}
+	steps = append(steps,
 		middleware.NewDownstreamAuth(p.sharedSecret),
 		middleware.NewAliasRewrite(p.aliasMap),
 		middleware.NewCredSemaphore(p.maxConcurrency),
-	}
+	)
 	if p.bearerSrc != nil {
 		steps = append(steps, middleware.NewUpstreamAuthReplace(p.bearerSrc))
 	}
