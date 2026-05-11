@@ -3,6 +3,7 @@ package translator_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"strings"
 	"testing"
@@ -268,27 +269,67 @@ func TestClassifyStream_Fallthrough_EOF(t *testing.T) {
 }
 
 func TestClassifyStream_Fallthrough_Timeout(t *testing.T) {
-	// Override the timeout to a tiny value, then feed a slow reader
-	// that blocks after a non-decisive event. The classifier must
-	// return non-overflow when the deadline is hit.
+	// The deadline check at the top of ClassifyStream's loop fires
+	// between iterations, not mid-ReadString. To exercise it, write
+	// one event, sleep past the deadline, then write a second event:
+	//   t=0    : ReadString returns line 1
+	//   t<1ms  : classifier processes (non-decisive), loops back, blocks in ReadString
+	//   t=80ms : line 2 written, ReadString unblocks, classifier processes line 2, loops
+	//   t=81ms : deadline check (50ms deadline crossed at 50ms) → returns via timeout branch
 	t.Cleanup(func() { translator.SetClassifyFirstByteTimeoutForTest(30 * time.Second) })
 	translator.SetClassifyFirstByteTimeoutForTest(50 * time.Millisecond)
 
 	pr, pw := io.Pipe()
 	go func() {
-		// Write one non-decisive event, then sleep past the timeout
-		// without writing anything else and without closing.
 		_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\"}\n\n"))
-		time.Sleep(500 * time.Millisecond)
-		_ = pw.Close()
+		time.Sleep(80 * time.Millisecond)
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.in_progress\"}\n\n"))
+		// Leave the pipe open so ReadString would block again if the
+		// deadline check failed to fire. The test will hang if the
+		// timeout branch is broken.
 	}()
+	defer pw.Close()
+	defer pr.Close()
 
-	dec, _, _, err := translator.ClassifyStream(context.Background(), pr)
-	if err != nil {
-		t.Fatalf("err = %v, want nil on timeout fallthrough", err)
+	done := make(chan struct{})
+	var (
+		dec    translator.StreamDecision
+		gotErr error
+	)
+	go func() {
+		dec, _, _, gotErr = translator.ClassifyStream(context.Background(), pr)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ClassifyStream did not return within 2s — timeout branch likely broken")
+	}
+	if gotErr != nil {
+		t.Errorf("err = %v, want nil on timeout fallthrough", gotErr)
 	}
 	if dec.Overflow {
 		t.Errorf("Overflow = true, want false on timeout fallthrough")
+	}
+}
+
+func TestClassifyStream_ReadError(t *testing.T) {
+	// A non-EOF read error from upstream (e.g., broken connection)
+	// must propagate to the caller so the terminal can surface it
+	// as a 502, rather than being mis-classified as overflow or
+	// silently falling through to streaming.
+	pr, pw := io.Pipe()
+	go func() {
+		_, _ = pw.Write([]byte("data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n"))
+		_ = pw.CloseWithError(errors.New("upstream broken pipe"))
+	}()
+
+	dec, _, _, err := translator.ClassifyStream(context.Background(), pr)
+	if err == nil {
+		t.Fatalf("err = nil, want non-EOF read error to propagate")
+	}
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false on read error")
 	}
 }
 

@@ -27,6 +27,14 @@ type StreamDecision struct {
 // ~10s; 30s gives generous margin while staying well under Cloudflare's
 // ~100s no-first-byte timeout for tunneled shares. Exposed as a var so
 // tests can lower it (same pattern as collectMaxBytes in stream.go).
+//
+// The deadline is checked at the top of the loop between ReadString
+// calls, NOT while one is blocking. For a stalled upstream connection
+// the deadline only fires once ReadString returns (e.g., on connection
+// close). In production this is fine — chatgpt.com's HTTP/2 connection
+// closes promptly on idle timeout. The test for this branch
+// (TestClassifyStream_Fallthrough_Timeout) exercises the between-
+// iteration path explicitly.
 var classifyFirstByteTimeout = 30 * time.Second
 
 // SetClassifyFirstByteTimeoutForTest overrides the classifier's
