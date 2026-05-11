@@ -29,6 +29,12 @@ type StreamDecision struct {
 // tests can lower it (same pattern as collectMaxBytes in stream.go).
 var classifyFirstByteTimeout = 30 * time.Second
 
+// SetClassifyFirstByteTimeoutForTest overrides the classifier's
+// fallthrough deadline. Test-only. Production code MUST NOT call this.
+func SetClassifyFirstByteTimeoutForTest(d time.Duration) {
+	classifyFirstByteTimeout = d
+}
+
 // ClassifyStream reads upstream SSE bytes from src until it can decide
 // whether to stream as normal (visible content arrived) or short-circuit
 // to a 400 prompt-too-long (response.incomplete{max_output_tokens}
