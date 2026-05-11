@@ -368,9 +368,10 @@ func (t *StreamTranslator) finalize(stopReason string, usage *codexUsage) []emis
 }
 
 // flushMessageDeltaWithStop emits a message_delta with an explicit
-// stop_reason and usage. New terminal handlers (response.incomplete,
-// response.failed, the EOF safety net) call this directly because
-// their stop_reason isn't derivable from a codexEvent alone.
+// stop_reason and usage. Called by finalize() — the central
+// close-the-stream helper. Kept as a separate function (rather than
+// inlining into finalize) so that the message_delta JSON shape is
+// localized to one place, even though the only caller is finalize.
 func (t *StreamTranslator) flushMessageDeltaWithStop(stopReason string, usage *codexUsage) []emission {
 	usageOut := map[string]any{
 		"input_tokens":  0,

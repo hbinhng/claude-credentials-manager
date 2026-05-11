@@ -150,3 +150,16 @@ func TestMapFailedCode(t *testing.T) {
 		})
 	}
 }
+
+// TestFinalize_Idempotent verifies that finalize returns nil and
+// emits no events when the message has already been ended. This
+// guards against double-finalization when multiple terminal codex
+// events (e.g. response.failed followed by upstream-truncated bytes
+// that trip the EOF safety net) target the same stream.
+func TestFinalize_Idempotent(t *testing.T) {
+	st := NewStreamTranslator(StreamOpts{MessageID: "m", Model: "m"})
+	st.messageEnded = true
+	if got := st.finalize("end_turn", nil); got != nil {
+		t.Errorf("expected nil from finalize on already-ended message, got %v", got)
+	}
+}
