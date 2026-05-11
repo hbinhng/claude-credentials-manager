@@ -143,8 +143,19 @@ type codexEvent struct {
 }
 
 type codexResponseInfo struct {
-	ID    string      `json:"id"`
-	Usage *codexUsage `json:"usage,omitempty"` // populated on response.completed
+	ID                string                  `json:"id"`
+	Usage             *codexUsage             `json:"usage,omitempty"`              // populated on response.completed / .incomplete / .failed
+	Error             *codexResponseError     `json:"error,omitempty"`              // populated on response.failed
+	IncompleteDetails *codexIncompleteDetails `json:"incomplete_details,omitempty"` // populated on response.incomplete
+}
+
+type codexResponseError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type codexIncompleteDetails struct {
+	Reason string `json:"reason"`
 }
 
 type codexOutputItem struct {
@@ -271,6 +282,17 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 			},
 		})
 		return []emission{{name: "error", data: string(errBody)}}
+
+	case "response.incomplete":
+		reason := ""
+		var usage *codexUsage
+		if ev.Response != nil {
+			if ev.Response.IncompleteDetails != nil {
+				reason = ev.Response.IncompleteDetails.Reason
+			}
+			usage = ev.Response.Usage
+		}
+		return t.finalize(mapIncompleteReason(reason), usage)
 
 	// Dropped event types:
 	// response.content_part.added   — parent output_item.added already opened the block
