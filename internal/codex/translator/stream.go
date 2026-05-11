@@ -274,14 +274,24 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.finalize(stop, usage)
 
 	case "response.failed":
+		var errCode, errMsg string
+		var usage *codexUsage
+		if ev.Response != nil {
+			if ev.Response.Error != nil {
+				errCode = ev.Response.Error.Code
+				errMsg = ev.Response.Error.Message
+			}
+			usage = ev.Response.Usage
+		}
+		if errMsg == "" {
+			errMsg = "codex upstream returned response.failed"
+		}
 		errBody, _ := json.Marshal(map[string]any{
-			"type": "error",
-			"error": map[string]any{
-				"type":    "api_error",
-				"message": "codex upstream returned response.failed",
-			},
+			"type":  "error",
+			"error": map[string]any{"type": mapFailedCode(errCode), "message": errMsg},
 		})
-		return []emission{{name: "error", data: string(errBody)}}
+		em := []emission{{name: "error", data: string(errBody)}}
+		return append(em, t.finalize("end_turn", usage)...)
 
 	case "response.incomplete":
 		reason := ""
