@@ -1,0 +1,11 @@
+data: {"type":"response.created","response":{"id":"resp_inc1"}}
+
+data: {"type":"response.in_progress","response":{"id":"resp_inc1"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_inc1","summary":[]}}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_inc1","summary":[]}}
+
+data: {"type":"response.incomplete","response":{"id":"resp_inc1","status":"incomplete"}}
+
+data: [DONE]
