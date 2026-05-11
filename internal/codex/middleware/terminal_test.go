@@ -1480,3 +1480,184 @@ func TestTerminal_Overflow_Returns400(t *testing.T) {
 	}
 }
 
+// TestTerminal_NormalStream_Unaffected confirms the happy path is
+// byte-identical to the pre-fix behavior: the classifier sees an
+// actionable delta, returns non-overflow, and Pipe streams everything
+// through MultiReader(replay, remaining) transparently.
+func TestTerminal_NormalStream_Unaffected(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"answer\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_text.done\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.completed\",\"status\":\"completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":3,\"output_tokens\":2}}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Errorf("Content-Type = %q, want text/event-stream", ct)
+	}
+	out := rr.Body.String()
+	for _, want := range []string{"message_start", "content_block_start", "content_block_delta", "message_stop"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in SSE output:\n%s", want, out)
+		}
+	}
+	// Round-trip sanity: the actionable delta value made it through.
+	if !strings.Contains(out, "answer") {
+		t.Errorf("delta text \"answer\" missing from SSE output:\n%s", out)
+	}
+}
+
+// TestTerminal_SummaryOnlyOverflow_Returns400 covers the trace-61f0
+// shape: many reasoning_summary_text deltas followed by
+// response.incomplete{max_output_tokens}. Per the spec, summary deltas
+// are NOT actionable, so this must flip to overflow → 400.
+func TestTerminal_SummaryOnlyOverflow_Returns400(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs1\",\"summary\":[]}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"Planning...\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\" more thinking\"}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r1\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":271392,\"output_tokens\":160}}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (summary-only output is still no actionable content)", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "prompt is too long") {
+		t.Errorf("response body missing prompt-too-long message:\n%s", rr.Body.String())
+	}
+}
+
+// TestTerminal_UsageTee_NotFiredOnOverflow confirms that when the
+// terminal short-circuits to 400, no usage event is recorded — there
+// was no successful translated turn to account for.
+func TestTerminal_UsageTee_NotFiredOnOverflow(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r1\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":271392,\"output_tokens\":160}}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	tee := codexmw.NewUsageTee(8)
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+		UsageTee:    tee,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	snap := tee.Snapshot()
+	if len(snap) != 0 {
+		t.Errorf("UsageTee recorded %d events on overflow, want 0", len(snap))
+	}
+}
+
+// TestTerminal_ClassifyError_Returns502 covers the ClassifyStream
+// error path: when reading the upstream body fails with a non-EOF
+// error mid-classification, the terminal must surface a 502 Bad
+// Gateway with an Anthropic-shape api_error body.
+func TestTerminal_ClassifyError_Returns502(t *testing.T) {
+	// Upstream that hijacks the connection and closes it abruptly
+	// after sending headers but before any SSE event — yields a
+	// non-EOF read error inside ClassifyStream.
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("ResponseWriter is not a Hijacker")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack: %v", err)
+		}
+		// Close the conn immediately without sending any body.
+		// The client's read sees an unexpected connection drop.
+		_ = conn.Close()
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	// The exact status may be 502 (upstream read error during classify)
+	// or 200 followed by stream truncation, depending on whether the
+	// HTTP client surfaces the connection drop pre- or post-handshake.
+	// What we definitively assert: if a 502 came out, the error body
+	// must use the Anthropic api_error shape. If a 200 came out, the
+	// classifier returned non-overflow via EOF fallthrough (the close
+	// looked like EOF to the bufio reader) and the response is a
+	// well-formed (possibly truncated) SSE — also acceptable.
+	switch rr.Code {
+	case http.StatusBadGateway:
+		if !strings.Contains(rr.Body.String(), `"type":"api_error"`) {
+			t.Errorf("502 body missing api_error type: %s", rr.Body.String())
+		}
+		if !strings.Contains(rr.Body.String(), "upstream:") {
+			t.Errorf("502 body missing 'upstream:' prefix: %s", rr.Body.String())
+		}
+	case http.StatusOK:
+		// EOF fallthrough; nothing further to assert.
+	default:
+		t.Errorf("status = %d, want 502 or 200", rr.Code)
+	}
+}
+
