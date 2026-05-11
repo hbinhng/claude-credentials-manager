@@ -120,3 +120,103 @@ func TestClassifyStream_OverflowEmptyReasoningThenIncomplete(t *testing.T) {
 		t.Errorf("Limit = %d, want 271552 (input+output)", dec.Limit)
 	}
 }
+
+func TestClassifyStream_Overflow_SummaryDeltasOnly(t *testing.T) {
+	// Reasoning summary text deltas are NOT actionable per the design.
+	// Even if 100 of them arrive, an incomplete{max_output_tokens} that
+	// follows still means the user got zero actionable output.
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs1","summary":[]}}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":"thinking..."}`,
+		``,
+		`data: {"type":"response.reasoning_summary_text.delta","delta":" more"}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":271392,"output_tokens":160}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if !dec.Overflow {
+		t.Errorf("Overflow = false, want true (summary deltas are not actionable)")
+	}
+	if dec.InputTokens != 271392 || dec.Limit != 271552 {
+		t.Errorf("got InputTokens=%d Limit=%d, want 271392 / 271552", dec.InputTokens, dec.Limit)
+	}
+}
+
+func TestClassifyStream_Overflow_ReasoningTextDeltasOnly(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.reasoning_text.delta","delta":"hmm"}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":50,"output_tokens":10}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if !dec.Overflow {
+		t.Errorf("Overflow = false, want true (reasoning_text.delta is not actionable)")
+	}
+}
+
+func TestClassifyStream_Overflow_IncompleteWithoutUsage(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1","incomplete_details":{"reason":"max_output_tokens"}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if !dec.Overflow {
+		t.Errorf("Overflow = false, want true (missing usage still classifies as overflow)")
+	}
+	if dec.InputTokens != 0 || dec.Limit != 0 {
+		t.Errorf("got InputTokens=%d Limit=%d, want 0/0 fallback", dec.InputTokens, dec.Limit)
+	}
+}
+
+func TestClassifyStream_NotOverflow_OtherIncompleteReason(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1","incomplete_details":{"reason":"content_filter"}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (content_filter is not max_output_tokens)")
+	}
+}
+
+func TestClassifyStream_NotOverflow_IncompleteNoDetails(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1"}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (no incomplete_details means reason is unknown, not max_output_tokens)")
+	}
+}
+
+func TestClassifyStream_MalformedLineSkipped(t *testing.T) {
+	// A malformed data: line must be skipped without disturbing the
+	// decision flow. The text delta after the garbage should still be
+	// detected.
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: this is not json`,
+		``,
+		`data: {"type":"response.output_text.delta","delta":"ok"}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (text delta seen after malformed line)")
+	}
+}
