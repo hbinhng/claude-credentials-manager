@@ -27,6 +27,72 @@ func runClassify(t *testing.T, input string) (translator.StreamDecision, []byte,
 	return dec, replay, nil
 }
 
+func TestClassifyStream_NotOverflow_TextDeltaThenIncomplete(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m1"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","delta":"hi"}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1","incomplete_details":{"reason":"max_output_tokens"},"usage":{"input_tokens":100,"output_tokens":50}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (text delta arrived before incomplete)")
+	}
+}
+
+func TestClassifyStream_NotOverflow_ToolArgsDeltaThenIncomplete(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc1","call_id":"c1","name":"f"}}`,
+		``,
+		`data: {"type":"response.function_call_arguments.delta","delta":"{}"}`,
+		``,
+		`data: {"type":"response.incomplete","response":{"id":"r1","incomplete_details":{"reason":"max_output_tokens"}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (function args delta arrived before incomplete)")
+	}
+}
+
+func TestClassifyStream_NotOverflow_Completed(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.output_text.delta","delta":"answer"}`,
+		``,
+		`data: {"type":"response.completed","status":"completed","response":{"id":"r1","usage":{"input_tokens":10,"output_tokens":2}}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (completed cleanly)")
+	}
+}
+
+func TestClassifyStream_NotOverflow_Failed(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"r1","error":{"code":"server_overloaded","message":"overloaded"}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (failure is its own class)")
+	}
+}
+
 func TestClassifyStream_OverflowEmptyReasoningThenIncomplete(t *testing.T) {
 	input := strings.Join([]string{
 		`data: {"type":"response.created","response":{"id":"r1"}}`,
