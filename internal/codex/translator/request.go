@@ -104,16 +104,6 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 	// client expressed no thinking intent.
 	out.Reasoning = &codexReasoning{Effort: resolveReasoningEffort(&in)}
 
-	// Forward Anthropic max_tokens as chatgpt.com max_output_tokens so
-	// the model gets the budget Claude Code requested. Without this,
-	// chatgpt.com applies its own (often smaller) default and bails
-	// with response.incomplete{reason:max_output_tokens} before any
-	// visible output is produced — see followup notes on the post-
-	// translator-stream-fix codex.txt capture.
-	if in.MaxTokens > 0 {
-		out.MaxOutputTokens = in.MaxTokens
-	}
-
 	return json.Marshal(out)
 }
 

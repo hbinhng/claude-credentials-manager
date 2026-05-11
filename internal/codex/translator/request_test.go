@@ -763,37 +763,3 @@ func TestResolveReasoningEffort_ThinkingDisabledDefaultsToNone(t *testing.T) {
 		t.Errorf("effort=%q, want none", eff)
 	}
 }
-
-func TestTranslateRequest_MaxTokensForwardedAsMaxOutputTokens(t *testing.T) {
-	body := `{"model":"claude-opus-4.7","max_tokens":64000,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(got, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	v, ok := m["max_output_tokens"]
-	if !ok {
-		t.Fatalf("max_output_tokens missing from outbound body: %s", got)
-	}
-	if n, _ := v.(float64); int(n) != 64000 {
-		t.Errorf("max_output_tokens=%v, want 64000", v)
-	}
-}
-
-func TestTranslateRequest_MaxTokensOmittedWhenZero(t *testing.T) {
-	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
-	if err != nil {
-		t.Fatalf("TranslateRequest: %v", err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(got, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := m["max_output_tokens"]; ok {
-		t.Errorf("max_output_tokens should be omitted when inbound max_tokens is zero, got: %s", got)
-	}
-}
