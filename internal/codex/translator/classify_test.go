@@ -220,3 +220,22 @@ func TestClassifyStream_MalformedLineSkipped(t *testing.T) {
 		t.Errorf("Overflow = true, want false (text delta seen after malformed line)")
 	}
 }
+
+func TestClassifyStream_DoneMarkerSkipped(t *testing.T) {
+	// data: [DONE] and empty-payload data: lines must skip cleanly
+	// without disturbing classification. Sequence: non-decisive
+	// event, then [DONE], then EOF — classifier should fall through
+	// to non-overflow without error.
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: `,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false ([DONE] marker followed by EOF)")
+	}
+}
