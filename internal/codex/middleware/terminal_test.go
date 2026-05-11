@@ -1423,3 +1423,60 @@ func TestTerminal_StreamFalseCollectFailsAfterFlush(t *testing.T) {
 	}
 }
 
+// TestTerminal_Overflow_Returns400 verifies that when chatgpt.com
+// emits response.incomplete{max_output_tokens} without any actionable
+// content delta, the terminal translates this into an Anthropic-shape
+// HTTP 400 prompt-too-long error that Claude Code's reactive-compact
+// path recognizes, rather than streaming a misleading
+// stop_reason=max_tokens SSE response.
+func TestTerminal_Overflow_Returns400(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs1\",\"summary\":[]}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"reasoning\",\"id\":\"rs1\",\"summary\":[]}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"r1\",\"incomplete_details\":{\"reason\":\"max_output_tokens\"},\"usage\":{\"input_tokens\":271392,\"output_tokens\":160}}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if rr.Header().Get("Content-Type") == "text/event-stream" {
+		t.Errorf("Content-Type must NOT be text/event-stream on overflow")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response body is not JSON: %v\nbody: %s", err, rr.Body.String())
+	}
+	errObj, _ := got["error"].(map[string]any)
+	if errObj == nil {
+		t.Fatalf("response missing error object: %s", rr.Body.String())
+	}
+	if errObj["type"] != "invalid_request_error" {
+		t.Errorf("error.type = %v, want invalid_request_error", errObj["type"])
+	}
+	msg, _ := errObj["message"].(string)
+	if !strings.Contains(msg, "prompt is too long: 271392 tokens > 271552 maximum") {
+		t.Errorf("error.message = %q, want substring \"prompt is too long: 271392 tokens > 271552 maximum\"", msg)
+	}
+}
+
