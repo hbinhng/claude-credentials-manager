@@ -18,6 +18,7 @@ type anthropicRequest struct {
 	Tools         []anthropicTool        `json:"tools,omitempty"`
 	ToolChoice    *anthropicToolChoice   `json:"tool_choice,omitempty"`
 	Thinking      *anthropicThinkingPref `json:"thinking,omitempty"`
+	OutputConfig  *anthropicOutputConfig `json:"output_config,omitempty"`
 	MaxTokens     int                    `json:"max_tokens,omitempty"`     // dropped on outbound
 	Temperature   *float64               `json:"temperature,omitempty"`    // dropped
 	TopP          *float64               `json:"top_p,omitempty"`          // dropped
@@ -105,6 +106,13 @@ type anthropicToolChoice struct {
 type anthropicThinkingPref struct {
 	Type         string `json:"type"`                   // "enabled" | "disabled"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
+}
+
+// anthropicOutputConfig is a partial parse of the inbound output_config
+// object. ccm only extracts the effort label; other fields (format,
+// task_budget, ...) pass through ignored.
+type anthropicOutputConfig struct {
+	Effort string `json:"effort,omitempty"`
 }
 
 // Codex request shape — the outbound /backend-api/codex/responses body.

@@ -173,51 +173,21 @@ func TestTranslateRequest_ImageNonBase64Skipped(t *testing.T) {
 	}
 }
 
-func TestTranslateRequest_BucketEffortBoundaries(t *testing.T) {
-	cases := []struct {
-		budget int
-		effort string
-	}{
-		{0, ""},      // omit
-		{1, "low"},   // ≤1024
-		{1024, "low"},
-		{1025, "medium"},
-		{10240, "medium"},
-		{10241, "high"},
-		{131071, "high"},
-		{131072, "xhigh"},
-		{200000, "xhigh"},
-	}
-	for _, c := range cases {
-		body := []byte(`{"model":"claude-opus-4.7","thinking":{"type":"enabled","budget_tokens":` + strings.TrimRight(strings.TrimRight(fmt.Sprintf("%d", c.budget), "0"), ".") + `},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
-		// Rebuild properly
-		body = []byte(`{"model":"claude-opus-4.7","thinking":{"type":"enabled","budget_tokens":` + fmt.Sprintf("%d", c.budget) + `},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
-		got, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
-		if err != nil {
-			t.Fatalf("budget=%d: unexpected error: %v", c.budget, err)
-		}
-		var m map[string]any
-		_ = json.Unmarshal(got, &m)
-		reas, _ := m["reasoning"].(map[string]any)
-		var gotEffort string
-		if reas != nil {
-			gotEffort, _ = reas["effort"].(string)
-		}
-		if gotEffort != c.effort {
-			t.Errorf("budget=%d: effort=%q, want %q", c.budget, gotEffort, c.effort)
-		}
-	}
-}
-
 func TestTranslateRequest_ThinkingDisabled(t *testing.T) {
-	// thinking.type=="disabled" → no reasoning field
+	// thinking.type=="disabled" → reasoning.effort: "none"
 	body := `{"model":"claude-opus-4.7","thinking":{"type":"disabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
 	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if strings.Contains(string(got), "reasoning") {
-		t.Errorf("disabled thinking should not produce reasoning field: %s", string(got))
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("disabled thinking should still emit reasoning.effort=none: %s", string(got))
+	}
+	if eff, _ := reas["effort"].(string); eff != "none" {
+		t.Errorf("disabled thinking effort=%q, want none", eff)
 	}
 }
 
@@ -660,4 +630,136 @@ func TestTranslateRequest_TruncatesOverLongToolResult(t *testing.T) {
 func asJSONStringRT(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
+}
+
+func TestResolveReasoningEffort_LabelPath(t *testing.T) {
+	cases := []struct {
+		label string
+		want  string
+	}{
+		{"low", "low"},
+		{"medium", "medium"},
+		{"high", "high"},
+		{"max", "xhigh"},
+		{"xhigh", "xhigh"},
+	}
+	for _, c := range cases {
+		body := []byte(`{"model":"claude-opus-4.7","output_config":{"effort":"` + c.label + `"},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
+		got, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+		if err != nil {
+			t.Fatalf("label=%q: %v", c.label, err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(got, &m)
+		reas, _ := m["reasoning"].(map[string]any)
+		if reas == nil {
+			t.Fatalf("label=%q: reasoning missing", c.label)
+		}
+		if eff, _ := reas["effort"].(string); eff != c.want {
+			t.Errorf("label=%q: effort=%q, want %q", c.label, eff, c.want)
+		}
+	}
+}
+
+func TestResolveReasoningEffort_UnknownLabelFallsThroughToBudget(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","output_config":{"effort":"ultra"},"thinking":{"type":"enabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("reasoning missing")
+	}
+	if eff, _ := reas["effort"].(string); eff != "medium" {
+		t.Errorf("effort=%q, want medium (5000 falls in 1025-10240 bucket)", eff)
+	}
+}
+
+func TestResolveReasoningEffort_UnknownLabelNoBudgetDefaultsToNone(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","output_config":{"effort":"ultra"},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("reasoning missing")
+	}
+	if eff, _ := reas["effort"].(string); eff != "none" {
+		t.Errorf("effort=%q, want none", eff)
+	}
+}
+
+func TestResolveReasoningEffort_BudgetBuckets(t *testing.T) {
+	cases := []struct {
+		budget int
+		want   string
+	}{
+		{0, "none"},
+		{1, "minimal"},
+		{256, "minimal"},
+		{257, "low"},
+		{1024, "low"},
+		{1025, "medium"},
+		{10240, "medium"},
+		{10241, "high"},
+		{131071, "high"},
+		{131072, "xhigh"},
+		{200000, "xhigh"},
+	}
+	for _, c := range cases {
+		body := []byte(`{"model":"claude-opus-4.7","thinking":{"type":"enabled","budget_tokens":` + fmt.Sprintf("%d", c.budget) + `},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
+		got, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+		if err != nil {
+			t.Fatalf("budget=%d: %v", c.budget, err)
+		}
+		var m map[string]any
+		_ = json.Unmarshal(got, &m)
+		reas, _ := m["reasoning"].(map[string]any)
+		if reas == nil {
+			t.Fatalf("budget=%d: reasoning missing", c.budget)
+		}
+		if eff, _ := reas["effort"].(string); eff != c.want {
+			t.Errorf("budget=%d: effort=%q, want %q", c.budget, eff, c.want)
+		}
+	}
+}
+
+func TestResolveReasoningEffort_NoSignalDefaultsToNone(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("reasoning missing")
+	}
+	if eff, _ := reas["effort"].(string); eff != "none" {
+		t.Errorf("effort=%q, want none", eff)
+	}
+}
+
+func TestResolveReasoningEffort_ThinkingDisabledDefaultsToNone(t *testing.T) {
+	body := `{"model":"claude-opus-4.7","thinking":{"type":"disabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
+	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(got, &m)
+	reas, _ := m["reasoning"].(map[string]any)
+	if reas == nil {
+		t.Fatalf("reasoning missing")
+	}
+	if eff, _ := reas["effort"].(string); eff != "none" {
+		t.Errorf("effort=%q, want none", eff)
+	}
 }

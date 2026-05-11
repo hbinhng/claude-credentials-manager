@@ -14,5 +14,8 @@
       ]
     }
   ],
-  "instructions": "You are a ChatGPT agent."
+  "instructions": "You are a ChatGPT agent.",
+  "reasoning": {
+    "effort": "none"
+  }
 }
