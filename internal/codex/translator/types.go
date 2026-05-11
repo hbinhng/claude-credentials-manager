@@ -19,7 +19,7 @@ type anthropicRequest struct {
 	ToolChoice    *anthropicToolChoice   `json:"tool_choice,omitempty"`
 	Thinking      *anthropicThinkingPref `json:"thinking,omitempty"`
 	OutputConfig  *anthropicOutputConfig `json:"output_config,omitempty"`
-	MaxTokens     int                    `json:"max_tokens,omitempty"`     // dropped on outbound
+	MaxTokens     int                    `json:"max_tokens,omitempty"`     // forwarded as max_output_tokens
 	Temperature   *float64               `json:"temperature,omitempty"`    // dropped
 	TopP          *float64               `json:"top_p,omitempty"`          // dropped
 	TopK          *int                   `json:"top_k,omitempty"`          // dropped
@@ -135,6 +135,13 @@ type codexRequest struct {
 	Store          bool            `json:"store"`
 	ServiceTier    string          `json:"service_tier,omitempty"`
 	PromptCacheKey   string          `json:"prompt_cache_key,omitempty"`
+	// MaxOutputTokens caps the upstream model's total output budget,
+	// including reasoning tokens. Forwarded 1:1 from the inbound
+	// Anthropic max_tokens; omitted when the inbound request omits
+	// max_tokens. Without this, chatgpt.com applies its own default
+	// budget, which can be lower than what Claude Code requested and
+	// causes premature response.incomplete{reason:max_output_tokens}.
+	MaxOutputTokens int `json:"max_output_tokens,omitempty"`
 }
 
 type codexInput struct {
