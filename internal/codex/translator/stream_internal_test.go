@@ -5,6 +5,7 @@ package translator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -276,4 +277,63 @@ func TestApply_ReasoningTextDelta_InsideReasoningBlock(t *testing.T) {
 			t.Errorf("expected no emissions when not in reasoning block, got %+v", em)
 		}
 	})
+}
+
+// nthWriteErrorWriter succeeds for the first N-1 writes, then fails on write N.
+type nthWriteErrorWriter struct {
+	failAt int // Write index (1-based) at which to fail.
+	calls  int
+}
+
+func (w *nthWriteErrorWriter) Write(p []byte) (int, error) {
+	w.calls++
+	if w.calls >= w.failAt {
+		return 0, bytes.ErrTooLarge
+	}
+	return len(p), nil
+}
+
+// TestRun_EOFSafetyNet_WriteSSEError verifies that when the safety
+// net's writeSSE loop encounters a write error mid-finalize, run()
+// returns that error (rather than swallowing it). Sets up a stream
+// that opens a message_start (passing several writes successfully)
+// then ends with [DONE] before any terminal event, so the safety
+// net fires; uses a writer that fails partway through the safety-
+// net emissions to hit the `return err` branch.
+func TestRun_EOFSafetyNet_WriteSSEError(t *testing.T) {
+	// writeSSE makes 2 io.WriteString calls per emission:
+	//   write 1: "event: <name>\n"
+	//   write 2: "data: <payload>\n\n"
+	//
+	// Apply-loop emissions before [DONE]:
+	//   response.created        → message_start        → writes 1-2
+	//   response.output_item.added → content_block_start → writes 3-4
+	//
+	// Safety-net emissions (finalize with open block):
+	//   content_block_stop  → writes 5-6  (first safety-net emission)
+	//   message_delta       → writes 7-8
+	//   message_stop        → writes 9-10
+	//
+	// failAt=5 fails on write 5 — the event line of content_block_stop,
+	// the very first write the safety net attempts. This is the earliest
+	// value that exercises `return err` inside the safety-net loop while
+	// still letting messageStarted become true (writes 1-4 succeed).
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"resp_eof_err"}}`,
+		``,
+		`data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_eof_err"}}`,
+		``,
+		`data: [DONE]`,
+		``,
+	}, "\n")
+
+	tr := NewStreamTranslator(StreamOpts{MessageID: "m", Model: "x"})
+	w := &nthWriteErrorWriter{failAt: 5}
+	err := tr.Pipe(context.Background(), strings.NewReader(input), w)
+	if err == nil {
+		t.Fatal("expected writeSSE error to propagate from safety net, got nil")
+	}
+	if !errors.Is(err, bytes.ErrTooLarge) {
+		t.Errorf("expected bytes.ErrTooLarge, got %v", err)
+	}
 }
