@@ -367,23 +367,6 @@ func (t *StreamTranslator) finalize(stopReason string, usage *codexUsage) []emis
 	return em
 }
 
-// flushMessageDelta emits a message_delta from a codexEvent, deriving
-// the stop_reason from the event status and the currently-open block
-// type. Kept as a thin wrapper over flushMessageDeltaWithStop so the
-// response.completed case can stay event-driven.
-func (t *StreamTranslator) flushMessageDelta(ev codexEvent) []emission {
-	blockType := t.currentType
-	if blockType == "" {
-		blockType = t.lastClosedType
-	}
-	stop := mapStopReason(ev.Status, blockType)
-	var usage *codexUsage
-	if ev.Response != nil {
-		usage = ev.Response.Usage
-	}
-	return t.flushMessageDeltaWithStop(stop, usage)
-}
-
 // flushMessageDeltaWithStop emits a message_delta with an explicit
 // stop_reason and usage. New terminal handlers (response.incomplete,
 // response.failed, the EOF safety net) call this directly because
