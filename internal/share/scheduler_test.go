@@ -939,3 +939,40 @@ func TestRunOnce_CacheMiss_ProbeFails_NilLastUsage(t *testing.T) {
 		t.Errorf("b consecutiveFail = %d, want >= 1", pool.entries["b"].consecutiveFail)
 	}
 }
+
+func TestSchedulerRotatesToHighestOverride(t *testing.T) {
+	pt1 := newPassthroughEntryState(Ticket{Scheme: "https", Host: "a.example", Token: "tk1"})
+	pt2 := newPassthroughEntryState(Ticket{Scheme: "https", Host: "b.example", Token: "tk2"})
+	override1 := 600.0
+	override2 := 3600.0
+	e1 := &poolEntry{state: pt1, status: statusActivated, feasibilityOverride: &override1, lastUsageAt: time.Now()}
+	e2 := &poolEntry{state: pt2, status: statusCandidate, feasibilityOverride: &override2, lastUsageAt: time.Now()}
+
+	p := makePool(pt1.credID(), false, map[string]*poolEntry{
+		pt1.credID(): e1,
+		pt2.credID(): e2,
+	})
+
+	// Stub probe to return cached overrides unchanged.
+	noopProbe := func(state poolEntryState) (probeResult, error) {
+		if state.isPassthrough() {
+			pt := state.(*passthroughEntryState)
+			if pt.credID() == pt1.credID() {
+				return probeResult{override: &override1}, nil
+			}
+			return probeResult{override: &override2}, nil
+		}
+		return probeResult{}, nil
+	}
+
+	clk := newFakeClock(time.Now())
+	s := newScheduler(p, noopProbe, clk, 30*time.Second)
+	// Task 8 adds the proper isPassthrough gate in the rotation block;
+	// Task 7 sidesteps the captureCredFn(nil) panic via the existing flag.
+	s.skipCapture = true
+	s.runOnce()
+
+	if p.activated != pt2.credID() {
+		t.Errorf("expected rotation to pt2 (higher feasibility); activated = %s", p.activated)
+	}
+}
