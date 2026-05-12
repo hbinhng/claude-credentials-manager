@@ -2,6 +2,8 @@ package share
 
 import (
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -74,4 +76,23 @@ func TestNewProxyBindsToProvidedAddress(t *testing.T) {
 			t.Errorf("Addr() has no port: %q", p.Addr())
 		}
 	})
+}
+
+func TestHandleServeRejectsLoop(t *testing.T) {
+	p, _ := NewProxy("127.0.0.1:0")
+	defer p.Close()
+	p.accessToken = "secret"
+	p.viaID = "loopABCD"
+	p.captured = http.Header{}
+	p.mode = modeServing
+
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	req.Header.Set("Via", "1.1 ccm-share/loopABCD")
+	rr := httptest.NewRecorder()
+	p.handleServe(rr, req)
+
+	if rr.Code != http.StatusLoopDetected {
+		t.Errorf("code = %d, want 508 (LoopDetected)", rr.Code)
+	}
 }
