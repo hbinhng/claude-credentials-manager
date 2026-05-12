@@ -976,3 +976,41 @@ func TestSchedulerRotatesToHighestOverride(t *testing.T) {
 		t.Errorf("expected rotation to pt2 (higher feasibility); activated = %s", p.activated)
 	}
 }
+
+func TestSchedulerSkipsCaptureForPassthroughWinner(t *testing.T) {
+	// Seed capture-fn that would FAIL if invoked, so the test fails
+	// loudly if the rotation path forgets to gate on isPassthrough.
+	restore := SetCaptureCredFnForTest(func(c *store.Credential, prompt string) (http.Header, error) {
+		t.Fatalf("captureCredFn must NOT be called for passthrough winner")
+		return nil, nil
+	})
+	defer restore()
+
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "winner.example", Token: "tk"})
+	fst := &fakeTokenSource{token: "tk-local"}
+	local := newEntry("local-id", "local", statusActivated, fst)
+	localOverride := 600.0
+	ptOverride := 3600.0
+	pt_entry := &poolEntry{state: pt, status: statusCandidate, feasibilityOverride: &ptOverride, lastUsageAt: time.Now()}
+	local.feasibilityOverride = &localOverride
+	local.lastUsageAt = time.Now()
+
+	p := makePool("local-id", false, map[string]*poolEntry{
+		"local-id":    local,
+		pt.credID():   pt_entry,
+	})
+
+	noopProbe := func(state poolEntryState) (probeResult, error) {
+		if state.isPassthrough() {
+			return probeResult{override: &ptOverride}, nil
+		}
+		return probeResult{override: &localOverride}, nil
+	}
+	clk := newFakeClock(time.Now())
+	s := newScheduler(p, noopProbe, clk, 30*time.Second)
+	s.runOnce()
+
+	if p.activated != pt.credID() {
+		t.Errorf("expected rotation to pt; activated = %s", p.activated)
+	}
+}
