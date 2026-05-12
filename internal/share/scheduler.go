@@ -380,6 +380,7 @@ func (s *scheduler) runOnce() {
 			// capture so the function tail's existing Unlock is
 			// balanced.
 			winnerCred := s.pool.entries[winner.id].state.credPtr()
+			winnerState := s.pool.entries[winner.id].state
 			winnerName := s.pool.entries[winner.id].state.credName()
 			oldID := s.pool.activated
 			oldEntry, hasOld := s.pool.entries[oldID]
@@ -403,13 +404,14 @@ func (s *scheduler) runOnce() {
 
 			var headers http.Header
 			var cerr error
-			if !s.skipCapture {
+			if !winnerState.isPassthrough() && !s.skipCapture {
 				headers, cerr = captureCredFn(winnerCred, s.prompt)
 				if cerr != nil {
 					fmt.Fprintf(errLog(), "ccm: capture failed for %s(%s): %v — skipping rotation\n",
 						winnerName, shortID(winner.id), cerr)
 				}
 			}
+			// passthrough or skipCapture=true → headers stays nil; Promote stores nil.
 			if cerr == nil {
 				// Either skipCapture=true (headers stays nil) or
 				// capture succeeded (headers populated). Atomic swap
