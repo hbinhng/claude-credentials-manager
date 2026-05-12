@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 )
 
 // TestListenerBindAddr encodes the --bind-host / --bind-port flag rules
@@ -159,5 +161,47 @@ func TestDirectorRoutesLocalToAnthropic(t *testing.T) {
 	}
 	if req.Header.Get("Via") != "" {
 		t.Errorf("local cred should NOT add Via header; got %q", req.Header.Get("Via"))
+	}
+}
+
+func TestModifyResponseSkipsUsageHooksForPassthrough(t *testing.T) {
+	p, _ := NewProxy("127.0.0.1:0")
+	defer p.Close()
+	p.accessToken = "secret"
+	p.viaID = "myProcess"
+	p.captured = http.Header{}
+	p.mode = modeServing
+
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "u.example", Token: "tk"})
+	e := &poolEntry{state: pt, status: statusActivated}
+	pool := makePool(pt.credID(), false, map[string]*poolEntry{pt.credID(): e})
+	p.pool = pool
+
+	// Stub parseRatelimitHeadersFn to track calls.
+	parseCalls := 0
+	origParse := parseRatelimitHeadersFn
+	parseRatelimitHeadersFn = func(h http.Header) *oauth.UsageInfo {
+		parseCalls++
+		return nil
+	}
+	defer func() { parseRatelimitHeadersFn = origParse }()
+
+	if err := p.Transition("secret", pool, pool); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	// Simulate a 200 response with isPassthrough=true in context.
+	req, _ := http.NewRequest("POST", "/v1/messages", nil)
+	ctx := context.WithValue(req.Context(), ctxKeyIsPassthrough, true)
+	req = req.WithContext(ctx)
+	resp := &http.Response{
+		StatusCode: 200,
+		Header:     http.Header{},
+		Request:    req,
+	}
+	_ = p.rp.ModifyResponse(resp)
+
+	if parseCalls != 0 {
+		t.Errorf("parseRatelimitHeadersFn should be skipped for passthrough; got %d calls", parseCalls)
 	}
 }
