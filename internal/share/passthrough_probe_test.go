@@ -229,3 +229,33 @@ func TestBootstrapPassthroughProbeDegraded(t *testing.T) {
 		t.Errorf("degraded seed feasibility should be 0; got %v", seed.Feasibility)
 	}
 }
+
+// TestBootstrapPassthroughProbeVersionMismatch pins the operator-facing
+// error string for v != 1 responses (spec §3/§6).
+func TestBootstrapPassthroughProbeVersionMismatch(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"v":2,"feasibility_seconds":1.0,"activated":true,"degraded":false,"unconstrained":false}`))
+	}))
+	defer srv.Close()
+	tk := Ticket{Scheme: "http", Host: srv.Listener.Addr().String(), Token: "tk"}
+	_, err := BootstrapPassthroughProbe(tk)
+	if err == nil || !strings.Contains(err.Error(), "unsupported usage-API version") || !strings.Contains(err.Error(), "got v=2") {
+		t.Errorf("v=2 should produce 'unsupported usage-API version (got v=2…)' message; got %v", err)
+	}
+}
+
+// TestBootstrapPassthroughProbeMissingV pins the operator-facing error
+// for a 200 response missing the v field (spec §3/§6).
+func TestBootstrapPassthroughProbeMissingV(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		_, _ = w.Write([]byte(`{"feasibility_seconds":1.0,"activated":true}`))
+	}))
+	defer srv.Close()
+	tk := Ticket{Scheme: "http", Host: srv.Listener.Addr().String(), Token: "tk"}
+	_, err := BootstrapPassthroughProbe(tk)
+	if err == nil || !strings.Contains(err.Error(), "unrecognized response from /ccm-share/usage") {
+		t.Errorf("missing v should produce 'unrecognized response from /ccm-share/usage'; got %v", err)
+	}
+}
