@@ -56,6 +56,8 @@ type poolEntryState interface {
 	credName() string
 	credExpiresAt() time.Time
 	credPtr() *store.Credential
+	upstreamURL() string  // base URL the director forwards to (Anthropic or ticket host)
+	isPassthrough() bool  // gates header overlay, bearer-rewrite, and refresh-timer spawn
 }
 
 type poolEntry struct {

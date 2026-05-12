@@ -57,6 +57,8 @@ func (c *credStateAdapter) credID() string             { return c.id }
 func (c *credStateAdapter) credName() string           { return c.name }
 func (c *credStateAdapter) credExpiresAt() time.Time   { return time.Time{} }
 func (c *credStateAdapter) credPtr() *store.Credential { return nil }
+func (c *credStateAdapter) upstreamURL() string        { return "https://api.anthropic.com" }
+func (c *credStateAdapter) isPassthrough() bool        { return false }
 
 // suppress unused warnings: oauth is imported here so future tests in this
 // file can refer to oauth.* without re-importing.

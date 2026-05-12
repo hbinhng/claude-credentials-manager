@@ -87,3 +87,5 @@ func (s *credState) credID() string             { return s.cred.ID }
 func (s *credState) credName() string           { return s.cred.Name }
 func (s *credState) credExpiresAt() time.Time   { return time.UnixMilli(s.cred.ExpiresAtMillis()) }
 func (s *credState) credPtr() *store.Credential { return s.cred }
+func (s *credState) upstreamURL() string        { return upstreamBase() }
+func (s *credState) isPassthrough() bool        { return false }

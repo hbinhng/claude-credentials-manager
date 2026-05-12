@@ -456,3 +456,22 @@ func TestCredState_Claude_FreshUnchanged(t *testing.T) {
 		t.Errorf("Fresh returned %q, want %q", tok, "claude-acc-tok")
 	}
 }
+
+func TestCredStateUpstreamURL(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	t.Setenv("CCM_HOME", tmp)
+	_ = os.MkdirAll(filepath.Join(tmp, ".ccm"), 0o700)
+
+	cred := &store.Credential{ID: "abc", ClaudeAiOauth: store.OAuthTokens{AccessToken: "tok", ExpiresAt: time.Now().Add(time.Hour).UnixMilli()}}
+	state, err := newCredState(cred)
+	if err != nil {
+		t.Fatalf("newCredState: %v", err)
+	}
+	if got := state.upstreamURL(); got != upstreamBase() {
+		t.Errorf("upstreamURL() = %q, want %q", got, upstreamBase())
+	}
+	if state.isPassthrough() {
+		t.Errorf("credState.isPassthrough() = true, want false")
+	}
+}
