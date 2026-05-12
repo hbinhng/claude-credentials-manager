@@ -252,6 +252,7 @@ func NewProxy(bindAddr string) (*Proxy, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ccm-share/healthz", p.handleHealth)
+	mux.HandleFunc("/ccm-share/usage", p.handleUsage)
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		// Pipeline composes pre-built Steps cheaply per request. Setters
 		// (SetAliasMap, SetSharedSecret, etc.) must complete before Start
