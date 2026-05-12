@@ -433,6 +433,49 @@ func TestStartSession_PinnedToken_RejectsInvalidBeforeProxy(t *testing.T) {
 	}
 }
 
+// rngCountReader counts io.ReadFull calls made by jitterFn, returning
+// valid 8-byte values so jitterFn itself does not error.
+type rngCountReader struct {
+	calls int
+}
+
+func (r *rngCountReader) Read(p []byte) (int, error) {
+	r.calls++
+	for i := range p {
+		p[i] = 0
+	}
+	return len(p), nil
+}
+
+func TestStartPoolBackgroundSkipsRefreshTimerForPassthrough(t *testing.T) {
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "p.example", Token: "tk"})
+	override := 1800.0
+	e := &poolEntry{state: pt, status: statusActivated, feasibilityOverride: &override, lastUsageAt: time.Now()}
+	pool := makePool(pt.credID(), true, map[string]*poolEntry{pt.credID(): e})
+
+	// jitterReader.Read invocation count proxies "refresh timer started":
+	// jitterFn calls io.ReadFull(jitterReader, ...) on every invocation.
+	cr := &rngCountReader{}
+	orig := jitterReader
+	jitterReader = cr
+	defer func() { jitterReader = orig }()
+
+	done := make(chan struct{})
+	defer close(done)
+	if err := StartPoolBackground(done, pool, PoolBackgroundOptions{
+		RebalanceInterval: 30 * time.Second,
+		SkipCapture:       true,
+	}); err != nil {
+		t.Fatalf("StartPoolBackground: %v", err)
+	}
+	// Yield to give any spurious refresh-timer goroutine a chance to call jitterFn.
+	time.Sleep(50 * time.Millisecond)
+
+	if cr.calls != 0 {
+		t.Errorf("refresh timer should NOT spawn for passthrough; got %d jitter reader calls", cr.calls)
+	}
+}
+
 func TestStartSession_PinnedToken_RandomFallbackUnchanged(t *testing.T) {
 	// When PinnedAccessToken is empty, two sessions must mint
 	// distinct random tokens — proves the random path is unchanged.

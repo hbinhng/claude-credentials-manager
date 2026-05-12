@@ -320,6 +320,9 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		}
 		for _, e := range opts.Pool.entries {
 			state := e.state
+			if state.isPassthrough() {
+				continue
+			}
 			go runRefreshTimer(state, c, jitterFn, proxy.done)
 		}
 		sch := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
@@ -563,6 +566,9 @@ func StartPoolBackground(done <-chan struct{}, pool *credPool, opts PoolBackgrou
 
 	for _, e := range pool.entries {
 		state := e.state
+		if state.isPassthrough() {
+			continue
+		}
 		go runRefreshTimer(state, c, jitterFn, done)
 	}
 
