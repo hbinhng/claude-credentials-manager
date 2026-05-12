@@ -561,3 +561,14 @@ func TestUpdateActiveFromHeaders_NilInfo(t *testing.T) {
 		t.Errorf("lastUsage mutated despite nil info: %+v", p.entries["a"].lastUsage)
 	}
 }
+
+func TestPoolEntryFeasibilityOverride(t *testing.T) {
+	fst := &fakeTokenSource{token: "tk"}
+	e := newEntry("e1", "n1", statusCandidate, fst)
+	override := 3600.0
+	e.feasibilityOverride = &override
+
+	if e.feasibilityOverride == nil || *e.feasibilityOverride != 3600.0 {
+		t.Errorf("feasibilityOverride not stored correctly")
+	}
+}
