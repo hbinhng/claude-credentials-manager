@@ -212,13 +212,20 @@ func runShareLoadBalance(args []string, opts share.Options) error {
 func runSessionLoop(sess share.Session, cred *store.Credential) error {
 	defer sess.Stop()
 
-	displayName := cred.Name
-	if displayName == "" {
-		displayName = cred.ID[:8]
+	var displayName, idShort string
+	if cred != nil {
+		displayName = cred.Name
+		if displayName == "" {
+			displayName = cred.ID[:8]
+		}
+		idShort = cred.ID[:8]
+	} else {
+		displayName = sess.CredID()
+		idShort = sess.CredID()
 	}
 
 	fmt.Println()
-	fmt.Printf("Share session for %s (%s) is live.\n", displayName, cred.ID[:8])
+	fmt.Printf("Share session for %s (%s) is live.\n", displayName, idShort)
 	if sess.Mode() == "lan" {
 		fmt.Printf("  reach:   %s (LAN)\n", sess.Reach())
 		fmt.Println("  WARNING: listener is LAN-reachable - anyone who can route")
