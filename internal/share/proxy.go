@@ -153,6 +153,12 @@ type Proxy struct {
 	codexCred        *store.Credential
 	codexTransport   *transport.Transport
 	codexUpstreamURL string // test override; empty in production
+
+	// viaID is a per-process loop-detection marker. NewProxy mints
+	// it; handleServe rejects inbound requests whose Via header
+	// contains this id; director appends it when forwarding to a
+	// passthrough entry.
+	viaID string
 }
 
 // ctxKey is used to thread per-request state from the outer handler into
@@ -222,6 +228,7 @@ func NewProxy(bindAddr string) (*Proxy, error) {
 		done:     make(chan struct{}),
 		debug:    os.Getenv("CCM_SHARE_DEBUG") == "1",
 	}
+	p.viaID = mintViaID()
 	// Eagerly initialise the alias map so request-time pipeline
 	// assembly never races with a concurrent SetAliasMap call.
 	emptyMap, _ := alias.Parse(nil)
@@ -619,6 +626,11 @@ func (p *Proxy) handleCapture(w http.ResponseWriter, r *http.Request) {
 // handleServe validates the inbound bearer, refreshes the credential if
 // needed, and forwards via the ReverseProxy.
 func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
+	if viaContains(r.Header, p.viaID) {
+		writeAnthropicError(w, http.StatusLoopDetected, "api_error", "ccm share: request loop detected")
+		return
+	}
+
 	auth := r.Header.Get("Authorization")
 	expected := "Bearer " + p.accessToken
 	if auth != expected {
