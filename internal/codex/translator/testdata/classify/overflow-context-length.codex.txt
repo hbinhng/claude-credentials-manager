@@ -1,0 +1,9 @@
+data: {"type":"response.created","response":{"id":"resp_real2","object":"response","created_at":1778514035,"status":"in_progress"}}
+
+data: {"type":"response.in_progress","response":{"id":"resp_real2","object":"response","created_at":1778514035,"status":"in_progress"}}
+
+data: {"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again.","param":"input"},"sequence_number":2}
+
+data: {"type":"response.failed","response":{"id":"resp_real2","object":"response","created_at":1778514035,"status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again."},"usage":null},"sequence_number":3}
+
+data: [DONE]

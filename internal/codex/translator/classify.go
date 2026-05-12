@@ -98,8 +98,37 @@ func ClassifyStream(ctx context.Context, src io.Reader) (StreamDecision, []byte,
 			"response.function_call_arguments.delta":
 			return StreamDecision{}, replay, br, nil
 
-		case "response.completed", "response.failed":
+		case "response.completed":
 			return StreamDecision{}, replay, br, nil
+
+		case "response.failed":
+			// Failure with context_length_exceeded is the same
+			// underlying condition as incomplete{max_output_tokens}
+			// from the user's perspective: input was rejected, no
+			// actionable content was produced. Translate to overflow
+			// so Claude Code's reactive-compact path fires. Usage is
+			// typically null on this shape (request rejected
+			// pre-inference) so InputTokens/Limit fall back to zero.
+			if ev.Response != nil && ev.Response.Error != nil &&
+				ev.Response.Error.Code == "context_length_exceeded" {
+				dec := StreamDecision{Overflow: true}
+				if ev.Response.Usage != nil {
+					dec.InputTokens = ev.Response.Usage.InputTokens
+					dec.Limit = ev.Response.Usage.InputTokens + ev.Response.Usage.OutputTokens
+				}
+				return dec, replay, br, nil
+			}
+			return StreamDecision{}, replay, br, nil
+
+		case "error":
+			// Top-level error event — chatgpt.com emits this before
+			// the response.failed terminator. Detecting here lets us
+			// short-circuit one event earlier and keeps the trigger
+			// uniform regardless of which event shape the upstream
+			// surfaces first.
+			if ev.Error != nil && ev.Error.Code == "context_length_exceeded" {
+				return StreamDecision{Overflow: true}, replay, br, nil
+			}
 
 		case "response.incomplete":
 			reason := ""
