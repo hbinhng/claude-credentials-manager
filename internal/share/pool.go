@@ -192,6 +192,39 @@ func (p *credPool) activatedHeaders() http.Header {
 	return e.captured
 }
 
+// activatedView is an immutable per-request snapshot of the active
+// entry's director-relevant state. Returned under p.mu.RLock so the
+// director sees a consistent view of (upstreamURL, isPassthrough,
+// captured) without per-field racing against Promote.
+type activatedView struct {
+	upstreamURL   string
+	isPassthrough bool
+	captured      http.Header
+	ok            bool
+}
+
+// activatedView returns a consistent snapshot of the activated
+// entry, or an empty view with ok=false when no entry is activated.
+// Director calls this once per request.
+func (p *credPool) activatedView() activatedView {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.activated == "" {
+		return activatedView{}
+	}
+	e, ok := p.entries[p.activated]
+	if !ok {
+		// coverage: unreachable — Promote/Demote maintain activated⊆entries.
+		return activatedView{}
+	}
+	return activatedView{
+		upstreamURL:   e.state.upstreamURL(),
+		isPassthrough: e.state.isPassthrough(),
+		captured:      e.captured,
+		ok:            true,
+	}
+}
+
 // Demote clears the activated slot — Fresh() will return
 // errNoActivated until a future Promote happens. Caller must
 // guarantee !p.singleton; we panic to surface the invariant

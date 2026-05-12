@@ -572,3 +572,52 @@ func TestPoolEntryFeasibilityOverride(t *testing.T) {
 		t.Errorf("feasibilityOverride not stored correctly")
 	}
 }
+
+func TestActivatedViewEmpty(t *testing.T) {
+	p := makePool("", false, map[string]*poolEntry{})
+	v := p.activatedView()
+	if v.ok {
+		t.Errorf("ok should be false on empty pool")
+	}
+}
+
+func TestActivatedViewActivatedLocal(t *testing.T) {
+	fst := &fakeTokenSource{token: "tk"}
+	e := newEntry("a", "n", statusActivated, fst)
+	e.captured = http.Header{"X-Foo": {"bar"}}
+	p := makePool("a", false, map[string]*poolEntry{"a": e})
+
+	v := p.activatedView()
+	if !v.ok {
+		t.Fatalf("ok should be true")
+	}
+	if v.isPassthrough {
+		t.Errorf("isPassthrough should be false for local cred")
+	}
+	if v.captured.Get("X-Foo") != "bar" {
+		t.Errorf("captured headers not returned")
+	}
+	if v.upstreamURL != "https://api.anthropic.com" {
+		t.Errorf("upstreamURL = %q", v.upstreamURL)
+	}
+}
+
+func TestActivatedViewActivatedPassthrough(t *testing.T) {
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "abc.example", Token: "tk"})
+	e := &poolEntry{state: pt, status: statusActivated, captured: nil}
+	p := makePool(pt.credID(), false, map[string]*poolEntry{pt.credID(): e})
+
+	v := p.activatedView()
+	if !v.ok {
+		t.Fatalf("ok should be true")
+	}
+	if !v.isPassthrough {
+		t.Errorf("isPassthrough should be true")
+	}
+	if v.captured != nil {
+		t.Errorf("captured should be nil for passthrough")
+	}
+	if v.upstreamURL != "https://abc.example" {
+		t.Errorf("upstreamURL = %q", v.upstreamURL)
+	}
+}
