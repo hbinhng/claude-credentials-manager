@@ -521,3 +521,37 @@ func TestStartSession_PinnedToken_RandomFallbackUnchanged(t *testing.T) {
 		t.Fatalf("two random sessions minted identical tokens: %q", tk1.Token)
 	}
 }
+
+func TestStartSessionWithNilCredPassthroughOnly(t *testing.T) {
+	// Stub capture so the test doesn't need claude on PATH; in
+	// passthrough-only mode capture should NOT be called anyway.
+	restore := SetCaptureCredFnForTest(func(c *store.Credential, prompt string) (http.Header, error) {
+		t.Fatalf("capture must not run in passthrough-only StartSession")
+		return nil, nil
+	})
+	defer restore()
+	SetCloudflaredFnForTest(func(ctx context.Context, localURL string) (*Tunnel, string, error) {
+		return NewTunnelForTest(nil), "https://fake.trycloudflare.com", nil
+	})
+	defer ResetCloudflaredFnForTest()
+
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "p.example", Token: "tk"})
+	override := 1800.0
+	e := &poolEntry{state: pt, status: statusActivated, feasibilityOverride: &override, lastUsageAt: time.Now()}
+	pool := makePool(pt.credID(), true, map[string]*poolEntry{pt.credID(): e})
+
+	sess, err := StartSession(nil, Options{
+		Pool:              pool,
+		InitialEntryID:    pt.credID(),
+		InitialEntryName:  pt.credName(),
+		RebalanceInterval: 30 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	defer sess.Stop()
+
+	if sess.CredID() != pt.credID() {
+		t.Errorf("CredID() = %q, want %q", sess.CredID(), pt.credID())
+	}
+}
