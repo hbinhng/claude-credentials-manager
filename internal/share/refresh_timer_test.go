@@ -100,6 +100,8 @@ func (f *fakeRefreshableState) credExpiresAt() time.Time { return time.UnixMilli
 func (f *fakeRefreshableState) credPtr() *store.Credential {
 	return &store.Credential{ID: f.id, ClaudeAiOauth: store.OAuthTokens{ExpiresAt: f.expiresAt}}
 }
+func (f *fakeRefreshableState) upstreamURL() string { return "https://api.anthropic.com" }
+func (f *fakeRefreshableState) isPassthrough() bool { return false }
 
 func TestRefreshTimerExitsOnDoneClose(t *testing.T) {
 	state := &fakeRefreshableState{id: "a", expiresAt: time.Now().Add(time.Hour).UnixMilli()}
