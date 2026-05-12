@@ -95,6 +95,13 @@ type Options struct {
 	// MaxConcurrency sets the per-credential in-flight request cap on
 	// the proxy semaphore. 0 = no limit. Parsed from --max-concurrency.
 	MaxConcurrency int
+
+	// InitialEntryID / InitialEntryName provide the credID/credName
+	// for sessionImpl when StartSession is called with cred == nil
+	// (passthrough-only pool). Both required when cred is nil;
+	// ignored when cred != nil.
+	InitialEntryID   string
+	InitialEntryName string
 }
 
 // SessionStarter abstracts StartSession for tests and for consumers
@@ -210,6 +217,10 @@ func (s *sessionImpl) Stop() error {
 func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Session, error) {
 	if err := ValidatePinnedToken(opts.PinnedAccessToken); err != nil {
 		return nil, err
+	}
+
+	if cred == nil && (opts.Pool == nil || opts.InitialEntryID == "") {
+		return nil, fmt.Errorf("StartSession: cred is nil but Options.Pool or Options.InitialEntryID is unset")
 	}
 
 	bindAddr := ListenerBindAddr(opts.BindHost, opts.BindPort)
@@ -354,8 +365,12 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		Token:  accessToken,
 	})
 
+	sessCredID := opts.InitialEntryID
+	if cred != nil {
+		sessCredID = cred.ID
+	}
 	return &sessionImpl{
-		credID:    cred.ID,
+		credID:    sessCredID,
 		mode:      mode,
 		reach:     reach,
 		ticket:    ticket,
