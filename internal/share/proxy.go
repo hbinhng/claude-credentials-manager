@@ -652,34 +652,57 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 	p.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
-// director rewrites the outbound request: set upstream URL, strip client
-// headers, replay captured identity headers, inject real OAuth bearer.
+// director rewrites the outbound request: set upstream URL, strip
+// client headers, replay captured identity headers (local-cred path
+// only), inject the real OAuth bearer, and append the Via marker for
+// passthrough hops.
 func (p *Proxy) director(req *http.Request) {
-	req.URL.Scheme = p.upstream.Scheme
-	req.URL.Host = p.upstream.Host
-	req.Host = p.upstream.Host
+	// Determine routing target. In pool mode we read a consistent
+	// snapshot of the activated entry; in single-cred mode we fall
+	// back to p.upstream and p.captured.
+	var (
+		targetScheme  = p.upstream.Scheme
+		targetHost    = p.upstream.Host
+		captured      http.Header
+		isPassthrough bool
+	)
+	if p.pool != nil {
+		view := p.pool.activatedView()
+		if view.ok {
+			captured = view.captured
+			isPassthrough = view.isPassthrough
+			// For passthrough entries the director must forward to the
+			// ticket host, not to the configured Anthropic base URL.
+			// Local-cred entries always route through p.upstream (which
+			// respects the test override SetUpstreamBaseForTest).
+			if view.isPassthrough {
+				if u, err := url.Parse(view.upstreamURL); err == nil {
+					targetScheme = u.Scheme
+					targetHost = u.Host
+				}
+			}
+		}
+	} else {
+		p.modeMu.RLock()
+		captured = p.captured
+		p.modeMu.RUnlock()
+	}
+
+	req.URL.Scheme = targetScheme
+	req.URL.Host = targetHost
+	req.Host = targetHost
 
 	// Strip client-side headers we don't want forwarded.
 	for _, h := range clientDenylist {
 		req.Header.Del(h)
 	}
 
-	// Overlay captured identity headers on top of whatever the client sent.
-	// In load-balance mode (pool != nil), read the per-cred headers
-	// from the pool so each rotation's headers reach upstream. In
-	// single-cred mode, take a snapshot of p.captured under the read
-	// lock to avoid racing with Transition (which only writes once,
-	// but cheap anyway).
-	var captured http.Header
-	if p.pool != nil {
-		captured = p.pool.activatedHeaders()
-	} else {
-		p.modeMu.RLock()
-		captured = p.captured
-		p.modeMu.RUnlock()
-	}
-	for k, vs := range captured {
-		req.Header[k] = append([]string(nil), vs...)
+	// Overlay captured identity headers ONLY for local-cred entries.
+	// Passthroughs forward as-is; the upstream share applies its own.
+	if !isPassthrough {
+		for k, vs := range captured {
+			req.Header[k] = append([]string(nil), vs...)
+		}
 	}
 
 	// Inject the real OAuth bearer (thread-through from handleServe).
@@ -687,9 +710,15 @@ func (p *Proxy) director(req *http.Request) {
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
+	// Passthrough forward gets a Via marker so the upstream share can
+	// reject if the chain loops back to it (or to us).
+	if isPassthrough {
+		appendVia(req.Header, p.viaID)
+	}
+
 	if p.debug {
 		fmt.Fprintf(errLog(), "ccm share [debug]: forwarding %s %s\n", req.Method, req.URL.String())
-		for _, h := range []string{"Authorization", "Anthropic-Beta", "Anthropic-Version", "User-Agent", "X-Claude-Code-Session-Id"} {
+		for _, h := range []string{"Authorization", "Anthropic-Beta", "Anthropic-Version", "User-Agent", "X-Claude-Code-Session-Id", "Via"} {
 			if v := req.Header.Get(h); v != "" {
 				if h == "Authorization" {
 					fmt.Fprintf(errLog(), "  %s: Bearer <%d chars>\n", h, len(v)-len("Bearer "))

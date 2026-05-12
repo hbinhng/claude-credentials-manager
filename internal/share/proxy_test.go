@@ -1,6 +1,7 @@
 package share
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -94,5 +95,69 @@ func TestHandleServeRejectsLoop(t *testing.T) {
 
 	if rr.Code != http.StatusLoopDetected {
 		t.Errorf("code = %d, want 508 (LoopDetected)", rr.Code)
+	}
+}
+
+func TestDirectorRoutesPassthroughToTicketHost(t *testing.T) {
+	p, _ := NewProxy("127.0.0.1:0")
+	defer p.Close()
+	p.accessToken = "secret"
+	p.viaID = "myProcess"
+	p.captured = http.Header{}
+	p.mode = modeServing
+
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "upstream.example", Token: "tk"})
+	e := &poolEntry{state: pt, status: statusActivated}
+	pool := makePool(pt.credID(), false, map[string]*poolEntry{pt.credID(): e})
+	p.pool = pool
+
+	req, _ := http.NewRequest("POST", "/v1/messages", nil)
+	ctx := context.WithValue(req.Context(), ctxKeyRealToken, "tk")
+	req = req.WithContext(ctx)
+
+	p.director(req)
+
+	if req.URL.Host != "upstream.example" {
+		t.Errorf("URL.Host = %q, want upstream.example", req.URL.Host)
+	}
+	if req.URL.Scheme != "https" {
+		t.Errorf("URL.Scheme = %q, want https", req.URL.Scheme)
+	}
+	if !strings.Contains(req.Header.Get("Via"), "ccm-share/myProcess") {
+		t.Errorf("Via header missing: %q", req.Header.Get("Via"))
+	}
+	if req.Header.Get("Authorization") != "Bearer tk" {
+		t.Errorf("Authorization = %q", req.Header.Get("Authorization"))
+	}
+}
+
+func TestDirectorRoutesLocalToAnthropic(t *testing.T) {
+	p, _ := NewProxy("127.0.0.1:0")
+	defer p.Close()
+	p.accessToken = "secret"
+	p.viaID = "myProcess"
+	p.captured = http.Header{"X-Test-Captured": {"yes"}}
+	p.mode = modeServing
+
+	fst := &fakeTokenSource{token: "tk-local"}
+	e := newEntry("a", "n", statusActivated, fst)
+	e.captured = http.Header{"X-Test-Captured": {"yes"}}
+	pool := makePool("a", false, map[string]*poolEntry{"a": e})
+	p.pool = pool
+
+	req, _ := http.NewRequest("POST", "/v1/messages", nil)
+	ctx := context.WithValue(req.Context(), ctxKeyRealToken, "tk-local")
+	req = req.WithContext(ctx)
+
+	p.director(req)
+
+	if !strings.Contains(req.URL.Host, "anthropic.com") {
+		t.Errorf("local cred should route to Anthropic; got %q", req.URL.Host)
+	}
+	if req.Header.Get("X-Test-Captured") != "yes" {
+		t.Errorf("local cred should overlay captured headers")
+	}
+	if req.Header.Get("Via") != "" {
+		t.Errorf("local cred should NOT add Via header; got %q", req.Header.Get("Via"))
 	}
 }
