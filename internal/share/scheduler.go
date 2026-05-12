@@ -379,6 +379,10 @@ func (s *scheduler) runOnce() {
 			// reads are not blocked. The lock is re-acquired after
 			// capture so the function tail's existing Unlock is
 			// balanced.
+			//
+			// passthrough-safe: winnerCred may be nil for a passthrough
+			// winner, but the only deref (captureCredFn) is gated below
+			// on !winnerState.isPassthrough().
 			winnerCred := s.pool.entries[winner.id].state.credPtr()
 			winnerState := s.pool.entries[winner.id].state
 			winnerName := s.pool.entries[winner.id].state.credName()
