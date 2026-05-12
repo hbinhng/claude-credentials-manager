@@ -103,13 +103,14 @@ func (p *credPool) Fresh() (string, error) {
 	return state.Fresh()
 }
 
-// MarkProbe records the result of one usage probe against an entry
-// and applies the per-entry state-machine rules.
+// MarkProbe records the result of one usage probe and applies the
+// per-entry state-machine rules. result.info is non-nil for local-
+// cred probe success; result.override is non-nil for passthrough
+// probe success; both nil when err != nil.
 //
 // MarkProbe NEVER demotes the activated entry — only the scheduler
-// can do that, via Demote. This is intentional: rotation is a
-// scheduler-policy decision, not a probe-side-effect.
-func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
+// can do that, via Demote.
+func (p *credPool) MarkProbe(id string, result probeResult, err error) {
 	p.mu.Lock()
 	e, ok := p.entries[id]
 	if !ok {
@@ -119,7 +120,15 @@ func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 	prevStatus := e.status
 	if err == nil {
 		e.consecutiveFail = 0
-		e.lastUsage = info
+		if result.info != nil {
+			e.lastUsage = result.info
+			e.feasibilityOverride = nil
+		}
+		if result.override != nil {
+			f := *result.override
+			e.feasibilityOverride = &f
+			e.lastUsage = nil
+		}
 		e.lastUsageAt = time.Now()
 		if e.status == statusDegraded {
 			e.status = statusCandidate
@@ -134,7 +143,6 @@ func (p *credPool) MarkProbe(id string, info *oauth.UsageInfo, err error) {
 	name := e.state.credName()
 	p.mu.Unlock()
 
-	// Emit transition logs after releasing the lock.
 	if prevStatus == statusCandidate && newStatus == statusDegraded {
 		fmt.Fprintf(errLog(), "ccm: %s(%s) degraded after 2 failures: %v\n", name, shortID(id), err)
 	}

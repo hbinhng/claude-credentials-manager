@@ -254,8 +254,8 @@ func TestSchedulerRotatesToHigherFeasibility(t *testing.T) {
 			{Name: "7d", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
 		}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
@@ -276,11 +276,11 @@ func TestSchedulerProbeFailureBumpsCounter(t *testing.T) {
 		"b": {state: stateB, status: statusCandidate},
 	}, activated: "a"}
 
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		if state.credID() == "b" {
-			return nil, fmt.Errorf("boom")
+			return probeResult{}, fmt.Errorf("boom")
 		}
-		return &oauth.UsageInfo{}, nil
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
@@ -304,8 +304,8 @@ func TestSchedulerActivatedDemotesWhenAllElseDegraded(t *testing.T) {
 		"b": {state: stateB, status: statusDegraded, consecutiveFail: 5},
 	}, activated: "a"}
 
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, fmt.Errorf("everything is broken")
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("everything is broken")
 	}
 
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
@@ -327,8 +327,8 @@ func TestSchedulerNonSingletonOneEntryFailingDemotes(t *testing.T) {
 		"a": {state: stateA, status: statusActivated, consecutiveFail: 1},
 	}, activated: "a"}
 
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, fmt.Errorf("blip")
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("blip")
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.runOnce()
@@ -349,8 +349,8 @@ func TestSchedulerSingletonNeverDemotes(t *testing.T) {
 		activated: "a",
 		singleton: true,
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, fmt.Errorf("boom")
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("boom")
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	for i := 0; i < 5; i++ {
@@ -371,8 +371,8 @@ func TestSchedulerTieBreakByIDLex(t *testing.T) {
 		"bbbb": {state: stateB, status: statusActivated},
 	}, activated: "bbbb"}
 	// Both probes identical → identical feasibility.
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return &oauth.UsageInfo{}, nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.runOnce()
@@ -389,8 +389,8 @@ func TestSchedulerDebugLogsWhenNoEligible(t *testing.T) {
 		activated: "a",
 		singleton: true,
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, fmt.Errorf("blip")
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("blip")
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.SetDebug(true)
@@ -414,8 +414,8 @@ func TestSchedulerPreFailRotationPath(t *testing.T) {
 		"b": {state: stateB, status: statusCandidate, lastUsage: &oauth.UsageInfo{}},
 	}, activated: "a"}
 	// Probe success for both — would normally reset a.consecutiveFail.
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return &oauth.UsageInfo{}, nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.runOnce()
@@ -440,12 +440,12 @@ func TestSchedulerDegradedEntryReprobedEachTick(t *testing.T) {
 
 	probeCalls := map[string]int{}
 	failBob := true
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalls[state.credID()]++
 		if state.credID() == "b" && failBob {
-			return nil, fmt.Errorf("still down")
+			return probeResult{}, fmt.Errorf("still down")
 		}
-		return &oauth.UsageInfo{}, nil
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 
@@ -496,12 +496,12 @@ func TestProductionProbeOk(t *testing.T) {
 	oauth.FetchUsageFn = func(token string) *oauth.UsageInfo {
 		return &oauth.UsageInfo{}
 	}
-	info, err := productionProbe(state)
+	result, err := productionProbe(state)
 	if err != nil {
 		t.Fatalf("productionProbe: %v", err)
 	}
-	if info == nil {
-		t.Fatal("info is nil")
+	if result.info == nil {
+		t.Fatal("result.info is nil")
 	}
 }
 
@@ -521,9 +521,9 @@ func TestSchedulerRunFiresOnTick(t *testing.T) {
 		singleton: false,
 	}
 	var probeCalls atomic.Int32
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalls.Add(1)
-		return &oauth.UsageInfo{}, nil
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, time.Second)
@@ -565,8 +565,8 @@ func TestSchedulerRunStopsOnDone(t *testing.T) {
 		activated: "a",
 		singleton: true,
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return &oauth.UsageInfo{}, nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, time.Minute)
@@ -597,8 +597,8 @@ func TestSchedulerCaptureFailureSkipsRotation(t *testing.T) {
 		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
 		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	origCapture := captureCredFn
@@ -639,8 +639,8 @@ func TestSchedulerSuccessfulCaptureStoresHeadersAndPromotes(t *testing.T) {
 		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
 		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	origCapture := captureCredFn
@@ -673,8 +673,8 @@ func TestSchedulerSkipCaptureRotatesWithoutCapture(t *testing.T) {
 		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
 		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	captureCalls := 0
@@ -708,8 +708,8 @@ func TestSchedulerTickDoneSignalsAfterRunOnce(t *testing.T) {
 		activated: "a",
 		singleton: true,
 	}
-	probeFn := func(_ poolEntryState) (*oauth.UsageInfo, error) {
-		return &oauth.UsageInfo{}, nil
+	probeFn := func(_ poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 
@@ -784,10 +784,10 @@ func TestRunOnce_CacheHit_SkipsProbe(t *testing.T) {
 		activated: "a",
 	}
 	probeCalled := false
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalled = true
 		t.Errorf("probe was called despite fresh cache")
-		return nil, nil
+		return probeResult{}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute) // ttl=25m
@@ -819,9 +819,9 @@ func TestRunOnce_CacheMiss_ProbesAndUpdates(t *testing.T) {
 		activated: "a",
 	}
 	calls := 0
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		calls++
-		return &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 5}}}, nil
+		return probeResult{info: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 5}}}}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
@@ -850,8 +850,8 @@ func TestRunOnce_CacheMiss_ProbeFails_DoesNotAbortTick(t *testing.T) {
 		},
 		activated: "a",
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, errors.New("blip")
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, errors.New("blip")
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
@@ -878,10 +878,10 @@ func TestRunOnce_Singleton_NoProbeNoAlgorithm(t *testing.T) {
 		singleton: true,
 	}
 	probeCalled := false
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalled = true
 		t.Error("probe was called on singleton pool")
-		return nil, nil
+		return probeResult{}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
@@ -921,13 +921,13 @@ func TestRunOnce_CacheMiss_ProbeFails_NilLastUsage(t *testing.T) {
 		},
 		activated: "a",
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		// b's probe fails; a's is a cache hit and not invoked.
 		if state.credID() == "b" {
-			return nil, errors.New("nope")
+			return probeResult{}, errors.New("nope")
 		}
 		t.Errorf("probe called for %q (should be cache hit)", state.credID())
-		return nil, nil
+		return probeResult{}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)

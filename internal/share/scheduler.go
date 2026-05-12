@@ -109,28 +109,44 @@ func lookupQuota(qs []oauth.Quota, name string) *oauth.Quota {
 	return nil
 }
 
-// usageProbe is the test seam for the per-entry usage HTTP call.
-// In production it composes credState.Fresh + oauth.FetchUsageFn;
-// in tests it is a stub.
-type usageProbe func(state poolEntryState) (*oauth.UsageInfo, error)
+// probeResult is the unified return shape from a usage probe. Local-
+// cred probes populate info; passthrough probes populate override.
+// Exactly one is non-nil on a successful probe.
+type probeResult struct {
+	info     *oauth.UsageInfo // local cred path
+	override *float64         // passthrough path
+}
 
-// productionProbe is the production wiring of usageProbe: refresh
-// the credential if needed, then call FetchUsageFn.
-func productionProbe(state poolEntryState) (*oauth.UsageInfo, error) {
+// usageProbe is the test seam for the per-entry usage HTTP call.
+// In production it composes credState.Fresh + oauth.FetchUsageFn
+// for local creds, or fetchPassthroughUsageFn for passthroughs.
+type usageProbe func(state poolEntryState) (probeResult, error)
+
+// productionProbe dispatches on entry type.
+func productionProbe(state poolEntryState) (probeResult, error) {
+	if state.isPassthrough() {
+		return probePassthrough(state.(*passthroughEntryState))
+	}
+	return probeLocal(state)
+}
+
+// probeLocal is the original credState-backed probe. Refreshes the
+// credential if needed, then calls FetchUsageFn.
+func probeLocal(state poolEntryState) (probeResult, error) {
 	tok, err := state.Fresh()
 	if err != nil {
-		return nil, fmt.Errorf("usage probe refresh: %w", err)
+		return probeResult{}, fmt.Errorf("usage probe refresh: %w", err)
 	}
 	info := oauth.FetchUsageFn(tok)
 	if info == nil {
-		// coverage: unreachable — FetchUsage always returns a
-		// non-nil pointer; defensive guard.
-		return nil, fmt.Errorf("usage probe: nil response")
+		// coverage: unreachable — FetchUsage always returns a non-nil
+		// pointer; defensive guard.
+		return probeResult{}, fmt.Errorf("usage probe: nil response")
 	}
 	if info.Error != "" {
-		return nil, fmt.Errorf("usage probe: %s", info.Error)
+		return probeResult{}, fmt.Errorf("usage probe: %s", info.Error)
 	}
-	return info, nil
+	return probeResult{info: info}, nil
 }
 
 type scheduler struct {
@@ -250,11 +266,11 @@ func (s *scheduler) runOnce() {
 			}
 			continue
 		}
-		info, err := s.probe(j.state)
+		result, err := s.probe(j.state)
 		if err != nil {
 			fmt.Fprintf(errLog(), "ccm: probe failed for %s: %v\n", shortID(j.id), err)
 		}
-		s.pool.MarkProbe(j.id, info, err)
+		s.pool.MarkProbe(j.id, result, err)
 	}
 
 	// Compute feasibility for eligible entries; pick winner.
@@ -428,4 +444,11 @@ func (s *scheduler) runOnce() {
 	case s.tickDone <- struct{}{}:
 	default:
 	}
+}
+
+// probePassthrough is implemented in passthrough_probe.go (Task 6).
+// This stub is here only so productionProbe compiles in Task 5.
+// REMOVE THIS STUB when Task 6 lands.
+func probePassthrough(state *passthroughEntryState) (probeResult, error) {
+	return probeResult{}, fmt.Errorf("probePassthrough not yet implemented")
 }
