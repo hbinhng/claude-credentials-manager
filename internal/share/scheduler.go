@@ -445,10 +445,3 @@ func (s *scheduler) runOnce() {
 	default:
 	}
 }
-
-// probePassthrough is implemented in passthrough_probe.go (Task 6).
-// This stub is here only so productionProbe compiles in Task 5.
-// REMOVE THIS STUB when Task 6 lands.
-func probePassthrough(state *passthroughEntryState) (probeResult, error) {
-	return probeResult{}, fmt.Errorf("probePassthrough not yet implemented")
-}
