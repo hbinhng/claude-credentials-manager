@@ -126,7 +126,7 @@ func TestAcceptanceLoadBalanceRotation(t *testing.T) {
 	fc := share.NewFakeClockForTest(now)
 
 	// Drive shareCmd directly via cobra.Execute would also run capture
-	// in real time; instead we call the underlying runShareLoadBalance.
+	// in real time; instead we call the underlying share.BuildPool directly.
 	opts := share.Options{
 		BindHost:          "127.0.0.1",
 		BindPort:          0,

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -171,5 +172,60 @@ func TestProbePassthrough503OverrideZero(t *testing.T) {
 	}
 	if result.override == nil || *result.override != 0 {
 		t.Errorf("503 should set override=0; got %v", result.override)
+	}
+}
+
+func TestBootstrapPassthroughProbeAuthError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(401)
+	}))
+	defer srv.Close()
+	tk := Ticket{Scheme: "http", Host: srv.Listener.Addr().String(), Token: "tk"}
+	_, err := BootstrapPassthroughProbe(tk)
+	if err == nil || !strings.Contains(err.Error(), "rejected by upstream") {
+		t.Errorf("401 should produce 'rejected by upstream' message; got %v", err)
+	}
+}
+
+func TestBootstrapPassthroughProbeEndpointMissing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+	}))
+	defer srv.Close()
+	tk := Ticket{Scheme: "http", Host: srv.Listener.Addr().String(), Token: "tk"}
+	_, err := BootstrapPassthroughProbe(tk)
+	if err == nil || !strings.Contains(err.Error(), "endpoint missing") {
+		t.Errorf("404 should produce 'endpoint missing' message; got %v", err)
+	}
+}
+
+func TestBootstrapPassthroughProbeGenericError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+	}))
+	defer srv.Close()
+	tk := Ticket{Scheme: "http", Host: srv.Listener.Addr().String(), Token: "tk"}
+	_, err := BootstrapPassthroughProbe(tk)
+	if err == nil || !strings.Contains(err.Error(), "not a ccm share endpoint") {
+		t.Errorf("500 should produce 'not a ccm share endpoint' message; got %v", err)
+	}
+}
+
+func TestBootstrapPassthroughProbeDegraded(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(503)
+		_, _ = w.Write([]byte(`{"v":1,"feasibility_seconds":0,"activated":false,"degraded":true,"unconstrained":false}`))
+	}))
+	defer srv.Close()
+	tk := Ticket{Scheme: "http", Host: srv.Listener.Addr().String(), Token: "tk"}
+	seed, err := BootstrapPassthroughProbe(tk)
+	if err != nil {
+		t.Fatalf("503 should admit-as-degraded, not error: %v", err)
+	}
+	if !seed.Degraded {
+		t.Errorf("seed.Degraded should be true")
+	}
+	if seed.Feasibility == nil || *seed.Feasibility != 0 {
+		t.Errorf("degraded seed feasibility should be 0; got %v", seed.Feasibility)
 	}
 }

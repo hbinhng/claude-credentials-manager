@@ -49,6 +49,8 @@ func init() {
 		"model alias rule like 'claude-opus-*=gpt-5-codex' (repeatable)")
 	shareCmd.Flags().IntVar(&shareMaxConcurrency, "max-concurrency", 3,
 		"per-credential in-flight request limit (0 = no limit)")
+	shareCmd.Flags().StringArray("passthrough", nil,
+		"another ccm share's base64 ticket to include as a pool member (repeatable)")
 	shareCmd.PreRunE = requireOnline
 }
 
@@ -76,14 +78,30 @@ func validateRebalanceDuration(d time.Duration) error {
 }
 
 // validateShareArgs is the cobra Args function for `ccm share`.
-// It enforces "exactly one arg unless --load-balance" and is also
-// directly testable.
+// It enforces "at most one total (local + passthrough) unless --load-balance".
+// With --load-balance and zero explicit args/passthroughs, the pool
+// is sourced from all creds in the store (legacy implicit-pool behavior).
+// Directly testable without a running Cobra command tree.
 func validateShareArgs(cmd *cobra.Command, args []string) error {
 	loadBalance, _ := cmd.Flags().GetBool("load-balance")
+	passthrough, _ := cmd.Flags().GetStringArray("passthrough")
+	localCount := len(args)
+	ptCount := len(passthrough)
+	total := localCount + ptCount
+
+	// --load-balance with zero explicit args/passthroughs = implicit pool
+	// (all creds in store). Always valid.
 	if loadBalance {
-		return cobra.ArbitraryArgs(cmd, args)
+		return nil
 	}
-	return cobra.ExactArgs(1)(cmd, args)
+
+	if total == 0 {
+		return errors.New("requires a credential, --passthrough, or --load-balance")
+	}
+	if total > 1 {
+		return fmt.Errorf("--load-balance is required when more than one credential or passthrough is provided (got %d local + %d passthrough)", localCount, ptCount)
+	}
+	return nil
 }
 
 var shareCmd = &cobra.Command{
@@ -138,35 +156,51 @@ The share session stays alive until you press Ctrl-C.`,
 
 		pinnedToken := readPinnedTokenFromEnv()
 
-		if loadBalance {
-			if err := validateRebalanceDuration(rebalanceInterval); err != nil {
-				return err
+		passthroughTickets, _ := cmd.Flags().GetStringArray("passthrough")
+
+		var passthroughSeeds []share.PassthroughSeed
+		if len(passthroughTickets) > 0 {
+			fmt.Fprintln(os.Stderr, "ccm share: warning: passthrough adds a network hop; deeply nested or cyclic chains will degrade performance")
+			for i, raw := range passthroughTickets {
+				t, err := share.DecodeTicket(raw)
+				if err != nil {
+					return fmt.Errorf("--passthrough[%d]: %w", i, err)
+				}
+				seed, perr := share.BootstrapPassthroughProbe(t)
+				if perr != nil {
+					return fmt.Errorf("--passthrough[%d] (%s): %w", i, t.Host, perr)
+				}
+				passthroughSeeds = append(passthroughSeeds, seed)
 			}
-			return runShareLoadBalance(args, share.Options{
-				BindHost:          bindHost,
-				BindPort:          bindPort,
-				CapturePrompt:     prompt,
-				Debug:             os.Getenv("CCM_SHARE_DEBUG") == "1",
-				RebalanceInterval: rebalanceInterval,
-				PinnedAccessToken: pinnedToken,
-				AliasMap:          aliasMap,
-				MaxConcurrency:    shareMaxConcurrency,
-			})
 		}
 
-		cred, err := store.Resolve(args[0])
-		if err != nil {
-			return err
-		}
-		return runShareSingle(cred, share.Options{
+		shareOpts := share.Options{
 			BindHost:          bindHost,
 			BindPort:          bindPort,
 			CapturePrompt:     prompt,
 			Debug:             os.Getenv("CCM_SHARE_DEBUG") == "1",
+			RebalanceInterval: rebalanceInterval,
 			PinnedAccessToken: pinnedToken,
 			AliasMap:          aliasMap,
 			MaxConcurrency:    shareMaxConcurrency,
-		})
+		}
+
+		// Single-cred fast path: one local cred, no passthrough, no LB.
+		if !loadBalance && len(passthroughSeeds) == 0 && len(args) == 1 {
+			cred, err := store.Resolve(args[0])
+			if err != nil {
+				return err
+			}
+			return runShareSingle(cred, shareOpts)
+		}
+
+		// Multi-or-passthrough path.
+		if loadBalance {
+			if err := validateRebalanceDuration(rebalanceInterval); err != nil {
+				return err
+			}
+		}
+		return runShareMixed(args, passthroughSeeds, shareOpts)
 	},
 }
 
@@ -194,13 +228,20 @@ func runShareSingle(cred *store.Credential, opts share.Options) error {
 	return runSessionLoop(sess, cred)
 }
 
-func runShareLoadBalance(args []string, opts share.Options) error {
-	args = splitCommaArgs(args)
-	pool, initialCred, err := share.BuildPool(args, opts.CapturePrompt, false)
+// runShareMixed dispatches to share.BuildPoolFromMixed (supports
+// local creds + passthrough seeds + any combination) and starts the
+// session.
+func runShareMixed(localArgs []string, seeds []share.PassthroughSeed, opts share.Options) error {
+	localArgs = splitCommaArgs(localArgs)
+	pool, initialCred, initialEntry, err := share.BuildPoolFromMixed(localArgs, seeds, opts.CapturePrompt, false)
 	if err != nil {
 		return err
 	}
 	opts.Pool = pool
+	if initialCred == nil {
+		opts.InitialEntryID = initialEntry.State().CredID()
+		opts.InitialEntryName = initialEntry.State().CredName()
+	}
 	sess, err := share.StartSession(initialCred, opts)
 	if err != nil {
 		return wrapPinnedTokenErr(err)
