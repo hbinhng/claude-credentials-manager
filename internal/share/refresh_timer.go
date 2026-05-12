@@ -60,6 +60,9 @@ func nextRefreshDelay(cred *store.Credential, now time.Time, jitter func() time.
 // done is closed.
 func runRefreshTimer(state poolEntryState, c clock, jitter func() time.Duration, done <-chan struct{}) {
 	for {
+		// passthrough-safe: callers (StartSession + StartPoolBackground) skip
+		// runRefreshTimer for passthrough entries, so state.credPtr() here is
+		// always non-nil.
 		delay := nextRefreshDelay(state.credPtr(), c.Now(), jitter)
 		timer := c.NewTimer(delay)
 		select {
