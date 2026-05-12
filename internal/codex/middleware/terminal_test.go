@@ -1600,3 +1600,47 @@ func TestTerminal_UsageTee_NotFiredOnOverflow(t *testing.T) {
 	}
 }
 
+// TestTerminal_ContextLengthExceeded_Returns400 covers the trace-17b2
+// shape: response.created + response.in_progress + top-level error
+// {code:context_length_exceeded} + response.failed. Pre-fix the
+// translator emitted message_start + error + message_delta + message_stop
+// downstream, which Claude Code parsed as a malformed HTTP 200. After
+// classify routes this to overflow → HTTP 400 prompt-too-long instead.
+func TestTerminal_ContextLengthExceeded_Returns400(t *testing.T) {
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"r1\"}}\n\n")
+		io.WriteString(w, "data: {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"code\":\"context_length_exceeded\",\"message\":\"Your input exceeds the context window of this model.\",\"param\":\"input\"},\"sequence_number\":2}\n\n")
+		io.WriteString(w, "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"r1\",\"status\":\"failed\",\"error\":{\"code\":\"context_length_exceeded\",\"message\":\"Your input exceeds the context window of this model.\"},\"usage\":null}}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	cred := minimalCred("tok")
+	term := codexmw.NewTerminal(codexmw.TerminalOpts{
+		Cred:        cred,
+		Transport:   newTransport(t),
+		Bundle:      identity.New(cred),
+		UpstreamURL: upstream.URL,
+	})
+
+	body := bytes.NewBufferString(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`)
+	req := httptest.NewRequest("POST", "/v1/messages", body)
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-opus-*=gpt-5-codex", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 (context_length_exceeded must translate to overflow)", rr.Code)
+	}
+	if ct := rr.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	if !strings.Contains(rr.Body.String(), "prompt is too long") {
+		t.Errorf("body missing prompt-too-long substring:\n%s", rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"type":"invalid_request_error"`) {
+		t.Errorf("body missing invalid_request_error type:\n%s", rr.Body.String())
+	}
+}
+
