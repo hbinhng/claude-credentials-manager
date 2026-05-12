@@ -2,7 +2,6 @@ package share
 
 import (
 	"testing"
-	"time"
 )
 
 func TestPassthroughEntryStateBasics(t *testing.T) {
@@ -47,5 +46,4 @@ func TestPassthroughEntryStateIDStability(t *testing.T) {
 	if len(id1) != len("pt:")+8 {
 		t.Errorf("synthetic ID should be 'pt:' + 8 chars, got %q (len=%d)", id1, len(id1))
 	}
-	_ = time.Now
 }
