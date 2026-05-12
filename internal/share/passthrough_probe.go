@@ -44,6 +44,8 @@ var bootstrapProbeTimeout = 10 * time.Second
 var (
 	errUnauthorizedUpstream = errors.New("ticket bearer rejected by upstream (HTTP 401)")
 	errEndpointMissing      = errors.New("endpoint missing — upstream may be older ccm or not a ccm share (HTTP 404)")
+	errVersionMismatch      = errors.New("usage-API version mismatch")
+	errMalformedBody        = errors.New("unrecognized response body")
 )
 
 // fetchPassthroughUsage performs the GET /ccm-share/usage call
@@ -89,10 +91,15 @@ func fetchPassthroughUsage(t Ticket) (passthroughUsage, error) {
 
 	var b usageResponseBody
 	if err := json.Unmarshal(body, &b); err != nil {
-		return passthroughUsage{}, fmt.Errorf("parse body: %w", err)
+		return passthroughUsage{}, fmt.Errorf("%w: %v", errMalformedBody, err)
+	}
+	if b.V == 0 {
+		// V is required; absent or zero means upstream isn't a ccm share
+		// (or is a pre-v1 build that doesn't advertise the field).
+		return passthroughUsage{}, fmt.Errorf("%w: missing v field", errMalformedBody)
 	}
 	if b.V != 1 {
-		return passthroughUsage{}, fmt.Errorf("unsupported usage-API version (got v=%d, want v=1)", b.V)
+		return passthroughUsage{}, fmt.Errorf("%w (got v=%d, want v=1)", errVersionMismatch, b.V)
 	}
 
 	return passthroughUsage{
@@ -122,13 +129,14 @@ func setFetchPassthroughUsage(fn func(Ticket) (passthroughUsage, error)) func() 
 // or a fatal error whose message identifies the failure mode per
 // spec §6.
 //
-// Outcome mapping:
+// Outcome mapping (operator-facing messages match spec §3/§6 literals):
 //   - 200 + v=1 + parseable           → Seed{Feasibility, Unconstrained, Degraded=false}
 //   - 503 + v=1 + parseable           → Seed{Feasibility:&0, Degraded=true} + stderr warning
 //   - 401                              → error "ticket bearer rejected by upstream"
 //   - 404                              → error "endpoint missing — upstream may be older ccm or not a ccm share"
-//   - any other outcome (transport,
-//     malformed body, missing v, etc.) → error "not a ccm share endpoint: <reason>"
+//   - 200/503 with v != 1              → error "unsupported usage-API version (got v=<N>, want v=1)"
+//   - malformed body / missing v       → error "unrecognized response from /ccm-share/usage"
+//   - transport / other                → error "not a ccm share endpoint: <reason>"
 func BootstrapPassthroughProbe(t Ticket) (PassthroughSeed, error) {
 	u, err := fetchPassthroughUsageFn(t)
 	if err != nil {
@@ -137,6 +145,11 @@ func BootstrapPassthroughProbe(t Ticket) (PassthroughSeed, error) {
 			return PassthroughSeed{}, fmt.Errorf("ticket bearer rejected by upstream")
 		case errors.Is(err, errEndpointMissing):
 			return PassthroughSeed{}, fmt.Errorf("endpoint missing — upstream may be older ccm or not a ccm share")
+		case errors.Is(err, errVersionMismatch):
+			// Surface the inner "(got v=N, want v=1)" details to the operator.
+			return PassthroughSeed{}, fmt.Errorf("unsupported %v", err)
+		case errors.Is(err, errMalformedBody):
+			return PassthroughSeed{}, fmt.Errorf("unrecognized response from /ccm-share/usage")
 		default:
 			return PassthroughSeed{}, fmt.Errorf("not a ccm share endpoint: %w", err)
 		}

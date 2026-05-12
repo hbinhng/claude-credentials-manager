@@ -168,6 +168,13 @@ type ctxKey int
 const (
 	ctxKeyRealToken ctxKey = iota
 	ctxKeyIsPassthrough
+	// ctxKeyView carries the single per-request activatedView snapshot
+	// populated in handleServe and consumed in director + ModifyResponse.
+	// Eliminates the rotation-race window where director and
+	// ModifyResponse would otherwise call pool.activatedView()
+	// independently and could observe different snapshots if Promote
+	// fires between the two reads.
+	ctxKeyView
 )
 
 var upstreamBaseOverride string
@@ -656,15 +663,20 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isPassthrough := false
+	// Snapshot the activated entry ONCE per request and thread it
+	// through context. The director and ModifyResponse both read this
+	// same snapshot rather than calling pool.activatedView() again,
+	// closing the rotation-race window where a Promote() between two
+	// reads could cause the request to be routed under one view but
+	// have its response classified under another.
+	var view activatedView
 	if p.pool != nil {
-		if view := p.pool.activatedView(); view.ok {
-			isPassthrough = view.isPassthrough
-		}
+		view = p.pool.activatedView()
 	}
 
 	ctx := context.WithValue(r.Context(), ctxKeyRealToken, realToken)
-	ctx = context.WithValue(ctx, ctxKeyIsPassthrough, isPassthrough)
+	ctx = context.WithValue(ctx, ctxKeyIsPassthrough, view.ok && view.isPassthrough)
+	ctx = context.WithValue(ctx, ctxKeyView, view)
 	p.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -673,9 +685,11 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 // only), inject the real OAuth bearer, and append the Via marker for
 // passthrough hops.
 func (p *Proxy) director(req *http.Request) {
-	// Determine routing target. In pool mode we read a consistent
-	// snapshot of the activated entry; in single-cred mode we fall
-	// back to p.upstream and p.captured.
+	// Determine routing target. In pool mode the snapshot was captured
+	// by handleServe and threaded through ctxKeyView, so director and
+	// ModifyResponse see the same activated entry even if Promote()
+	// fires between them. In single-cred mode we fall back to
+	// p.upstream and p.captured.
 	var (
 		targetScheme  = p.upstream.Scheme
 		targetHost    = p.upstream.Host
@@ -683,7 +697,7 @@ func (p *Proxy) director(req *http.Request) {
 		isPassthrough bool
 	)
 	if p.pool != nil {
-		view := p.pool.activatedView()
+		view, _ := req.Context().Value(ctxKeyView).(activatedView)
 		if view.ok {
 			captured = view.captured
 			isPassthrough = view.isPassthrough

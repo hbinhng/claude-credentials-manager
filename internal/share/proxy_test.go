@@ -115,6 +115,7 @@ func TestDirectorRoutesPassthroughToTicketHost(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", "/v1/messages", nil)
 	ctx := context.WithValue(req.Context(), ctxKeyRealToken, "tk")
+	ctx = context.WithValue(ctx, ctxKeyView, pool.activatedView())
 	req = req.WithContext(ctx)
 
 	p.director(req)
@@ -149,6 +150,7 @@ func TestDirectorRoutesLocalToAnthropic(t *testing.T) {
 
 	req, _ := http.NewRequest("POST", "/v1/messages", nil)
 	ctx := context.WithValue(req.Context(), ctxKeyRealToken, "tk-local")
+	ctx = context.WithValue(ctx, ctxKeyView, pool.activatedView())
 	req = req.WithContext(ctx)
 
 	p.director(req)
