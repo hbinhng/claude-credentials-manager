@@ -76,6 +76,25 @@ type poolEntry struct {
 	feasibilityOverride *float64
 }
 
+// State exposes the underlying poolEntryState for callers in the cmd
+// package that need credID/credName accessors. Returned by the
+// *poolEntry pointer threaded back from BuildPoolFromMixed.
+func (e *poolEntry) State() PoolEntryStateAccessor {
+	return poolEntryStateAccessor{state: e.state}
+}
+
+// PoolEntryStateAccessor is the exported read-only view of a pool
+// entry's state metadata.
+type PoolEntryStateAccessor interface {
+	CredID() string
+	CredName() string
+}
+
+type poolEntryStateAccessor struct{ state poolEntryState }
+
+func (p poolEntryStateAccessor) CredID() string   { return p.state.credID() }
+func (p poolEntryStateAccessor) CredName() string { return p.state.credName() }
+
 // credPool owns the pool of credentials and their per-session
 // status. It implements tokenSource — Proxy.tokens points at it in
 // load-balance mode.

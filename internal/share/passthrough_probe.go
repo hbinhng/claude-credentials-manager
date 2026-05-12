@@ -117,6 +117,44 @@ func setFetchPassthroughUsage(fn func(Ticket) (passthroughUsage, error)) func() 
 	return func() { fetchPassthroughUsageFn = orig }
 }
 
+// BootstrapPassthroughProbe is the cmd-time validation gate for a
+// passthrough ticket. Returns a seed ready for BuildPoolFromMixed,
+// or a fatal error whose message identifies the failure mode per
+// spec §6.
+//
+// Outcome mapping:
+//   - 200 + v=1 + parseable           → Seed{Feasibility, Unconstrained, Degraded=false}
+//   - 503 + v=1 + parseable           → Seed{Feasibility:&0, Degraded=true} + stderr warning
+//   - 401                              → error "ticket bearer rejected by upstream"
+//   - 404                              → error "endpoint missing — upstream may be older ccm or not a ccm share"
+//   - any other outcome (transport,
+//     malformed body, missing v, etc.) → error "not a ccm share endpoint: <reason>"
+func BootstrapPassthroughProbe(t Ticket) (PassthroughSeed, error) {
+	u, err := fetchPassthroughUsageFn(t)
+	if err != nil {
+		switch {
+		case errors.Is(err, errUnauthorizedUpstream):
+			return PassthroughSeed{}, fmt.Errorf("ticket bearer rejected by upstream")
+		case errors.Is(err, errEndpointMissing):
+			return PassthroughSeed{}, fmt.Errorf("endpoint missing — upstream may be older ccm or not a ccm share")
+		default:
+			return PassthroughSeed{}, fmt.Errorf("not a ccm share endpoint: %w", err)
+		}
+	}
+	seed := PassthroughSeed{
+		Ticket:        t,
+		Feasibility:   u.Feasibility,
+		Unconstrained: u.Unconstrained,
+	}
+	if u.HTTPStatus == 503 {
+		seed.Degraded = true
+		zero := 0.0
+		seed.Feasibility = &zero
+		fmt.Fprintf(errLog(), "ccm: passthrough %s admitted as degraded (upstream reported 503)\n", t.Host)
+	}
+	return seed, nil
+}
+
 // probePassthrough is the scheduler-side wrapper. Converts the
 // upstream usage response into a probeResult{override: ...}.
 //

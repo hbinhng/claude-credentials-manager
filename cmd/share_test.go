@@ -7,6 +7,7 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
+	"github.com/spf13/cobra"
 )
 
 // TestShareCommand_ModelAliasConflictRejected verifies that conflicting
@@ -61,3 +62,33 @@ func (f *fakeSession) Stop() error            { return nil }
 func (f *fakeSession) Done() <-chan struct{}  { return f.done }
 func (f *fakeSession) Err() error             { return nil }
 func (f *fakeSession) Pool() share.PoolReader { return nil }
+
+func TestValidateShareArgsPassthroughCombinations(t *testing.T) {
+	type tc struct {
+		name        string
+		passthrough []string
+		loadBalance bool
+		args        []string
+		wantErr     bool
+	}
+	cases := []tc{
+		{"single passthrough no LB", []string{"T1"}, false, nil, false},
+		{"single cred no LB", nil, false, []string{"creda"}, false},
+		{"two passthrough no LB", []string{"T1", "T2"}, false, nil, true},
+		{"two passthrough with LB", []string{"T1", "T2"}, true, nil, false},
+		{"cred + passthrough no LB", []string{"T1"}, false, []string{"creda"}, true},
+		{"cred + passthrough with LB", []string{"T1"}, true, []string{"creda"}, false},
+		{"two creds no LB", nil, false, []string{"creda", "credb"}, true},
+		{"two creds with LB", nil, true, []string{"creda", "credb"}, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cmd := &cobra.Command{Use: "share"}
+			cmd.Flags().StringArray("passthrough", c.passthrough, "")
+			cmd.Flags().Bool("load-balance", c.loadBalance, "")
+			if err := validateShareArgs(cmd, c.args); (err != nil) != c.wantErr {
+				t.Errorf("validateShareArgs(%v): err=%v wantErr=%v", c, err, c.wantErr)
+			}
+		})
+	}
+}
