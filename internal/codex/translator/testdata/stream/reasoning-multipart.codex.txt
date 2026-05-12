@@ -1,0 +1,23 @@
+data: {"type":"response.created","response":{"id":"resp_mp"}}
+
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_mp","summary":[]}}
+
+data: {"type":"response.reasoning_summary_part.added","item_id":"rs_mp","output_index":0,"part":{"type":"summary_text","text":""},"sequence_number":1,"summary_index":0}
+
+data: {"type":"response.reasoning_summary_text.delta","delta":"first part","item_id":"rs_mp","output_index":0,"sequence_number":2,"summary_index":0}
+
+data: {"type":"response.reasoning_summary_text.done","item_id":"rs_mp","output_index":0,"sequence_number":3,"summary_index":0,"text":"first part"}
+
+data: {"type":"response.reasoning_summary_part.done","item_id":"rs_mp","output_index":0,"part":{"type":"summary_text","text":"first part"},"sequence_number":4,"summary_index":0}
+
+data: {"type":"response.reasoning_summary_part.added","item_id":"rs_mp","output_index":0,"part":{"type":"summary_text","text":""},"sequence_number":5,"summary_index":1}
+
+data: {"type":"response.reasoning_summary_text.delta","delta":"second part","item_id":"rs_mp","output_index":0,"sequence_number":6,"summary_index":1}
+
+data: {"type":"response.reasoning_summary_text.done","item_id":"rs_mp","output_index":0,"sequence_number":7,"summary_index":1,"text":"second part"}
+
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_mp","type":"reasoning"},"sequence_number":8}
+
+data: {"type":"response.completed","status":"completed","response":{"id":"resp_mp","usage":{"input_tokens":10,"output_tokens":2}}}
+
+data: [DONE]

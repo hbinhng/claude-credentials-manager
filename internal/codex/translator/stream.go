@@ -355,10 +355,25 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		// as "API returned an empty or malformed response (HTTP 200)".
 		return t.closeBlock()
 
+	case "response.reasoning_summary_part.added":
+		// chatgpt.com emits a fresh summary_part.added for every
+		// "paragraph" of thought inside one reasoning output_item.
+		// The first part is implicitly opened by the parent
+		// output_item.added; subsequent parts arrive AFTER the
+		// previous part's reasoning_summary_text.done closed the
+		// block, so we must open a new reasoning block here or the
+		// next reasoning_summary_text.delta gets emitted with
+		// index=-1 (CC then rejects with "Content block not found").
+		// When a block is still open (the first-part case) this is
+		// a no-op, preserving the existing single-part behavior.
+		if t.currentBlockIdx >= 0 {
+			return nil
+		}
+		return t.openBlock(codexEvent{Item: &codexOutputItem{Type: "reasoning"}})
+
 	// Dropped event types:
 	// response.content_part.added           — parent output_item.added already opened the block
 	// response.content_part.done            — closed by inner _text.done / _arguments.done; output_item.done is the safety net
-	// response.reasoning_summary_part.added — parent output_item.added already opened the block
 	}
 	return nil
 }
