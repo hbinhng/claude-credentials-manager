@@ -167,6 +167,7 @@ type ctxKey int
 
 const (
 	ctxKeyRealToken ctxKey = iota
+	ctxKeyIsPassthrough
 )
 
 var upstreamBaseOverride string
@@ -477,13 +478,18 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 	// gated on `pool != nil`.
 	existingMR := p.rp.ModifyResponse
 	p.rp.ModifyResponse = func(r *http.Response) error {
+		isPassthrough := false
+		if v, ok := r.Request.Context().Value(ctxKeyIsPassthrough).(bool); ok {
+			isPassthrough = v
+		}
+
 		if pool != nil {
 			if r.StatusCode == http.StatusUnauthorized {
 				// SignalActivatedFailed emits the formatted log line
 				// (with name, id8, and N/2 counter) per the spec; do
 				// not log here too.
 				pool.SignalActivatedFailed()
-			} else if r.StatusCode >= 200 && r.StatusCode < 300 {
+			} else if !isPassthrough && r.StatusCode >= 200 && r.StatusCode < 300 {
 				if info := parseRatelimitHeadersFn(r.Header); info != nil {
 					pool.UpdateActiveFromHeaders(info)
 					if p.debug {
@@ -494,8 +500,10 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 			}
 		}
 
-		// Usage tee runs in all modes (single-cred or pool).
-		if r.StatusCode >= 200 && r.StatusCode < 300 {
+		// Usage tee runs for local-cred responses only. Passthrough
+		// responses already had their usage accounted at the upstream's
+		// tee; double-counting would inflate our local-cred dashboards.
+		if !isPassthrough && r.StatusCode >= 200 && r.StatusCode < 300 {
 			installUsageTee(r)
 		}
 
@@ -648,7 +656,15 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	isPassthrough := false
+	if p.pool != nil {
+		if view := p.pool.activatedView(); view.ok {
+			isPassthrough = view.isPassthrough
+		}
+	}
+
 	ctx := context.WithValue(r.Context(), ctxKeyRealToken, realToken)
+	ctx = context.WithValue(ctx, ctxKeyIsPassthrough, isPassthrough)
 	p.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
