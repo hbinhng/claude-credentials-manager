@@ -300,10 +300,21 @@ func (s *scheduler) runOnce() {
 			}
 			eligibleEntry = fail < 2
 		}
-		if !eligibleEntry || e.lastUsage == nil {
+		if !eligibleEntry {
 			continue
 		}
-		f := computeFeasibility(e.lastUsage, now)
+		// Compute feasibility: override wins when set (passthrough path),
+		// otherwise derive from cached UsageInfo. Entries with neither
+		// signal are skipped — no signal = not rankable.
+		var f float64
+		switch {
+		case e.feasibilityOverride != nil:
+			f = *e.feasibilityOverride
+		case e.lastUsage != nil:
+			f = computeFeasibility(e.lastUsage, now)
+		default:
+			continue
+		}
 		e.lastFeasibility = f
 		eligible = append(eligible, cand{id: id, feasibility: f})
 	}
