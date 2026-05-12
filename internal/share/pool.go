@@ -68,6 +68,12 @@ type poolEntry struct {
 	lastUsageAt     time.Time
 	lastFeasibility float64
 	captured        http.Header // headers captured at last promotion (load-balance mode)
+
+	// feasibilityOverride, when non-nil, bypasses computeFeasibility.
+	// Used by passthrough entries whose feasibility comes from the
+	// upstream share's /ccm-share/usage response. Nil for local-cred
+	// entries.
+	feasibilityOverride *float64
 }
 
 // credPool owns the pool of credentials and their per-session
