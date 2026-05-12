@@ -9,7 +9,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share"
+	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
 // TestSharePassthroughSoloEndToEnd verifies that a solo --passthrough
@@ -149,5 +151,84 @@ func TestSharePassthroughTwoUpstreamsInitialActivated(t *testing.T) {
 	// B has higher feasibility (3600 > 600), so it must be the initial activated.
 	if !strings.Contains(entry.State().CredName(), hostB) {
 		t.Errorf("initial activated should be B (host %s); got credName=%s", hostB, entry.State().CredName())
+	}
+}
+
+// TestSharePassthroughMixedPool verifies a pool with one local cred +
+// one passthrough seed admits both, captures from the local cred (the
+// only one that needs identity headers), and selects the higher-
+// feasibility entry as the initial activated.
+func TestSharePassthroughMixedPool(t *testing.T) {
+	setupFakeHome(t)
+
+	// Seed a local cred in the fake store.
+	localCred := &store.Credential{
+		ID:   "11111111-1111-1111-1111-111111111111",
+		Name: "local-test",
+		ClaudeAiOauth: store.OAuthTokens{
+			AccessToken:  "at",
+			RefreshToken: "rt",
+			ExpiresAt:    time.Now().Add(time.Hour).UnixMilli(),
+		},
+		CreatedAt:       "2026-05-12T00:00:00Z",
+		LastRefreshedAt: "2026-05-12T00:00:00Z",
+	}
+	if err := store.Save(localCred); err != nil {
+		t.Fatalf("store.Save: %v", err)
+	}
+
+	// Stub oauth.FetchUsageFn so Pass B (probe local cred usage) doesn't
+	// hit Anthropic. Return moderate feasibility (well below the
+	// passthrough's 7200s).
+	origFetch := oauth.FetchUsageFn
+	oauth.FetchUsageFn = func(token string) *oauth.UsageInfo {
+		return &oauth.UsageInfo{Quotas: []oauth.Quota{
+			{Name: "5h", Used: 50.0, ResetsAt: time.Now().Add(2 * time.Hour).Format(time.RFC3339)},
+		}}
+	}
+	defer func() { oauth.FetchUsageFn = origFetch }()
+
+	// Stub captureCredFn so we don't need claude on PATH.
+	defer share.SetCaptureCredFnForTest(func(c *store.Credential, prompt string) (http.Header, error) {
+		return http.Header{"X-Test-Captured": {"yes"}}, nil
+	})()
+
+	// Fake upstream serving /ccm-share/usage with high feasibility.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ccm-share/usage" {
+			w.WriteHeader(404)
+			return
+		}
+		w.WriteHeader(200)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"v":                   1,
+			"feasibility_seconds": 7200.0,
+			"activated":           true,
+			"degraded":            false,
+			"unconstrained":       false,
+		})
+	}))
+	defer upstream.Close()
+	host := strings.TrimPrefix(upstream.URL, "http://")
+
+	seed, err := share.BootstrapPassthroughProbe(share.Ticket{Scheme: "http", Host: host, Token: "tk"})
+	if err != nil {
+		t.Fatalf("bootstrap probe: %v", err)
+	}
+
+	pool, initialCred, entry, err := share.BuildPoolFromMixed([]string{localCred.ID}, []share.PassthroughSeed{seed}, "prompt", false)
+	if err != nil {
+		t.Fatalf("BuildPoolFromMixed: %v", err)
+	}
+	if len(pool.SnapshotLines()) != 2 {
+		t.Errorf("pool size = %d, want 2 (local + passthrough)", len(pool.SnapshotLines()))
+	}
+	// Passthrough has feasibility 7200; local cred's feasibility ≈ 2h headroom = much smaller.
+	// Passthrough wins → initial activated should have "pt:" prefix.
+	if !strings.HasPrefix(entry.State().CredID(), "pt:") {
+		t.Errorf("initial activated should be the passthrough; got credID=%s", entry.State().CredID())
+	}
+	if initialCred != nil {
+		t.Errorf("initialCred should be nil when passthrough wins; got %v", initialCred.Name)
 	}
 }
