@@ -156,6 +156,11 @@ type codexEvent struct {
 	Status   string             `json:"status,omitempty"` // for response.completed
 	Index    int                `json:"output_index,omitempty"`
 	Response *codexResponseInfo `json:"response,omitempty"` // for response.created and response.completed
+	// Error is populated on top-level `{"type":"error",...}` events
+	// — distinct from response.failed where the error nests under
+	// Response.Error. Both shapes appear in real traces from
+	// chatgpt.com for the same underlying condition.
+	Error *codexResponseError `json:"error,omitempty"`
 }
 
 type codexResponseInfo struct {

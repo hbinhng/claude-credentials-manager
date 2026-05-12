@@ -353,6 +353,107 @@ func TestClassifyStream_ContextCancel(t *testing.T) {
 	}
 }
 
+// TestClassifyStream_Overflow_TopLevelErrorContextLength covers the
+// upstream signal where chatgpt.com emits a top-level `error` event
+// (NOT nested in response.failed) with code=context_length_exceeded.
+// Real trace 019e17b2: the error event arrives at sequence_number=2,
+// followed by a response.failed with the same code. Either event
+// should classify as overflow.
+func TestClassifyStream_Overflow_TopLevelErrorContextLength(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.in_progress","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"error","error":{"type":"invalid_request_error","code":"context_length_exceeded","message":"Your input exceeds the context window of this model. Please adjust your input and try again.","param":"input"},"sequence_number":2}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if !dec.Overflow {
+		t.Errorf("Overflow = false, want true (context_length_exceeded is overflow)")
+	}
+}
+
+// TestClassifyStream_Overflow_ResponseFailedContextLength covers the
+// response.failed shape with error.code=context_length_exceeded. This
+// is the second decisive event in the real-trace 019e17b2 sequence.
+// Usage is null on this shape (the request was rejected pre-inference)
+// so InputTokens / Limit fall back to zero.
+func TestClassifyStream_Overflow_ResponseFailedContextLength(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"r1","status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."},"usage":null}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if !dec.Overflow {
+		t.Errorf("Overflow = false, want true (response.failed{context_length_exceeded} is overflow)")
+	}
+	if dec.InputTokens != 0 || dec.Limit != 0 {
+		t.Errorf("got InputTokens=%d Limit=%d, want 0/0 (usage absent)", dec.InputTokens, dec.Limit)
+	}
+}
+
+// TestClassifyStream_NotOverflow_CompletedFirst covers the (unusual
+// but valid) case where response.completed arrives as the first
+// non-trivial event — the classifier must return non-overflow without
+// having seen any actionable delta. Defensive coverage; in production
+// chatgpt.com always emits output before completed.
+func TestClassifyStream_NotOverflow_CompletedFirst(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"response.completed","response":{"id":"r1","usage":{"input_tokens":5,"output_tokens":0}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (completed terminates without overflow)")
+	}
+}
+
+// TestClassifyStream_Overflow_ResponseFailedContextLengthWithUsage
+// covers the defensive branch where response.failed surfaces a usage
+// block. In real traces usage is null on this shape, but the code
+// path handles non-null usage uniformly with the incomplete branch.
+func TestClassifyStream_Overflow_ResponseFailedContextLengthWithUsage(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.failed","response":{"id":"r1","error":{"code":"context_length_exceeded","message":"too long"},"usage":{"input_tokens":300000,"output_tokens":0}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if !dec.Overflow {
+		t.Fatalf("Overflow = false, want true")
+	}
+	if dec.InputTokens != 300000 {
+		t.Errorf("InputTokens = %d, want 300000", dec.InputTokens)
+	}
+	if dec.Limit != 300000 {
+		t.Errorf("Limit = %d, want 300000 (input+output)", dec.Limit)
+	}
+}
+
+// TestClassifyStream_NotOverflow_TopLevelErrorUnknownCode confirms that
+// a top-level error event with an unrecognized error code is NOT
+// classified as overflow — we continue reading so the stream can
+// surface the error via the normal response.failed path. Only
+// context_length_exceeded triggers the 400 short-circuit.
+func TestClassifyStream_NotOverflow_TopLevelErrorUnknownCode(t *testing.T) {
+	input := strings.Join([]string{
+		`data: {"type":"response.created","response":{"id":"r1"}}`,
+		``,
+		`data: {"type":"error","error":{"type":"server_error","code":"rate_limited","message":"slow down"},"sequence_number":2}`,
+		``,
+		`data: {"type":"response.failed","response":{"id":"r1","error":{"code":"rate_limited","message":"slow down"}}}`,
+		``,
+	}, "\n")
+	dec, _, _ := runClassify(t, input)
+	if dec.Overflow {
+		t.Errorf("Overflow = true, want false (rate_limited is not a context error)")
+	}
+}
+
 func TestClassifyStream_Fixture_OverflowEmptyReasoning(t *testing.T) {
 	data, err := os.ReadFile("testdata/classify/overflow-empty-reasoning.codex.txt")
 	if err != nil {
@@ -370,5 +471,29 @@ func TestClassifyStream_Fixture_OverflowEmptyReasoning(t *testing.T) {
 	}
 	if dec.Limit != 271552 {
 		t.Errorf("Limit = %d, want 271552 (271521 + 31)", dec.Limit)
+	}
+}
+
+// TestClassifyStream_Fixture_OverflowContextLength locks in the
+// context_length_exceeded path against a literal upstream sequence
+// captured from real trace 019e17b2 (codex.txt). Same condition as
+// the empty-reasoning case but signalled via top-level `error` +
+// response.failed instead of response.incomplete{max_output_tokens}.
+func TestClassifyStream_Fixture_OverflowContextLength(t *testing.T) {
+	data, err := os.ReadFile("testdata/classify/overflow-context-length.codex.txt")
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	dec, _, _, err := translator.ClassifyStream(context.Background(), bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("ClassifyStream: %v", err)
+	}
+	if !dec.Overflow {
+		t.Errorf("Overflow = false on real-trace fixture, want true")
+	}
+	// Top-level `error` arrives before response.failed in this trace,
+	// so the classifier short-circuits there with no usage info.
+	if dec.InputTokens != 0 || dec.Limit != 0 {
+		t.Errorf("got InputTokens=%d Limit=%d, want 0/0 (top-level error has no usage)", dec.InputTokens, dec.Limit)
 	}
 }
