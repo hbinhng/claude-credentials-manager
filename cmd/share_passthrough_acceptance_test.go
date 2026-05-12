@@ -95,3 +95,59 @@ func TestSharePassthroughSoloEndToEnd(t *testing.T) {
 		t.Errorf("consumer ticket bearer must be different from upstream's; both = %q", consumerTicket.Token)
 	}
 }
+
+// TestSharePassthroughTwoUpstreamsInitialActivated verifies that a
+// two-passthrough pool (both healthy) selects the higher-feasibility
+// upstream as the initial activated entry.
+func TestSharePassthroughTwoUpstreamsInitialActivated(t *testing.T) {
+	setupFakeHome(t)
+
+	mkServer := func(feas float64) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/ccm-share/usage" {
+				w.WriteHeader(404)
+				return
+			}
+			w.WriteHeader(200)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"v":                   1,
+				"feasibility_seconds": feas,
+				"activated":           true,
+				"degraded":            false,
+				"unconstrained":       false,
+			})
+		}))
+	}
+
+	srvA := mkServer(600.0)
+	defer srvA.Close()
+	srvB := mkServer(3600.0)
+	defer srvB.Close()
+
+	hostA := strings.TrimPrefix(srvA.URL, "http://")
+	hostB := strings.TrimPrefix(srvB.URL, "http://")
+
+	seedA, err := share.BootstrapPassthroughProbe(share.Ticket{Scheme: "http", Host: hostA, Token: "a"})
+	if err != nil {
+		t.Fatalf("seed A: %v", err)
+	}
+	seedB, err := share.BootstrapPassthroughProbe(share.Ticket{Scheme: "http", Host: hostB, Token: "b"})
+	if err != nil {
+		t.Fatalf("seed B: %v", err)
+	}
+
+	pool, initialCred, entry, err := share.BuildPoolFromMixed(nil, []share.PassthroughSeed{seedA, seedB}, "", false)
+	if err != nil {
+		t.Fatalf("BuildPoolFromMixed: %v", err)
+	}
+	if initialCred != nil {
+		t.Errorf("passthrough-only: initialCred should be nil; got %v", initialCred)
+	}
+	if len(pool.SnapshotLines()) != 2 {
+		t.Errorf("pool size = %d, want 2", len(pool.SnapshotLines()))
+	}
+	// B has higher feasibility (3600 > 600), so it must be the initial activated.
+	if !strings.Contains(entry.State().CredName(), hostB) {
+		t.Errorf("initial activated should be B (host %s); got credName=%s", hostB, entry.State().CredName())
+	}
+}
