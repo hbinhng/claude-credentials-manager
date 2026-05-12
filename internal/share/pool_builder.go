@@ -3,7 +3,7 @@ package share
 import (
 	"errors"
 	"fmt"
-	"net/http"
+	"math"
 	"os"
 	"sort"
 	"time"
@@ -12,37 +12,48 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
-// BuildPool runs the startup filter for --load-balance mode and
-// returns a credPool plus the *store.Credential that should be
-// passed to the capture phase (the initial activated entry).
-//
-// args is the list of resolver inputs (ID, prefix, or name) from
-// the CLI; an empty slice means "every credential in the store".
-// Whitespace-equivalent duplicates are deduped after resolution.
-//
-// Capture model: BuildPool runs captureCredFn on the highest-
-// feasibility admitted cred. On capture success, that cred becomes
-// the initial activated; remaining admitted creds enter the pool as
-// candidates with captured=nil (the scheduler captures them at
-// promotion time). On capture failure, BuildPool falls through to
-// the next-best cred (implicit pool) or returns a fatal error
-// (explicit pool).
-//
-// When skipCapture is true (launch --load-balance mode), the capture
-// loop short-circuits: the highest-feasibility admitted cred becomes
-// the initial activated with captured=nil, and the remaining
-// admitted creds enter as candidates with captured=nil. The spawned
-// claude provides its own outbound headers via LocalProxy, so per-
-// cred capture is unnecessary.
+// PassthroughSeed carries one validated passthrough's bootstrap-probe
+// result into BuildPoolFromMixed. The cmd layer issues the probe and
+// constructs these; pool_builder does not perform HTTP.
+type PassthroughSeed struct {
+	Ticket        Ticket
+	Feasibility   *float64 // nil iff Unconstrained
+	Unconstrained bool
+	Degraded      bool // probe returned 503
+}
+
+// BuildPool is the legacy entry point that callers used before
+// passthrough support. Equivalent to BuildPoolFromMixed with no
+// passthrough seeds.
 func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *store.Credential, error) {
-	resolved, err := resolvePoolArgs(args)
+	pool, initialCred, _, err := BuildPoolFromMixed(args, nil, prompt, skipCapture)
+	return pool, initialCred, err
+}
+
+// BuildPoolFromMixed builds a credPool from a mix of local-cred
+// resolver args and pre-validated passthrough seeds. localArgs is
+// the resolver input list (id, prefix, or name); empty slice means
+// "no local creds". passthroughs is the slice produced by the
+// cmd-layer bootstrap probe.
+//
+// Returns: the pool, the *store.Credential to capture (nil for
+// passthrough-only pool), and the initial-activated *poolEntry.
+// The initial-activated may be either a local-cred entry or a
+// passthrough entry, depending on feasibility ranking.
+func BuildPoolFromMixed(
+	localArgs []string,
+	passthroughs []PassthroughSeed,
+	prompt string,
+	skipCapture bool,
+) (*credPool, *store.Credential, *poolEntry, error) {
+	resolved, err := resolvePoolArgs(localArgs)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	type admittedEntry struct {
 		entry       *poolEntry
-		cred        *store.Credential
+		cred        *store.Credential // nil for passthrough
 		feasibility float64
 	}
 	type passAEntry struct {
@@ -54,10 +65,7 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 	var rejections []string
 	var passA []passAEntry
 
-	// Pass A: token-validity admission. Refresh each cred; reject
-	// only on refresh failure. NO usage probe at this stage — the
-	// usage endpoint is rate-limited by Anthropic, so we want to
-	// avoid calling it for the singleton path entirely.
+	// Pass A: local-cred token-validity admission.
 	for _, cred := range resolved {
 		state, serr := newCredState(cred)
 		if serr != nil {
@@ -77,11 +85,11 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 
 	var admitted []admittedEntry
 
-	// Pass B: usage probe — only when more than one cred passed Pass A.
-	// A singleton pool can't rotate, so the probe would be wasted
-	// API spend. The lone cred enters with lastUsage=nil; the
-	// scheduler's singleton bypass means that nil is never read.
-	if len(passA) > 1 {
+	// Pass B (local usage probe): skipped for singleton local-cred
+	// pools (no rotation possible). Run only when there is more than
+	// one entry total — locals plus passthroughs.
+	totalCount := len(passA) + len(passthroughs)
+	if totalCount > 1 {
 		for _, pa := range passA {
 			info := oauth.FetchUsageFn(pa.cred.ClaudeAiOauth.AccessToken)
 			if info == nil || info.Error != "" {
@@ -107,11 +115,8 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 				feasibility: f,
 			})
 		}
-	} else if len(passA) == 1 {
-		// Singleton path: skip the probe; lone cred enters with
-		// lastUsage=nil. Capture loop and Promote work fine on this
-		// shape; the scheduler bypass guarantees the nil is never
-		// dereferenced via computeFeasibility.
+	} else if len(passA) == 1 && len(passthroughs) == 0 {
+		// True singleton: skip the probe.
 		pa := passA[0]
 		admitted = append(admitted, admittedEntry{
 			entry: &poolEntry{
@@ -126,82 +131,118 @@ func BuildPool(args []string, prompt string, skipCapture bool) (*credPool, *stor
 		})
 	}
 
-	// Rejected creds are dropped from the pool but never fatal on
-	// their own — the operator's intent is "use these creds for
-	// load-balancing", and dropping a bad one is closer to that
-	// intent than aborting the whole session over one transient
-	// 429 / refresh blip. Only fail if NO cred survives (handled
-	// below by the "len(pool.entries) == 0" path).
+	// Pass A': passthrough seeding. Probes already ran at cmd-level;
+	// seeds carry the result.
+	for _, seed := range passthroughs {
+		pt := newPassthroughEntryState(seed.Ticket)
+		var override float64
+		if seed.Unconstrained {
+			override = math.MaxFloat64
+		} else if seed.Feasibility != nil {
+			override = *seed.Feasibility
+		}
+		entry := &poolEntry{
+			state:               pt,
+			status:              statusCandidate,
+			feasibilityOverride: &override,
+			lastUsageAt:         timeNow(),
+			lastFeasibility:     override,
+		}
+		if seed.Degraded {
+			entry.status = statusDegraded
+		}
+		admitted = append(admitted, admittedEntry{
+			entry:       entry,
+			cred:        nil,
+			feasibility: override,
+		})
+	}
 
-	// Sort admitted creds by feasibility (highest first; ID lex tie-break).
+	// Sort admitted entries: highest feasibility first; ID lex tie-break.
 	sort.Slice(admitted, func(i, j int) bool {
 		if admitted[i].feasibility != admitted[j].feasibility {
 			return admitted[i].feasibility > admitted[j].feasibility
 		}
-		return admitted[i].cred.ID < admitted[j].cred.ID
+		idI := admitted[i].entry.state.credID()
+		idJ := admitted[j].entry.state.credID()
+		return idI < idJ
 	})
 
-	// Capture loop: try each admitted cred in feasibility order.
-	// Track which IDs have already failed capture so they're not
-	// admitted as candidates after a later cred succeeds.
+	// Capture loop: pick the highest-feasibility LOCAL cred for
+	// capture (its headers are stored on its own entry). If no local
+	// cred is admitted, skip capture entirely.
 	var captureRejects []string
 	captureFailedIDs := make(map[string]bool)
+
 	for _, ad := range admitted {
-		var headers http.Header
+		if ad.cred == nil {
+			continue // passthrough
+		}
 		if !skipCapture {
-			h, cerr := captureCredFn(ad.cred, prompt) // empty → DefaultCapturePrompt in RunCapture
+			h, cerr := captureCredFn(ad.cred, prompt)
 			if cerr != nil {
 				msg := fmt.Sprintf("%s(%s): capture failed: %v", credLogName(ad.cred), shortID(ad.cred.ID), cerr)
 				captureRejects = append(captureRejects, msg)
 				captureFailedIDs[ad.cred.ID] = true
 				fmt.Fprintf(errLog(), "ccm: skipping %s\n", msg)
-				// Capture failure on an explicitly-named cred used to
-				// be fatal; relaxed to "drop and continue" so a
-				// flaky claude install on one cred doesn't abort the
-				// whole load-balance session. Operator sees the
-				// per-cred skip log; only zero survivors is fatal.
 				continue
 			}
-			headers = h
+			ad.entry.captured = h
 		}
-		// skipCapture=true → headers stays nil. Promote stores nil
-		// (guarded by `if headers != nil`); LocalProxy.director never
-		// reads activatedHeaders in launch mode.
-		ad.entry.status = statusActivated
-		ad.entry.captured = headers
-		pool.entries[ad.cred.ID] = ad.entry
-		pool.activated = ad.cred.ID
+		break
+	}
 
-		// Add the rest of the admitted creds as candidates, EXCLUDING
-		// any whose capture failed earlier in this loop. Remaining
-		// creds get captured on their first promotion attempt by the
-		// scheduler.
-		for _, other := range admitted {
-			if other.cred.ID == ad.cred.ID {
-				continue
-			}
-			if captureFailedIDs[other.cred.ID] {
-				continue
-			}
-			pool.entries[other.cred.ID] = other.entry
+	// Build the pool: admit every entry that hasn't been
+	// capture-rejected. The initial activated is the highest-
+	// feasibility entry overall (admitted[0]) — could be a passthrough
+	// even if a local cred was captured.
+	for _, ad := range admitted {
+		if ad.cred != nil && captureFailedIDs[ad.cred.ID] {
+			continue
 		}
-		pool.singleton = len(pool.entries) == 1
-
-		fmt.Fprintf(errLog(), "ccm: load-balance pool: %d candidates, initial activated %s(%s) (lifetime %s)\n",
-			len(pool.entries), credLogName(ad.cred), shortID(ad.cred.ID), formatLifetime(ad.feasibility))
-		return pool, ad.cred, nil
+		pool.entries[ad.entry.state.credID()] = ad.entry
+	}
+	if len(pool.entries) == 0 {
+		// All local creds failed capture, AND no passthrough seeds.
+		if len(captureRejects) > 0 {
+			return nil, nil, nil, fmt.Errorf("ccm: no candidate could be captured:\n  %s",
+				joinLines(captureRejects))
+		}
+		if len(rejections) > 0 {
+			return nil, nil, nil, fmt.Errorf("ccm: no usable credentials in pool:\n  %s",
+				joinLines(rejections))
+		}
+		return nil, nil, nil, errors.New("ccm: no credentials in store; run `ccm login` first")
 	}
 
-	// All captures failed (implicit-mode case).
-	if len(captureRejects) > 0 {
-		return nil, nil, fmt.Errorf("ccm: no candidate could be captured:\n  %s",
-			joinLines(captureRejects))
+	// Pick the initial activated: walk admitted in order; the first
+	// one still in pool.entries is the winner. The captured local-
+	// cred headers sit dormant on their owning entry's
+	// poolEntry.captured field; the director's activatedView only
+	// reads them when that entry is the currently-activated.
+	var initialEntry *poolEntry
+	var initialCred *store.Credential
+	for _, ad := range admitted {
+		if _, ok := pool.entries[ad.entry.state.credID()]; !ok {
+			continue
+		}
+		initialEntry = ad.entry
+		initialCred = ad.cred
+		break
 	}
-	if len(rejections) > 0 {
-		return nil, nil, fmt.Errorf("ccm: no usable credentials in pool:\n  %s",
-			joinLines(rejections))
+	// Only promote to statusActivated when the entry is healthy;
+	// a degraded initial entry keeps its statusDegraded so the
+	// director's errNoActivated path fires correctly.
+	if initialEntry.status != statusDegraded {
+		initialEntry.status = statusActivated
 	}
-	return nil, nil, errors.New("ccm: no credentials in store; run `ccm login` first")
+	pool.activated = initialEntry.state.credID()
+	pool.singleton = len(pool.entries) == 1
+
+	fmt.Fprintf(errLog(), "ccm: load-balance pool: %d candidates, initial activated %s (lifetime %s)\n",
+		len(pool.entries), initialEntry.state.credName(), formatLifetime(initialEntry.lastFeasibility))
+
+	return pool, initialCred, initialEntry, nil
 }
 
 // resolvePoolArgs turns CLI arguments into a deduped list of

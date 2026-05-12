@@ -641,3 +641,57 @@ func TestBuildPool_MultiCred_StillProbes(t *testing.T) {
 		t.Errorf("FetchUsageFn called %d times, want 2 (one per cred)", called)
 	}
 }
+
+func TestBuildPoolFromMixedPassthroughOnly(t *testing.T) {
+	setupFakeHome(t)
+	// Stub capture so we don't need claude on PATH; also assert it
+	// is NEVER called when there are no local creds.
+	restore := SetCaptureCredFnForTest(func(c *store.Credential, prompt string) (http.Header, error) {
+		t.Fatalf("captureCredFn must not be called in passthrough-only pool")
+		return nil, nil
+	})
+	defer restore()
+
+	override := 1800.0
+	seeds := []PassthroughSeed{
+		{Ticket: Ticket{Scheme: "https", Host: "a.example", Token: "tk1"}, Feasibility: &override, Degraded: false},
+		{Ticket: Ticket{Scheme: "https", Host: "b.example", Token: "tk2"}, Feasibility: &override, Degraded: false},
+	}
+
+	pool, initialCred, initialEntry, err := BuildPoolFromMixed(nil, seeds, "", false)
+	if err != nil {
+		t.Fatalf("BuildPoolFromMixed: %v", err)
+	}
+	if initialCred != nil {
+		t.Errorf("initialCred should be nil for passthrough-only pool")
+	}
+	if initialEntry == nil {
+		t.Fatalf("initialEntry should be non-nil")
+	}
+	if !initialEntry.state.isPassthrough() {
+		t.Errorf("initial entry should be passthrough")
+	}
+	if len(pool.entries) != 2 {
+		t.Errorf("pool size = %d, want 2", len(pool.entries))
+	}
+}
+
+func TestBuildPoolFromMixedDegradedSeed(t *testing.T) {
+	setupFakeHome(t)
+	zero := 0.0
+	seeds := []PassthroughSeed{
+		{Ticket: Ticket{Scheme: "https", Host: "down.example", Token: "tk"}, Feasibility: &zero, Degraded: true},
+	}
+	pool, _, _, err := BuildPoolFromMixed(nil, seeds, "", false)
+	if err != nil {
+		t.Fatalf("BuildPoolFromMixed: %v", err)
+	}
+	var e *poolEntry
+	for _, v := range pool.entries {
+		e = v
+		break
+	}
+	if e.status != statusDegraded {
+		t.Errorf("entry should be statusDegraded; got %v", e.status)
+	}
+}
