@@ -52,8 +52,8 @@ func TestLoadBalanceTwoCredRotation(t *testing.T) {
 			{Name: "7d", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)},
 		}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
@@ -73,11 +73,11 @@ func TestLoadBalanceActivatedDiesCandidatePromoted(t *testing.T) {
 
 	pool := makePoolForTest(t, []string{"aaaaaaaa", "bbbbbbbb"})
 	now := time.Now()
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		if state.credID() == "aaaaaaaa" {
-			return nil, fmt.Errorf("probe broken")
+			return probeResult{}, fmt.Errorf("probe broken")
 		}
-		return &oauth.UsageInfo{}, nil
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.runOnce()
@@ -101,8 +101,8 @@ func TestLoadBalanceAllDegraded503ThenRecovery(t *testing.T) {
 	now := time.Now()
 
 	// Phase 1: every probe fails → both degraded.
-	failingProbe := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, fmt.Errorf("everything broken")
+	failingProbe := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("everything broken")
 	}
 	sch := newScheduler(pool, failingProbe, newFakeClock(now), time.Minute)
 	for i := 0; i < 3; i++ {
@@ -118,11 +118,11 @@ func TestLoadBalanceAllDegraded503ThenRecovery(t *testing.T) {
 	}
 
 	// Phase 2: bbbbbbbb recovers.
-	recoveryProbe := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	recoveryProbe := func(state poolEntryState) (probeResult, error) {
 		if state.credID() == "bbbbbbbb" {
-			return &oauth.UsageInfo{}, nil
+			return probeResult{info: &oauth.UsageInfo{}}, nil
 		}
-		return nil, fmt.Errorf("still broken")
+		return probeResult{}, fmt.Errorf("still broken")
 	}
 	sch2 := newScheduler(pool, recoveryProbe, newFakeClock(now), time.Minute)
 	sch2.runOnce()
@@ -147,8 +147,8 @@ func TestLoadBalanceUpstream401FastPath(t *testing.T) {
 	}
 
 	now := time.Now()
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return &oauth.UsageInfo{}, nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	sch.runOnce()
@@ -160,8 +160,8 @@ func TestLoadBalanceUpstream401FastPath(t *testing.T) {
 func TestLoadBalanceSingletonNeverDemoted(t *testing.T) {
 	pool := makePoolForTest(t, []string{"aaaaaaaa"})
 	now := time.Now()
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return nil, fmt.Errorf("boom")
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{}, fmt.Errorf("boom")
 	}
 	sch := newScheduler(pool, probeFn, newFakeClock(now), time.Minute)
 	for i := 0; i < 5; i++ {
@@ -355,8 +355,8 @@ func TestLoadBalancePerCredHeadersReplayedAfterRotation(t *testing.T) {
 		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
 		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	origCapture := captureCredFn
@@ -392,8 +392,8 @@ func TestLoadBalanceAllCapturesFailKeepsActivated(t *testing.T) {
 		"a": {Quotas: []oauth.Quota{{Name: "5h", Used: 90, ResetsAt: now.Add(4 * time.Hour).Format(time.RFC3339)}}},
 		"b": {Quotas: []oauth.Quota{{Name: "5h", Used: 5, ResetsAt: now.Add(time.Hour).Format(time.RFC3339)}}},
 	}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
-		return probes[state.credID()], nil
+	probeFn := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: probes[state.credID()]}, nil
 	}
 
 	origCapture := captureCredFn

@@ -97,7 +97,7 @@ func TestMarkProbeCandidateSuccessResetsFailCounter(t *testing.T) {
 		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
 	})
 	p.entries["b"].consecutiveFail = 1
-	p.MarkProbe("b", &oauth.UsageInfo{}, nil)
+	p.MarkProbe("b", probeResult{info: &oauth.UsageInfo{}}, nil)
 	if got := p.entries["b"].consecutiveFail; got != 0 {
 		t.Errorf("consecutiveFail = %d, want 0", got)
 	}
@@ -111,11 +111,11 @@ func TestMarkProbeCandidateDegradesAfter2Failures(t *testing.T) {
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
 		"b": newEntry("b", "bob", statusCandidate, &fakeTokenSource{}),
 	})
-	p.MarkProbe("b", nil, fmt.Errorf("fail 1"))
+	p.MarkProbe("b", probeResult{}, fmt.Errorf("fail 1"))
 	if p.entries["b"].status != statusCandidate {
 		t.Errorf("after 1 fail status = %v, want candidate", p.entries["b"].status)
 	}
-	p.MarkProbe("b", nil, fmt.Errorf("fail 2"))
+	p.MarkProbe("b", probeResult{}, fmt.Errorf("fail 2"))
 	if p.entries["b"].status != statusDegraded {
 		t.Errorf("after 2 fails status = %v, want degraded", p.entries["b"].status)
 	}
@@ -126,7 +126,7 @@ func TestMarkProbeDegradedRecoversOnFirstSuccess(t *testing.T) {
 		"b": newEntry("b", "bob", statusDegraded, &fakeTokenSource{}),
 	})
 	p.entries["b"].consecutiveFail = 5
-	p.MarkProbe("b", &oauth.UsageInfo{}, nil)
+	p.MarkProbe("b", probeResult{info: &oauth.UsageInfo{}}, nil)
 	if got := p.entries["b"].status; got != statusCandidate {
 		t.Errorf("status = %v, want candidate", got)
 	}
@@ -139,9 +139,9 @@ func TestMarkProbeActivatedNotDemoted(t *testing.T) {
 	p := makePool("a", false, map[string]*poolEntry{
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
 	})
-	p.MarkProbe("a", nil, fmt.Errorf("fail 1"))
-	p.MarkProbe("a", nil, fmt.Errorf("fail 2"))
-	p.MarkProbe("a", nil, fmt.Errorf("fail 3"))
+	p.MarkProbe("a", probeResult{}, fmt.Errorf("fail 1"))
+	p.MarkProbe("a", probeResult{}, fmt.Errorf("fail 2"))
+	p.MarkProbe("a", probeResult{}, fmt.Errorf("fail 3"))
 	if got := p.entries["a"].status; got != statusActivated {
 		t.Errorf("status = %v, want activated (MarkProbe must NEVER demote activated)", got)
 	}
@@ -155,7 +155,7 @@ func TestMarkProbeUnknownIDNoOp(t *testing.T) {
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
 	})
 	// Should not panic.
-	p.MarkProbe("nonexistent", &oauth.UsageInfo{}, nil)
+	p.MarkProbe("nonexistent", probeResult{info: &oauth.UsageInfo{}}, nil)
 }
 
 func TestMarkProbeStoresLastUsageOnSuccess(t *testing.T) {
@@ -163,7 +163,7 @@ func TestMarkProbeStoresLastUsageOnSuccess(t *testing.T) {
 	p := makePool("a", false, map[string]*poolEntry{
 		"a": newEntry("a", "alice", statusActivated, &fakeTokenSource{}),
 	})
-	p.MarkProbe("a", info, nil)
+	p.MarkProbe("a", probeResult{info: info}, nil)
 	if p.entries["a"].lastUsage != info {
 		t.Errorf("lastUsage not stored")
 	}
@@ -619,5 +619,40 @@ func TestActivatedViewActivatedPassthrough(t *testing.T) {
 	}
 	if v.upstreamURL != "https://abc.example" {
 		t.Errorf("upstreamURL = %q", v.upstreamURL)
+	}
+}
+
+func TestMarkProbeStoresOverride(t *testing.T) {
+	pt := newPassthroughEntryState(Ticket{Scheme: "https", Host: "x.example", Token: "tk"})
+	e := &poolEntry{state: pt, status: statusCandidate}
+	p := makePool("", false, map[string]*poolEntry{pt.credID(): e})
+
+	override := 1800.0
+	p.MarkProbe(pt.credID(), probeResult{override: &override}, nil)
+
+	if e.feasibilityOverride == nil || *e.feasibilityOverride != 1800.0 {
+		t.Errorf("feasibilityOverride not stored: %v", e.feasibilityOverride)
+	}
+	if e.lastUsage != nil {
+		t.Errorf("lastUsage should remain nil for passthrough probe result")
+	}
+	if e.consecutiveFail != 0 {
+		t.Errorf("consecutiveFail should reset on success")
+	}
+}
+
+func TestMarkProbeStoresLocalUsage(t *testing.T) {
+	fst := &fakeTokenSource{token: "tk"}
+	e := newEntry("a", "n", statusCandidate, fst)
+	p := makePool("", false, map[string]*poolEntry{"a": e})
+
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10}}}
+	p.MarkProbe("a", probeResult{info: info}, nil)
+
+	if e.lastUsage != info {
+		t.Errorf("lastUsage not stored")
+	}
+	if e.feasibilityOverride != nil {
+		t.Errorf("feasibilityOverride should remain nil for local probe result")
 	}
 }

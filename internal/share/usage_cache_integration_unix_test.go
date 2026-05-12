@@ -107,9 +107,9 @@ func TestUsageCache_TickSkipsProbeWhenCacheFresh(t *testing.T) {
 	}
 
 	probeCalled := atomic.Int32{}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalled.Add(1)
-		return nil, nil
+		return probeResult{}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute) // ttl=25m
@@ -145,9 +145,9 @@ func TestUsageCache_TickProbesAfterTTLExpiry(t *testing.T) {
 	}
 
 	probeCalled := atomic.Int32{}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalled.Add(1)
-		return &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 5}}}, nil
+		return probeResult{info: &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 5}}}}, nil
 	}
 	fc := newFakeClock(now)
 	sch := newScheduler(pool, probeFn, fc, 5*time.Minute)
@@ -180,9 +180,9 @@ func TestUsageCache_SingletonZeroProbes(t *testing.T) {
 	t.Cleanup(func() { oauth.FetchUsageFn = prevUsage })
 
 	probeCalled := atomic.Int32{}
-	probeFn := func(state poolEntryState) (*oauth.UsageInfo, error) {
+	probeFn := func(state poolEntryState) (probeResult, error) {
 		probeCalled.Add(1)
-		return &oauth.UsageInfo{}, nil
+		return probeResult{info: &oauth.UsageInfo{}}, nil
 	}
 
 	fc := newFakeClock(now)
