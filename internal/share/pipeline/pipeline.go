@@ -46,6 +46,14 @@ func recoverPanics(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
+				// http.ErrAbortHandler is a stdlib sentinel — ReverseProxy
+				// raises it when a streaming copy aborts mid-flight. Let it
+				// bubble to the stdlib server, which aborts the connection
+				// silently. Logging it or writing a 500 here is incorrect:
+				// headers are already on the wire.
+				if v == http.ErrAbortHandler {
+					panic(v)
+				}
 				log.Printf("pipeline: panic recovered: %v\n%s", v, debug.Stack())
 				w.WriteHeader(http.StatusInternalServerError)
 			}

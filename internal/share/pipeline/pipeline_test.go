@@ -99,6 +99,33 @@ func TestPipeline_PanicRecovered(t *testing.T) {
 	}
 }
 
+func TestPipeline_AbortHandlerRePropagates(t *testing.T) {
+	abortStep := stepFunc(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			panic(http.ErrAbortHandler)
+		})
+	})
+	p := pipeline.New(abortStep)
+	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	handler := p.Handler(terminal)
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	rec := httptest.NewRecorder()
+
+	var recovered any
+	func() {
+		defer func() { recovered = recover() }()
+		handler.ServeHTTP(rec, req)
+	}()
+
+	if recovered != http.ErrAbortHandler {
+		t.Errorf("recovered = %v, want http.ErrAbortHandler", recovered)
+	}
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want %d (no WriteHeader should fire on abort)", rec.Code, http.StatusOK)
+	}
+}
+
 func TestPipeline_EmptyStepsCallsTerminalDirectly(t *testing.T) {
 	terminal := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusTeapot)
