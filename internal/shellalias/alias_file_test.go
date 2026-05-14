@@ -1,14 +1,15 @@
 package shellalias
 
 import (
+	"bytes"
 	"strings"
 	"testing"
 )
 
 func TestAliasBlocks_ParseEmpty(t *testing.T) {
 	got := parseAliasBlocks(nil)
-	if len(got) != 0 {
-		t.Fatalf("got %d blocks", len(got))
+	if got != nil {
+		t.Fatalf("got %v, want nil", got)
 	}
 }
 
@@ -88,9 +89,12 @@ func TestAliasBlocks_RemoveOne(t *testing.T) {
 
 func TestAliasBlocks_RemoveMissing(t *testing.T) {
 	in := []byte("# ccm-alias:begin:a\nA\n# ccm-alias:end:a\n")
-	_, ok := removeAliasBlock(in, "missing")
+	out, ok := removeAliasBlock(in, "missing")
 	if ok {
 		t.Fatal("expected !ok for missing alias")
+	}
+	if !bytes.Equal(out, in) {
+		t.Fatalf("content changed: got %q want %q", out, in)
 	}
 }
 
