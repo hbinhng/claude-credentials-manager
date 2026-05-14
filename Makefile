@@ -81,3 +81,7 @@ dist/ccm-windows-%.exe: $(GO_SOURCES)
 clean:
 	rm -f $(BINARY)
 	rm -rf dist/
+
+.PHONY: win-e2e
+win-e2e: ## Run the Windows e2e for `ccm alias` via SSH to 192.168.1.11
+	bash scripts/win-e2e.sh
