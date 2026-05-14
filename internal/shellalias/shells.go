@@ -26,3 +26,10 @@ func flavorOf(s Shell) string {
 		return ""
 	}
 }
+
+// Exported constructors for callers that need a Shell instance without
+// going through Detect (e.g. --shells fish on a host without fish).
+func NewBash() Shell { return newBash() }
+func NewZsh() Shell  { return newZsh() }
+func NewFish() Shell { return newFish() }
+func NewPwsh() Shell { return newPwsh() }
