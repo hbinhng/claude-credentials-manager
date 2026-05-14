@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -118,6 +119,7 @@ func resetAliasHooks() {
 	aliasRemoveFn = shellalias.Remove
 	aliasPromptFn = shellalias.SelectShells
 	aliasIsTTYFn = func() bool { return false }
+	aliasLookPathFn = exec.LookPath
 }
 
 // fakeBash is a Shell stub used by dispatch tests; the install hook is
@@ -343,5 +345,51 @@ func TestAliasDispatch_List_Error(t *testing.T) {
 	err := runAlias(io.Discard, io.Discard, []string{"--list"})
 	if err == nil || !strings.Contains(err.Error(), "disk error") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAliasDispatch_ShadowWarning(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		return make([]error, len(targets))
+	}
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	aliasLookPathFn = func(name string) (string, error) {
+		if name == "ls" {
+			return "/usr/bin/ls", nil
+		}
+		return "", errors.New("not found")
+	}
+	var stderr bytes.Buffer
+	err := runAlias(io.Discard, &stderr, []string{"--as", "ls", "--load-balance", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stderr.String(), "shadows existing binary") {
+		t.Fatalf("missing shadow warning: %q", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "/usr/bin/ls") {
+		t.Fatalf("missing binary path: %q", stderr.String())
+	}
+}
+
+func TestAliasDispatch_NoShadowWarningWhenAbsent(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		return make([]error, len(targets))
+	}
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	aliasLookPathFn = func(name string) (string, error) {
+		return "", errors.New("not found")
+	}
+	var stderr bytes.Buffer
+	err := runAlias(io.Discard, &stderr, []string{"--as", "novel-name", "--load-balance", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(stderr.String(), "shadows existing binary") {
+		t.Fatalf("unexpected shadow warning: %q", stderr.String())
 	}
 }

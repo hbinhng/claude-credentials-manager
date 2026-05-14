@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"regexp"
 	"strings"
 
@@ -121,12 +122,13 @@ func parseAliasArgs(argv []string) (aliasArgs, error) {
 // --- dispatch hooks (replaceable in tests) ---
 
 var (
-	aliasDetectFn  = shellalias.Detect
-	aliasInstallFn = shellalias.Install
-	aliasListFn    = shellalias.List
-	aliasRemoveFn  = shellalias.Remove
-	aliasPromptFn  = shellalias.SelectShells
-	aliasIsTTYFn   = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	aliasDetectFn   = shellalias.Detect
+	aliasInstallFn  = shellalias.Install
+	aliasListFn     = shellalias.List
+	aliasRemoveFn   = shellalias.Remove
+	aliasPromptFn   = shellalias.SelectShells
+	aliasIsTTYFn    = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+	aliasLookPathFn = exec.LookPath
 )
 
 func runAlias(stdout, stderr io.Writer, argv []string) error {
@@ -167,6 +169,9 @@ func runAliasCreate(stdout, stderr io.Writer, a aliasArgs) error {
 	targets, err := resolveTargets(stderr, a.shells)
 	if err != nil {
 		return err
+	}
+	if path, err := aliasLookPathFn(a.name); err == nil {
+		fmt.Fprintf(stderr, "ccm alias: %q shadows existing binary at %s\n", a.name, path)
 	}
 	errs := aliasInstallFn(a.name, a.payload, targets, a.force)
 	var firstErr error
