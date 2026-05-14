@@ -10,3 +10,19 @@ type Shell interface {
 	EmitAlias(name string, payload []string) string // function body w/ proper quoting
 	Quote(arg string) string                        // single-token quoter
 }
+
+// flavorOf maps a Shell to the rc-snippet flavor string used by
+// buildRcSnippet. bash and zsh both map to "posix".
+func flavorOf(s Shell) string {
+	switch s.Name() {
+	case "bash", "zsh":
+		return "posix"
+	case "fish":
+		return "fish"
+	case "pwsh":
+		return "pwsh"
+	default:
+		// coverage: unreachable — only the four registered shells call this.
+		return ""
+	}
+}
