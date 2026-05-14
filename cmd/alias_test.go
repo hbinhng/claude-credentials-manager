@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/shellalias"
+	"github.com/spf13/cobra"
 )
 
 func TestParseAliasArgs_Create_Minimal(t *testing.T) {
@@ -420,5 +421,87 @@ func TestAliasDispatch_NoShadowWarningWhenAbsent(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), "shadows existing binary") {
 		t.Fatalf("unexpected shadow warning: %q", stderr.String())
+	}
+}
+
+func TestAliasComplete_FlagsWhenEmpty(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	got, dir := aliasComplete(nil, []string{}, "")
+	if dir != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive: %v", dir)
+	}
+	want := []string{"--as", "--shells", "--force", "--list", "--remove"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestAliasComplete_FlagsWhenDashDash(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	got, _ := aliasComplete(nil, []string{}, "--")
+	if len(got) != 5 {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestAliasComplete_RemoveSuggestsAliasNames(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasListFn = func() ([]shellalias.ListEntry, error) {
+		return []shellalias.ListEntry{
+			{Name: "cld", Shells: []string{"bash"}},
+			{Name: "cld-prod", Shells: []string{"pwsh"}},
+		}, nil
+	}
+	got, dir := aliasComplete(nil, []string{"--remove"}, "")
+	if dir != cobra.ShellCompDirectiveNoFileComp {
+		t.Fatalf("directive: %v", dir)
+	}
+	want := []string{"cld", "cld-prod"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestAliasComplete_RemoveErrorReturnsNil(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasListFn = func() ([]shellalias.ListEntry, error) {
+		return nil, errors.New("disk error")
+	}
+	got, _ := aliasComplete(nil, []string{"--remove"}, "")
+	if got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
+func TestAliasComplete_ShellsSuggestsShellNames(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	got, _ := aliasComplete(nil, []string{"--shells"}, "")
+	want := []string{"bash", "zsh", "fish", "pwsh"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+func TestAliasComplete_AsReturnsNothing(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	got, _ := aliasComplete(nil, []string{"--as"}, "")
+	if got != nil {
+		t.Fatalf("expected nil, got %v", got)
+	}
+}
+
+func TestAliasComplete_PayloadTokenReturnsNothing(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	// Mid-payload typing — e.g. `ccm alias --as cld --load-balance cre<TAB>`.
+	got, _ := aliasComplete(nil, []string{"--as", "cld", "--load-balance"}, "cre")
+	if got != nil {
+		t.Fatalf("expected nil, got %v", got)
 	}
 }

@@ -272,6 +272,49 @@ func shellByName(name string) shellalias.Shell {
 	return nil
 }
 
+// aliasComplete provides shell tab-completion for `ccm alias`. Because
+// aliasCmd uses DisableFlagParsing, cobra's automatic flag completion
+// is disabled; this function fills in the gap.
+//
+// It is also the seam that lets `--remove <TAB>` enumerate installed
+// alias names — read through aliasListFn so tests can stub it.
+func aliasComplete(cmd *cobra.Command, args []string, toComplete string) ([]string, cobra.ShellCompDirective) {
+	// Value-taking flag just consumed → suggest its values.
+	if len(args) > 0 {
+		switch args[len(args)-1] {
+		case "--remove":
+			return aliasCompletionNames(), cobra.ShellCompDirectiveNoFileComp
+		case "--shells":
+			return []string{"bash", "zsh", "fish", "pwsh"}, cobra.ShellCompDirectiveNoFileComp
+		case "--as":
+			// User-supplied name; nothing useful to suggest.
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+	}
+	// Completing a flag-like token: offer the five known flags.
+	if strings.HasPrefix(toComplete, "--") || toComplete == "" {
+		return []string{"--as", "--shells", "--force", "--list", "--remove"}, cobra.ShellCompDirectiveNoFileComp
+	}
+	// Anything else is part of the captured ccm-launch payload; no
+	// useful completion is possible from this layer.
+	return nil, cobra.ShellCompDirectiveNoFileComp
+}
+
+// aliasCompletionNames returns the names of installed aliases for
+// `--remove <TAB>`. Routed through the aliasListFn seam so dispatch
+// tests can stub it without touching the filesystem.
+func aliasCompletionNames() []string {
+	entries, err := aliasListFn()
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.Name)
+	}
+	return out
+}
+
 // --- cobra wiring ---
 
 var aliasCmd = &cobra.Command{
@@ -279,6 +322,7 @@ var aliasCmd = &cobra.Command{
 	Short:              "Create, list, or remove a shell alias for `ccm launch`",
 	Long:               aliasLongDescription,
 	DisableFlagParsing: true,
+	ValidArgsFunction:  aliasComplete,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runAlias(os.Stdout, os.Stderr, args)
 	},
