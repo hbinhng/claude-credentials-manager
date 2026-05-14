@@ -36,7 +36,7 @@ func (fishShell) EmitAlias(name string, payload []string) string {
 		b.WriteByte(' ')
 		b.WriteString(fishQuote(tok))
 	}
-	b.WriteString(" $argv; end")
+	b.WriteString(" -- $argv; end")
 	return b.String()
 }
 

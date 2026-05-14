@@ -27,7 +27,7 @@ func TestPwsh_QuoteEmpty(t *testing.T) {
 func TestPwsh_EmitAlias(t *testing.T) {
 	s := newPwsh()
 	got := s.EmitAlias("cld", []string{"--load-balance", "c"})
-	want := `function cld { ccm launch '--load-balance' 'c' @args }`
+	want := `function cld { ccm launch '--load-balance' 'c' -- @args }`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -106,7 +106,7 @@ func TestPwsh_QuoteMultipleSingleQuotes(t *testing.T) {
 
 func TestPwsh_EmitAlias_NoArgs(t *testing.T) {
 	got := newPwsh().EmitAlias("cld", nil)
-	want := `function cld { ccm launch @args }`
+	want := `function cld { ccm launch -- @args }`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

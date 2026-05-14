@@ -505,3 +505,28 @@ func TestAliasComplete_PayloadTokenReturnsNothing(t *testing.T) {
 		t.Fatalf("expected nil, got %v", got)
 	}
 }
+
+func TestInferLaunchClaudeBoundary(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"empty", nil, nil},
+		{"load-balance only", []string{"--load-balance", "cred-a", "cred-b"}, []string{"--load-balance", "cred-a", "cred-b"}},
+		{"via with value", []string{"--via", "T"}, []string{"--via", "T"}},
+		{"already has --", []string{"--via", "T", "--", "-p", "hi"}, []string{"--via", "T", "--", "-p", "hi"}},
+		{"via + claude flag (PS-eaten --)", []string{"--via", "T", "--dangerously-skip-permissions"}, []string{"--via", "T", "--", "--dangerously-skip-permissions"}},
+		{"load-balance + claude flag", []string{"--load-balance", "cred-a", "--dangerously-skip-permissions"}, []string{"--load-balance", "cred-a", "--", "--dangerously-skip-permissions"}},
+		{"trailing value-flag with no value", []string{"--via"}, []string{"--via"}},
+		{"unknown flag first", []string{"--dangerously-skip-permissions"}, []string{"--", "--dangerously-skip-permissions"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := inferLaunchClaudeBoundary(tc.in)
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("got %v want %v", got, tc.want)
+			}
+		})
+	}
+}

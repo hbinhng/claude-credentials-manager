@@ -36,7 +36,7 @@ func (pwshShell) EmitAlias(name string, payload []string) string {
 		b.WriteByte(' ')
 		b.WriteString(pwshQuote(tok))
 	}
-	b.WriteString(" @args }")
+	b.WriteString(" -- @args }")
 	return b.String()
 }
 

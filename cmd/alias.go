@@ -197,7 +197,75 @@ func redactPayload(args []string) string {
 	return strings.Join(out, " ")
 }
 
+// launchValueFlags are `ccm launch` flags that consume one positional value.
+// Keep in sync with the flags registered in cmd/launch.go's init().
+var launchValueFlags = map[string]struct{}{
+	"--via":                {},
+	"--rebalance-interval": {},
+	"--model-alias":        {},
+}
+
+// launchBoolFlags are `ccm launch` flags that are pure switches.
+// --load-balance is followed by positional credential names (zero or more)
+// which we treat as launch-side positional args until we hit a recognized
+// claude-bound token.
+var launchBoolFlags = map[string]struct{}{
+	"--load-balance": {},
+}
+
+// inferLaunchClaudeBoundary returns the payload with `--` injected before
+// the first token that looks like a claude flag — i.e., a `--<x>` that is
+// not a known `ccm launch` flag and is not the value of a value-taking
+// launch flag. If the payload already contains `--`, it is returned
+// unchanged.
+//
+// This compensates for PowerShell silently dropping `--` from
+// native-command argv. The launch flag set is duplicated from
+// cmd/launch.go's init; keep in sync when launch gains a new flag.
+func inferLaunchClaudeBoundary(payload []string) []string {
+	if len(payload) == 0 {
+		return payload
+	}
+	for _, t := range payload {
+		if t == "--" {
+			return payload // user-supplied -- present; nothing to do
+		}
+	}
+	out := make([]string, 0, len(payload)+1)
+	i := 0
+	for i < len(payload) {
+		tok := payload[i]
+		if _, ok := launchValueFlags[tok]; ok {
+			if i+1 < len(payload) {
+				out = append(out, tok, payload[i+1])
+				i += 2
+				continue
+			}
+			out = append(out, tok)
+			i++
+			continue
+		}
+		if _, ok := launchBoolFlags[tok]; ok {
+			out = append(out, tok)
+			i++
+			continue
+		}
+		if strings.HasPrefix(tok, "--") {
+			// Unknown --flag → claude side starts here.
+			out = append(out, "--")
+			out = append(out, payload[i:]...)
+			return out
+		}
+		// Positional arg (likely a credential name for --load-balance) —
+		// still launch-side.
+		out = append(out, tok)
+		i++
+	}
+	return out
+}
+
 func runAliasCreate(stdout, stderr io.Writer, a aliasArgs) error {
+	a.payload = inferLaunchClaudeBoundary(a.payload)
 	targets, err := resolveTargets(stderr, a.shells)
 	if err != nil {
 		return err

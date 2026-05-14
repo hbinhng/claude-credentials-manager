@@ -75,7 +75,7 @@ func runPOSIXIntegration(t *testing.T, shellBin string) {
 	if err != nil {
 		t.Fatalf("%s: %v\n%s", shellBin, err, out)
 	}
-	want := "CCM-ARGV: launch|--load-balance|c|extra-arg"
+	want := "CCM-ARGV: launch|--load-balance|c|--|extra-arg"
 	if !strings.Contains(string(out), want) {
 		t.Fatalf("got %q want substring %q", out, want)
 	}
@@ -107,7 +107,7 @@ func TestIntegration_Fish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fish: %v\n%s", err, out)
 	}
-	want := "CCM-ARGV: launch|--load-balance|c|extra-arg"
+	want := "CCM-ARGV: launch|--load-balance|c|--|extra-arg"
 	if !strings.Contains(string(out), want) {
 		t.Fatalf("got %q want substring %q", out, want)
 	}
@@ -145,7 +145,7 @@ func TestIntegration_DoubleDashPreserved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("%v\n%s", err, out)
 	}
-	want := "CCM-ARGV: launch|--load-balance|c|--|-p|default|--verbose"
+	want := "CCM-ARGV: launch|--load-balance|c|--|-p|default|--|--verbose"
 	if !strings.Contains(string(out), want) {
 		t.Fatalf("got %q want substring %q", out, want)
 	}

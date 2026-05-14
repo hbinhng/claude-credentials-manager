@@ -40,7 +40,7 @@ func (p *posixShell) EmitAlias(name string, payload []string) string {
 		b.WriteByte(' ')
 		b.WriteString(posixQuote(tok))
 	}
-	b.WriteString(` "$@"; }`)
+	b.WriteString(` -- "$@"; }`)
 	return b.String()
 }
 

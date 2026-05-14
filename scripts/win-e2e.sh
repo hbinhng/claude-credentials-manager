@@ -84,20 +84,30 @@ fi
 echo "  alias file ok"
 
 step "verify all installed PS profiles have the rc-block sentinel"
+checked_count=0
 for ps_bin in pwsh powershell.exe; do
-	profile_path="$(ssh "$HOST" "powershell -NoProfile -Command \"& { try { (Get-Command $ps_bin -ErrorAction Stop).Source > \$null; & $ps_bin -NoProfile -Command \\\"\\\$PROFILE\\\" } catch { '' } }\"")"
-	profile_path="$(echo "$profile_path" | tr -d '\r')"
-	if [[ -z "$profile_path" ]]; then
+	# Check existence via the calling shell, not the target binary.
+	exists="$(ssh "$HOST" "powershell -NoProfile -Command \"if (Get-Command $ps_bin -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }\"" | tr -d '\r')"
+	if [[ "$exists" != "yes" ]]; then
 		echo "  $ps_bin not installed; skipping"
 		continue
+	fi
+	# Ask the target binary for its own $PROFILE.
+	profile_path="$(ssh "$HOST" "$ps_bin -NoProfile -Command \"\$PROFILE\"" | tr -d '\r')"
+	if [[ -z "$profile_path" ]]; then
+		fail "$ps_bin returned empty \$PROFILE"
 	fi
 	echo "  checking $ps_bin profile: $profile_path"
 	body="$(ssh "$HOST" "powershell -NoProfile -Command \"if (Test-Path '$profile_path') { Get-Content '$profile_path' -Raw } else { '' }\"")"
 	if ! echo "$body" | grep -q "ccm-aliases:begin"; then
 		fail "$ps_bin profile ($profile_path) missing rc-block sentinel"
 	fi
+	checked_count=$((checked_count + 1))
 done
-echo "  all installed PS profiles have the sentinel"
+if [[ $checked_count -eq 0 ]]; then
+	fail "no PS hosts checked — both pwsh and powershell.exe reported missing"
+fi
+echo "  all $checked_count installed PS profile(s) have the sentinel"
 
 step "verify the function loads in every installed PS host"
 for ps_bin in pwsh powershell.exe; do
