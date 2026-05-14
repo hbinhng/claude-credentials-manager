@@ -51,22 +51,25 @@ func TestFish_AliasFile_RespectsCCMHome(t *testing.T) {
 	}
 }
 
-func TestFish_RcFile_AndUserHomeDirError(t *testing.T) {
-	// happy path: returns a path ending in .config/fish/config.fish
-	got, err := newFish().RcFile()
+func TestFish_RcFiles_AndUserHomeDirError(t *testing.T) {
+	// happy path: returns a one-element slice ending in .config/fish/config.fish
+	rcs, err := newFish().RcFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(rcs) != 1 {
+		t.Fatalf("expected 1 rc path, got %d: %v", len(rcs), rcs)
+	}
 	want := filepath.Join(".config", "fish", "config.fish")
-	if !strings.HasSuffix(got, want) {
-		t.Fatalf("got %q, want suffix %q", got, want)
+	if !strings.HasSuffix(rcs[0], want) {
+		t.Fatalf("got %q, want suffix %q", rcs[0], want)
 	}
 
-	// error path via seam (same pattern as TestPOSIX_RcFile_UserHomeDirError)
+	// error path via seam (same pattern as TestPOSIX_RcFiles_UserHomeDirError)
 	orig := userHomeDir
 	t.Cleanup(func() { userHomeDir = orig })
 	userHomeDir = func() (string, error) { return "", errors.New("no home") }
-	if _, err := newFish().RcFile(); err == nil {
+	if _, err := newFish().RcFiles(); err == nil {
 		t.Fatal("expected error")
 	}
 }

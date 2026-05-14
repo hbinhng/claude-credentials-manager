@@ -9,7 +9,7 @@ import (
 	"testing"
 )
 
-// fakeShell is a Shell that points its AliasFile/RcFile at temp paths
+// fakeShell is a Shell that points its AliasFile/RcFiles at temp paths
 // for testing. EmitAlias uses the POSIX emitter so we get realistic
 // output.
 type fakeShell struct {
@@ -18,10 +18,10 @@ type fakeShell struct {
 	rcPath    string
 }
 
-func (f *fakeShell) Name() string            { return f.name }
-func (f *fakeShell) AliasFile() string       { return f.aliasPath }
-func (f *fakeShell) RcFile() (string, error) { return f.rcPath, nil }
-func (f *fakeShell) Quote(s string) string   { return posixQuote(s) }
+func (f *fakeShell) Name() string                  { return f.name }
+func (f *fakeShell) AliasFile() string             { return f.aliasPath }
+func (f *fakeShell) RcFiles() ([]string, error)    { return []string{f.rcPath}, nil }
+func (f *fakeShell) Quote(s string) string         { return posixQuote(s) }
 func (f *fakeShell) EmitAlias(n string, p []string) string {
 	return (&posixShell{name: f.name}).EmitAlias(n, p)
 }
@@ -185,7 +185,7 @@ func TestInstall_AliasFileWriteError(t *testing.T) {
 }
 
 func TestInstall_RcResolverError(t *testing.T) {
-	// Shell whose RcFile() returns an error must propagate.
+	// Shell whose RcFiles() returns an error must propagate.
 	d := t.TempDir()
 	fs := &errRcShell{aliasPath: filepath.Join(d, "aliases.sh")}
 	errs := Install("cld", []string{"x"}, []Shell{fs}, false)
@@ -198,10 +198,10 @@ type errRcShell struct {
 	aliasPath string
 }
 
-func (e *errRcShell) Name() string            { return "bash" }
-func (e *errRcShell) AliasFile() string       { return e.aliasPath }
-func (e *errRcShell) RcFile() (string, error) { return "", errors.New("no rc") }
-func (e *errRcShell) Quote(s string) string   { return posixQuote(s) }
+func (e *errRcShell) Name() string                  { return "bash" }
+func (e *errRcShell) AliasFile() string             { return e.aliasPath }
+func (e *errRcShell) RcFiles() ([]string, error)    { return nil, errors.New("no rc") }
+func (e *errRcShell) Quote(s string) string         { return posixQuote(s) }
 func (e *errRcShell) EmitAlias(n string, p []string) string {
 	return (&posixShell{name: "bash"}).EmitAlias(n, p)
 }
@@ -236,10 +236,10 @@ type aliasUnreadableShell struct {
 	rcPath    string
 }
 
-func (s *aliasUnreadableShell) Name() string            { return "bash" }
-func (s *aliasUnreadableShell) AliasFile() string       { return s.aliasPath }
-func (s *aliasUnreadableShell) RcFile() (string, error) { return s.rcPath, nil }
-func (s *aliasUnreadableShell) Quote(arg string) string { return posixQuote(arg) }
+func (s *aliasUnreadableShell) Name() string                  { return "bash" }
+func (s *aliasUnreadableShell) AliasFile() string             { return s.aliasPath }
+func (s *aliasUnreadableShell) RcFiles() ([]string, error)    { return []string{s.rcPath}, nil }
+func (s *aliasUnreadableShell) Quote(arg string) string       { return posixQuote(arg) }
 func (s *aliasUnreadableShell) EmitAlias(n string, p []string) string {
 	return (&posixShell{name: "bash"}).EmitAlias(n, p)
 }
@@ -447,4 +447,42 @@ func TestList_CorruptedPayloadReturnsNil(t *testing.T) {
 	if entries[0].Payload != nil {
 		t.Fatalf("expected nil payload, got %v", entries[0].Payload)
 	}
+}
+
+func TestInstall_MultipleRcPathsAllGetSnippet(t *testing.T) {
+	d := t.TempDir()
+	rcA := filepath.Join(d, "profile-a.ps1")
+	rcB := filepath.Join(d, "profile-b.ps1")
+	fs := &multiRcShell{
+		name:      "pwsh",
+		aliasPath: filepath.Join(d, "aliases.ps1"),
+		rcPaths:   []string{rcA, rcB},
+	}
+	errs := Install("cld", []string{"x"}, []Shell{fs}, false)
+	if errs[0] != nil {
+		t.Fatal(errs[0])
+	}
+	for _, p := range []string{rcA, rcB} {
+		got, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("rc %s: %v", p, err)
+		}
+		if !strings.Contains(string(got), "# ccm-aliases:begin") {
+			t.Fatalf("rc %s missing sentinel: %s", p, got)
+		}
+	}
+}
+
+type multiRcShell struct {
+	name      string
+	aliasPath string
+	rcPaths   []string
+}
+
+func (m *multiRcShell) Name() string               { return m.name }
+func (m *multiRcShell) AliasFile() string          { return m.aliasPath }
+func (m *multiRcShell) RcFiles() ([]string, error) { return m.rcPaths, nil }
+func (m *multiRcShell) Quote(s string) string      { return pwshQuote(s) }
+func (m *multiRcShell) EmitAlias(n string, p []string) string {
+	return (&pwshShell{}).EmitAlias(n, p)
 }

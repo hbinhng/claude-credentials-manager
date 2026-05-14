@@ -6,10 +6,10 @@ import (
 	"strings"
 )
 
-// pwshResolver returns the absolute path to the PowerShell profile to
+// pwshResolver returns the absolute paths to the PowerShell profiles to
 // modify. Replaced in tests; in production wired in detect_windows.go.
-var pwshResolver func() (string, error) = func() (string, error) {
-	return "", errors.New("pwsh profile resolution not configured")
+var pwshResolver func() ([]string, error) = func() ([]string, error) {
+	return nil, errors.New("pwsh profile resolution not configured")
 }
 
 // pwshShell implements Shell for PowerShell (5.1+ compatible).
@@ -23,7 +23,7 @@ func (pwshShell) AliasFile() string {
 	return filepath.Join(resolveHome(), "aliases.ps1")
 }
 
-func (pwshShell) RcFile() (string, error) { return pwshResolver() }
+func (pwshShell) RcFiles() ([]string, error) { return pwshResolver() }
 
 func (pwshShell) Quote(arg string) string { return pwshQuote(arg) }
 

@@ -6,7 +6,7 @@ import (
 )
 
 // posixShell implements Shell for bash and zsh. They share an emitter
-// and quoter; only Name() and RcFile() differ.
+// and quoter; only Name() and RcFiles() differ.
 type posixShell struct {
 	name   string // "bash" | "zsh"
 	rcBase string // ".bashrc" | ".zshrc"
@@ -21,12 +21,13 @@ func (p *posixShell) AliasFile() string {
 	return filepath.Join(resolveHome(), "aliases.sh")
 }
 
-func (p *posixShell) RcFile() (string, error) {
+func (p *posixShell) RcFiles() ([]string, error) {
 	home, err := userHomeDir()
 	if err != nil {
-		return "", err
+		// coverage: unreachable on supported OSes
+		return nil, err
 	}
-	return filepath.Join(home, p.rcBase), nil
+	return []string{filepath.Join(home, p.rcBase)}, nil
 }
 
 func (p *posixShell) Quote(arg string) string { return posixQuote(arg) }

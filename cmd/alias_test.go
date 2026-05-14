@@ -129,7 +129,7 @@ type fakeBash struct{}
 
 func (fakeBash) Name() string                      { return "bash" }
 func (fakeBash) AliasFile() string                 { return "" }
-func (fakeBash) RcFile() (string, error)           { return "", nil }
+func (fakeBash) RcFiles() ([]string, error)        { return []string{""}, nil }
 func (fakeBash) EmitAlias(string, []string) string { return "" }
 func (fakeBash) Quote(string) string               { return "" }
 
