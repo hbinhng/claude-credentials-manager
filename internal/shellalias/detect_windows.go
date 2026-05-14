@@ -27,8 +27,7 @@ func currentShellHint() string {
 // resolvePwshProfile invokes the detected PowerShell with -NoProfile
 // and reads $PROFILE. We prefer pwsh (PS 7+) when installed, falling
 // back to powershell.exe (Windows PowerShell 5.1, present on all
-// modern Windows). The result is cached by callers of pwshResolver()
-// indirectly via the Shell.RcFile() contract.
+// modern Windows).
 func resolvePwshProfile() (string, error) {
 	for _, bin := range []string{"pwsh", "powershell.exe"} {
 		if _, err := lookPath(bin); err != nil {
