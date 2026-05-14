@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"regexp"
 	"strings"
+	"text/tabwriter"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/shellalias"
 	"github.com/spf13/cobra"
@@ -159,10 +160,41 @@ func runAliasList(out io.Writer) error {
 		fmt.Fprintln(out, "no ccm aliases defined")
 		return nil
 	}
+	w := tabwriter.NewWriter(out, 2, 4, 2, ' ', 0)
+	fmt.Fprintln(w, "NAME\tSHELLS\tLAUNCH ARGS")
 	for _, e := range entries {
-		fmt.Fprintf(out, "%-20s %s\n", e.Name, e.Shell)
+		fmt.Fprintf(w, "%s\t%s\t%s\n",
+			e.Name,
+			strings.Join(e.Shells, " "),
+			redactPayload(e.Payload),
+		)
 	}
-	return nil
+	return w.Flush()
+}
+
+// redactPayload renders captured ccm-launch args as a single
+// space-joined string, censoring sensitive values. Today the only
+// censored field is the token after --via (the share ticket carries
+// an embedded access token).
+func redactPayload(args []string) string {
+	if len(args) == 0 {
+		return "(empty)"
+	}
+	out := make([]string, len(args))
+	censorNext := false
+	for i, tok := range args {
+		switch {
+		case censorNext:
+			out[i] = "<redacted>"
+			censorNext = false
+		case tok == "--via":
+			out[i] = tok
+			censorNext = true
+		default:
+			out[i] = tok
+		}
+	}
+	return strings.Join(out, " ")
 }
 
 func runAliasCreate(stdout, stderr io.Writer, a aliasArgs) error {

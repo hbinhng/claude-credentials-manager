@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -128,6 +129,14 @@ func TestList_AcrossShells(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d entries: %+v", len(got), got)
 	}
+	// aliases.sh is shared by bash+zsh, so the first entry should have both.
+	if !reflect.DeepEqual(got[0].Shells, []string{"bash", "zsh"}) {
+		t.Fatalf("first entry shells: got %v want [bash zsh]", got[0].Shells)
+	}
+	// aliases.fish is fish only.
+	if !reflect.DeepEqual(got[1].Shells, []string{"fish"}) {
+		t.Fatalf("second entry shells: got %v want [fish]", got[1].Shells)
+	}
 }
 
 func TestRemove_NotFound(t *testing.T) {
@@ -198,7 +207,8 @@ func (e *errRcShell) EmitAlias(n string, p []string) string {
 }
 
 func TestList_DedupesIdenticalBlocks(t *testing.T) {
-	// Same alias body in aliases.sh (bash+zsh) only counted once.
+	// aliases.sh is read once (not separately for bash and zsh), so an
+	// alias there produces exactly one entry with Shells = ["bash", "zsh"].
 	home := t.TempDir()
 	t.Setenv("CCM_HOME", home)
 	if err := os.WriteFile(filepath.Join(home, "aliases.sh"),
@@ -209,9 +219,11 @@ func TestList_DedupesIdenticalBlocks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// bash and zsh both read aliases.sh — dedup should reduce 2→1.
 	if len(got) != 1 || got[0].Name != "cld" {
 		t.Fatalf("got %+v", got)
+	}
+	if !reflect.DeepEqual(got[0].Shells, []string{"bash", "zsh"}) {
+		t.Fatalf("shells: got %v want [bash zsh]", got[0].Shells)
 	}
 }
 
@@ -376,5 +388,63 @@ func TestRemove_WriteError(t *testing.T) {
 	err := Remove("cld")
 	if err == nil {
 		t.Fatal("expected write error from Remove")
+	}
+}
+
+func TestList_PayloadExtraction(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CCM_HOME", home)
+	content := "# ccm-alias:begin:cld\n# ccm-alias:payload:[\"--load-balance\",\"cred-a\"]\ncld() { ccm launch '--load-balance' 'cred-a' \"$@\"; }\n# ccm-alias:end:cld\n"
+	if err := os.WriteFile(filepath.Join(home, "aliases.sh"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries", len(entries))
+	}
+	got := entries[0]
+	wantShells := []string{"bash", "zsh"}
+	if !reflect.DeepEqual(got.Shells, wantShells) {
+		t.Fatalf("shells: got %v want %v", got.Shells, wantShells)
+	}
+	wantPayload := []string{"--load-balance", "cred-a"}
+	if !reflect.DeepEqual(got.Payload, wantPayload) {
+		t.Fatalf("payload: got %v want %v", got.Payload, wantPayload)
+	}
+}
+
+func TestList_MissingPayloadCommentReturnsNil(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CCM_HOME", home)
+	// Block without the payload comment.
+	content := "# ccm-alias:begin:cld\ncld() { ccm launch x; }\n# ccm-alias:end:cld\n"
+	if err := os.WriteFile(filepath.Join(home, "aliases.sh"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Payload != nil {
+		t.Fatalf("expected nil payload, got %+v", entries)
+	}
+}
+
+func TestList_CorruptedPayloadReturnsNil(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("CCM_HOME", home)
+	content := "# ccm-alias:begin:cld\n# ccm-alias:payload:not-valid-json\ncld() { ccm launch x; }\n# ccm-alias:end:cld\n"
+	if err := os.WriteFile(filepath.Join(home, "aliases.sh"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entries[0].Payload != nil {
+		t.Fatalf("expected nil payload, got %v", entries[0].Payload)
 	}
 }
