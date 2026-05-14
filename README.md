@@ -156,6 +156,26 @@ Does not require any ccm-managed credential on the local machine — the bearer 
 
 In both modes, any arguments after `--` are passed to `claude` verbatim.
 
+### `ccm alias --as <name> <ccm launch args...>`
+
+Install a persistent shell alias bound to a captured `ccm launch` invocation, so a long load-balance pool or remote ticket becomes a one-word command.
+
+```bash
+ccm alias --as cld --load-balance work personal
+cld -- -p 'hi'
+```
+
+`cld` expands to `ccm launch --load-balance work personal "$@"` (or the shell-specific equivalent). Any args you pass to `cld` are appended at the end — typically the `--` separator and claude flags.
+
+Supported shells: bash, zsh, fish, PowerShell. On hosts with multiple shells installed, `ccm alias` shows an interactive picker (or use `--shells bash,zsh` to select non-interactively). Files written: `$CCM_HOME/aliases.{sh,fish,ps1}` plus a one-time sentinel-fenced `source`/`.` snippet in each chosen shell's rc file.
+
+```bash
+ccm alias --list           # show installed aliases
+ccm alias --remove cld     # delete one
+```
+
+No `--` separator is required between `ccm alias`'s own flags and the captured `ccm launch` payload. A literal `--` inside the payload is preserved verbatim (it's how `ccm launch` separates its flags from claude's). Run `ccm alias --help` for the full surface (`--force`, the macOS bash quirk, `CCM_HOME` interaction).
+
 ### `ccm ticket`
 
 Build a `ccm launch --via` ticket from an endpoint URL and access token. Offline utility — no credential store, no network, no proxy. Useful when you already have a tunnel and bearer in hand (terminated `ccm share`, hand-rolled `cloudflared`, dev proxy) and just need the encoded form.
