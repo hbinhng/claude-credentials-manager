@@ -30,7 +30,7 @@ func TestPOSIX_QuoteEmpty(t *testing.T) {
 func TestPOSIX_EmitAlias_NoArgs(t *testing.T) {
 	s := newBash()
 	got := s.EmitAlias("cld", nil)
-	want := `cld() { ccm launch "$@"; }`
+	want := `cld() { ccm launch -- "$@"; }`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -39,7 +39,7 @@ func TestPOSIX_EmitAlias_NoArgs(t *testing.T) {
 func TestPOSIX_EmitAlias_LoadBalance(t *testing.T) {
 	s := newBash()
 	got := s.EmitAlias("cld", []string{"--load-balance", "cred-a", "cred-b"})
-	want := `cld() { ccm launch '--load-balance' 'cred-a' 'cred-b' "$@"; }`
+	want := `cld() { ccm launch '--load-balance' 'cred-a' 'cred-b' -- "$@"; }`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -48,7 +48,7 @@ func TestPOSIX_EmitAlias_LoadBalance(t *testing.T) {
 func TestPOSIX_EmitAlias_WithDoubleDashPayload(t *testing.T) {
 	s := newBash()
 	got := s.EmitAlias("cld", []string{"--load-balance", "c", "--", "-p", "hi"})
-	want := `cld() { ccm launch '--load-balance' 'c' '--' '-p' 'hi' "$@"; }`
+	want := `cld() { ccm launch '--load-balance' 'c' '--' '-p' 'hi' -- "$@"; }`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

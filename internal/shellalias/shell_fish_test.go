@@ -29,7 +29,7 @@ func TestFish_QuoteSingleQuote(t *testing.T) {
 func TestFish_EmitAlias(t *testing.T) {
 	s := newFish()
 	got := s.EmitAlias("cld", []string{"--load-balance", "c"})
-	want := `function cld; ccm launch '--load-balance' 'c' $argv; end`
+	want := `function cld; ccm launch '--load-balance' 'c' -- $argv; end`
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}

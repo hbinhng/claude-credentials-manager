@@ -47,7 +47,7 @@ func TestInstall_WritesAliasFileAndRc(t *testing.T) {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(got), "# ccm-alias:begin:cld") ||
-		!strings.Contains(string(got), `cld() { ccm launch '--load-balance' 'c' "$@"; }`) {
+		!strings.Contains(string(got), `cld() { ccm launch '--load-balance' 'c' -- "$@"; }`) {
 		t.Fatalf("alias file: %s", got)
 	}
 	rc, err := os.ReadFile(fs.rcPath)
