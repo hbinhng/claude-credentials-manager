@@ -1,7 +1,6 @@
 package shellalias
 
 import (
-	"errors"
 	"strings"
 	"testing"
 )
@@ -52,11 +51,11 @@ func TestPwsh_AliasFile_RespectsCCMHome(t *testing.T) {
 }
 
 func TestPwsh_RcFile_DefaultResolverErrors(t *testing.T) {
+	// Exercises the package-default pwshResolver, which is intentionally
+	// an error until Task 9 wires the real Windows resolver.
 	orig := pwshResolver
 	t.Cleanup(func() { pwshResolver = orig })
-	pwshResolver = func() (string, error) {
-		return "", errors.New("pwsh profile resolution not configured")
-	}
+	// Don't replace — call through to the existing default.
 	if _, err := newPwsh().RcFile(); err == nil {
 		t.Fatal("expected error from default resolver")
 	}
