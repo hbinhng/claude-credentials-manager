@@ -3,11 +3,17 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"regexp"
 	"strings"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/shellalias"
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 )
+
+// --- argv parser (preserved from Task 1) ---
 
 type aliasMode int
 
@@ -64,8 +70,8 @@ func parseAliasArgs(argv []string) (aliasArgs, error) {
 	}
 
 	// Create flow: walk, consume our flags, append rest to payload.
-	asProvided := false
 	i := 0
+	asProvided := false
 	for i < len(argv) {
 		switch argv[i] {
 		case "--as":
@@ -100,7 +106,7 @@ func parseAliasArgs(argv []string) (aliasArgs, error) {
 		}
 	}
 
-	if !asProvided {
+	if !asProvided && out.name == "" {
 		return out, errors.New("--as <name> is required")
 	}
 	if !aliasNameRe.MatchString(out.name) {
@@ -112,19 +118,175 @@ func parseAliasArgs(argv []string) (aliasArgs, error) {
 	return out, nil
 }
 
+// --- dispatch hooks (replaceable in tests) ---
+
+var (
+	aliasDetectFn  = shellalias.Detect
+	aliasInstallFn = shellalias.Install
+	aliasListFn    = shellalias.List
+	aliasRemoveFn  = shellalias.Remove
+	aliasPromptFn  = shellalias.SelectShells
+	aliasIsTTYFn   = func() bool { return term.IsTerminal(int(os.Stdin.Fd())) }
+)
+
+func runAlias(stdout, stderr io.Writer, argv []string) error {
+	a, err := parseAliasArgs(argv)
+	if err != nil {
+		return err
+	}
+	switch a.mode {
+	case aliasModeList:
+		return runAliasList(stdout)
+	case aliasModeRemove:
+		if err := aliasRemoveFn(a.name); err != nil {
+			return fmt.Errorf("ccm alias: %s: %w", a.name, err)
+		}
+		fmt.Fprintf(stdout, "removed alias %q\n", a.name)
+		return nil
+	default:
+		return runAliasCreate(stdout, stderr, a)
+	}
+}
+
+func runAliasList(out io.Writer) error {
+	entries, err := aliasListFn()
+	if err != nil {
+		return err
+	}
+	if len(entries) == 0 {
+		fmt.Fprintln(out, "no ccm aliases defined")
+		return nil
+	}
+	for _, e := range entries {
+		fmt.Fprintf(out, "%-20s %s\n", e.Name, e.Shell)
+	}
+	return nil
+}
+
+func runAliasCreate(stdout, stderr io.Writer, a aliasArgs) error {
+	targets, err := resolveTargets(stderr, a.shells)
+	if err != nil {
+		return err
+	}
+	errs := aliasInstallFn(a.name, a.payload, targets, a.force)
+	var firstErr error
+	for i, e := range errs {
+		if e != nil {
+			fmt.Fprintf(stderr, "ccm alias: %s: %v\n", targets[i].Name(), e)
+			if firstErr == nil {
+				firstErr = e
+			}
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	names := make([]string, len(targets))
+	for i, t := range targets {
+		names[i] = t.Name()
+	}
+	fmt.Fprintf(stdout, "installed alias %q for %s\n", a.name, strings.Join(names, ", "))
+	fmt.Fprintln(stdout, "open a new terminal (or `source` your rc) to use it")
+	return nil
+}
+
+func resolveTargets(stderr io.Writer, requested []string) ([]shellalias.Shell, error) {
+	detected := aliasDetectFn()
+	if len(requested) > 0 {
+		byName := map[string]shellalias.Shell{}
+		for _, sh := range detected {
+			byName[sh.Name()] = sh
+		}
+		var out []shellalias.Shell
+		for _, name := range requested {
+			sh, ok := byName[name]
+			if !ok {
+				sh = shellByName(name)
+				fmt.Fprintf(stderr, "ccm alias: %s not detected on PATH; file will be written anyway\n", name)
+			}
+			out = append(out, sh)
+		}
+		return out, nil
+	}
+	if len(detected) == 0 {
+		return nil, errors.New("ccm alias: no supported shells detected (pass --shells)")
+	}
+	if aliasIsTTYFn() {
+		picked, err := aliasPromptFn(detected, 0)
+		if err != nil {
+			return nil, err
+		}
+		return picked, nil
+	}
+	fmt.Fprintf(stderr, "ccm alias: stdin not a tty; defaulting to %s (pass --shells to override)\n", detected[0].Name())
+	return detected[:1], nil
+}
+
+func shellByName(name string) shellalias.Shell {
+	for _, sh := range []shellalias.Shell{
+		shellalias.NewBash(), shellalias.NewZsh(),
+		shellalias.NewFish(), shellalias.NewPwsh(),
+	} {
+		if sh.Name() == name {
+			return sh
+		}
+	}
+	// coverage: unreachable — argv parser rejects unknown names earlier.
+	return nil
+}
+
+// --- cobra wiring ---
+
 var aliasCmd = &cobra.Command{
 	Use:                "alias --as <name> <ccm launch args...> | --list | --remove <name>",
 	Short:              "Create, list, or remove a shell alias for `ccm launch`",
+	Long:               aliasLongDescription,
 	DisableFlagParsing: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		_, err := parseAliasArgs(args)
-		if err != nil {
-			return err
-		}
-		// Dispatch wired in Task 11.
-		return errors.New("ccm alias: not yet implemented")
+		return runAlias(os.Stdout, os.Stderr, args)
 	},
 }
+
+const aliasLongDescription = `Create, list, or remove a shell alias bound to a captured 'ccm launch'
+invocation.
+
+EXAMPLES
+
+  # Bind 'cld' to a load-balance pool:
+  ccm alias --as cld --load-balance cred-a cred-b
+
+  # Bind to a remote ticket:
+  ccm alias --as cld-prod --via eyJrI...
+
+  # Append claude args at use time:
+  cld -- -p "hello"
+
+  # Pre-bake claude args at create time:
+  ccm alias --as cld --load-balance cred-a -- -p "hi"
+
+  # List installed aliases:
+  ccm alias --list
+
+  # Remove one:
+  ccm alias --remove cld
+
+NOTES
+
+  * No '--' separator is required between 'ccm alias' flags and the
+    captured payload. A literal '--' inside the payload is preserved
+    because 'ccm launch' uses it to separate launch flags from claude
+    args.
+  * Supported shells: bash, zsh, fish, PowerShell. CMD is detected
+    only to print a hint; nothing is written for it.
+  * On macOS, bash login shells read ~/.bash_profile (not ~/.bashrc).
+    If you use bash on macOS, source ~/.bashrc from ~/.bash_profile
+    or run with --shells zsh (the macOS default).
+  * Files written: $CCM_HOME/aliases.{sh,fish,ps1} and a sentinel-
+    fenced block in your shell's rc file. The block sources the
+    aliases file; subsequent 'ccm alias' invocations only mutate the
+    aliases file, never re-touch the rc.
+  * If you move $CCM_HOME, re-run 'ccm alias --as ...' once so the
+    baked path in your rc snippet regenerates.`
 
 func init() {
 	rootCmd.AddCommand(aliasCmd)

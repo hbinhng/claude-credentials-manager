@@ -1,9 +1,14 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
+	"io"
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/shellalias"
 )
 
 func TestParseAliasArgs_Create_Minimal(t *testing.T) {
@@ -101,5 +106,242 @@ func TestParseAliasArgs_Errors(t *testing.T) {
 				t.Fatalf("got err %v want substring %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// resetAliasHooks restores the dispatcher's test seams to their
+// production defaults. Call from each TestAliasDispatch_* via t.Cleanup.
+func resetAliasHooks() {
+	aliasDetectFn = shellalias.Detect
+	aliasInstallFn = shellalias.Install
+	aliasListFn = shellalias.List
+	aliasRemoveFn = shellalias.Remove
+	aliasPromptFn = shellalias.SelectShells
+	aliasIsTTYFn = func() bool { return false }
+}
+
+// fakeBash is a Shell stub used by dispatch tests; the install hook is
+// replaced so no real I/O happens through these methods.
+type fakeBash struct{}
+
+func (fakeBash) Name() string                      { return "bash" }
+func (fakeBash) AliasFile() string                 { return "" }
+func (fakeBash) RcFile() (string, error)           { return "", nil }
+func (fakeBash) EmitAlias(string, []string) string { return "" }
+func (fakeBash) Quote(string) string               { return "" }
+
+func TestAliasDispatch_Create_FlagSelectsShells(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+
+	var capturedShells []string
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		for _, sh := range targets {
+			capturedShells = append(capturedShells, sh.Name())
+		}
+		return make([]error, len(targets))
+	}
+	aliasDetectFn = func() []shellalias.Shell { return nil }
+	aliasIsTTYFn = func() bool { return false }
+
+	var stdout bytes.Buffer
+	err := runAlias(&stdout, &stdout, []string{
+		"--as", "cld", "--shells", "bash,zsh", "--load-balance", "c",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capturedShells) != 2 {
+		t.Fatalf("got %v", capturedShells)
+	}
+}
+
+func TestAliasDispatch_Create_NonTTY_DefaultsToHint(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	aliasIsTTYFn = func() bool { return false }
+
+	var called []string
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		for _, sh := range targets {
+			called = append(called, sh.Name())
+		}
+		return make([]error, len(targets))
+	}
+	err := runAlias(io.Discard, &bytes.Buffer{}, []string{"--as", "cld", "--load-balance", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(called) != 1 || called[0] != "bash" {
+		t.Fatalf("got %v", called)
+	}
+}
+
+func TestAliasDispatch_List_PrintsTable(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+
+	aliasListFn = func() ([]shellalias.ListEntry, error) {
+		return []shellalias.ListEntry{
+			{Name: "cld", Shell: "bash", Body: "cld() { ccm launch x; }"},
+		}, nil
+	}
+	var out bytes.Buffer
+	if err := runAlias(&out, &out, []string{"--list"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "cld") || !strings.Contains(out.String(), "bash") {
+		t.Fatalf("missing fields: %s", out.String())
+	}
+}
+
+func TestAliasDispatch_List_Empty(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasListFn = func() ([]shellalias.ListEntry, error) { return nil, nil }
+	var out bytes.Buffer
+	if err := runAlias(&out, &out, []string{"--list"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "no ccm aliases defined") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestAliasDispatch_Remove_Missing(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasRemoveFn = func(name string) error { return shellalias.ErrNotFound }
+	err := runAlias(io.Discard, io.Discard, []string{"--remove", "missing"})
+	if err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAliasDispatch_Remove_Success(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasRemoveFn = func(name string) error { return nil }
+	var out bytes.Buffer
+	if err := runAlias(&out, &out, []string{"--remove", "cld"}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "removed alias") {
+		t.Fatalf("got %q", out.String())
+	}
+}
+
+func TestAliasDispatch_Create_TTYPromptsForShells(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+
+	aliasIsTTYFn = func() bool { return true }
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	aliasPromptFn = func(shells []shellalias.Shell, hint int) ([]shellalias.Shell, error) {
+		// Simulate the user picking the detected default.
+		return shells, nil
+	}
+	var installCalled bool
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		installCalled = true
+		return make([]error, len(targets))
+	}
+	if err := runAlias(io.Discard, io.Discard, []string{"--as", "cld", "--load-balance", "c"}); err != nil {
+		t.Fatal(err)
+	}
+	if !installCalled {
+		t.Fatal("install hook not called")
+	}
+}
+
+func TestAliasDispatch_Create_NoShellsDetected(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasIsTTYFn = func() bool { return false }
+	aliasDetectFn = func() []shellalias.Shell { return nil }
+	err := runAlias(io.Discard, &bytes.Buffer{}, []string{"--as", "cld", "--load-balance", "c"})
+	if err == nil || !strings.Contains(err.Error(), "no supported shells") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAliasDispatch_Create_PromptCancelled(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasIsTTYFn = func() bool { return true }
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	aliasPromptFn = func(shells []shellalias.Shell, hint int) ([]shellalias.Shell, error) {
+		return nil, shellalias.ErrCancelled
+	}
+	err := runAlias(io.Discard, io.Discard, []string{"--as", "cld", "--load-balance", "c"})
+	if !errors.Is(err, shellalias.ErrCancelled) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAliasDispatch_Create_ShellNotDetectedButRequested(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	// fish isn't in detected shells, but user asks for it via --shells.
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	var capturedNames []string
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		for _, sh := range targets {
+			capturedNames = append(capturedNames, sh.Name())
+		}
+		return make([]error, len(targets))
+	}
+	var stderr bytes.Buffer
+	err := runAlias(io.Discard, &stderr, []string{"--as", "cld", "--shells", "fish", "--load-balance", "c"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(capturedNames) != 1 || capturedNames[0] != "fish" {
+		t.Fatalf("got %v", capturedNames)
+	}
+	if !strings.Contains(stderr.String(), "not detected on PATH") {
+		t.Fatalf("missing warning: %s", stderr.String())
+	}
+}
+
+func TestAliasDispatch_Create_InstallError(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasDetectFn = func() []shellalias.Shell { return []shellalias.Shell{fakeBash{}} }
+	aliasInstallFn = func(name string, payload []string, targets []shellalias.Shell, force bool) []error {
+		errs := make([]error, len(targets))
+		errs[0] = errors.New("disk full")
+		return errs
+	}
+	var stderr bytes.Buffer
+	err := runAlias(io.Discard, &stderr, []string{"--as", "cld", "--load-balance", "c"})
+	if err == nil {
+		t.Fatal("expected install error to propagate")
+	}
+	if !strings.Contains(stderr.String(), "disk full") {
+		t.Fatalf("missing error in stderr: %s", stderr.String())
+	}
+}
+
+func TestAliasDispatch_ParseError_Propagates(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	err := runAlias(io.Discard, io.Discard, []string{"--as"})
+	if err == nil || !strings.Contains(err.Error(), "--as requires a value") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestAliasDispatch_List_Error(t *testing.T) {
+	resetAliasHooks()
+	t.Cleanup(resetAliasHooks)
+	aliasListFn = func() ([]shellalias.ListEntry, error) {
+		return nil, errors.New("disk error")
+	}
+	err := runAlias(io.Discard, io.Discard, []string{"--list"})
+	if err == nil || !strings.Contains(err.Error(), "disk error") {
+		t.Fatalf("got %v", err)
 	}
 }
