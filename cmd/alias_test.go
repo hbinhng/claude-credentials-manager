@@ -187,15 +187,44 @@ func TestAliasDispatch_List_PrintsTable(t *testing.T) {
 
 	aliasListFn = func() ([]shellalias.ListEntry, error) {
 		return []shellalias.ListEntry{
-			{Name: "cld", Shell: "bash", Body: "cld() { ccm launch x; }"},
+			{Name: "cld", Shells: []string{"bash", "zsh"}, Payload: []string{"--load-balance", "cred-a"}},
+			{Name: "cld-prod", Shells: []string{"pwsh"}, Payload: []string{"--via", "eyJrI..."}},
 		}, nil
 	}
 	var out bytes.Buffer
 	if err := runAlias(&out, &out, []string{"--list"}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out.String(), "cld") || !strings.Contains(out.String(), "bash") {
-		t.Fatalf("missing fields: %s", out.String())
+	str := out.String()
+	for _, want := range []string{"NAME", "SHELLS", "LAUNCH ARGS", "cld", "bash zsh", "--load-balance cred-a", "cld-prod", "pwsh", "--via <redacted>"} {
+		if !strings.Contains(str, want) {
+			t.Fatalf("missing %q in output:\n%s", want, str)
+		}
+	}
+	// The raw ticket must never appear.
+	if strings.Contains(str, "eyJrI...") {
+		t.Fatalf("raw ticket leaked into output:\n%s", str)
+	}
+}
+
+func TestRedactPayload(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"empty", nil, "(empty)"},
+		{"no via", []string{"--load-balance", "cred-a"}, "--load-balance cred-a"},
+		{"via only", []string{"--via", "secret"}, "--via <redacted>"},
+		{"via mid", []string{"--rebalance-interval", "10m", "--via", "secret"}, "--rebalance-interval 10m --via <redacted>"},
+		{"trailing via", []string{"--via"}, "--via"}, // no next token to redact
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := redactPayload(tc.in); got != tc.want {
+				t.Fatalf("got %q want %q", got, tc.want)
+			}
+		})
 	}
 }
 
