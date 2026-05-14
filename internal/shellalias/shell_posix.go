@@ -25,6 +25,7 @@ func (p *posixShell) AliasFile() string {
 func (p *posixShell) RcFile() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
+		// coverage: unreachable on supported OSes
 		return "", err
 	}
 	return filepath.Join(home, p.rcBase), nil
