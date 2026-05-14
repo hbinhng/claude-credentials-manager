@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"golang.org/x/term"
 )
@@ -106,7 +107,8 @@ func render(out io.Writer, shells []Shell, checked []bool, cursor int) {
 		if i == cursor {
 			prefix = "> "
 		}
-		rc, _ := sh.RcFile()
+		rcs, _ := sh.RcFiles()
+		rc := strings.Join(rcs, ", ")
 		fmt.Fprintf(out, "%s[%s] %-8s %s\r\n", prefix, mark, sh.Name(), rc)
 	}
 	fmt.Fprint(out, "\r\nspace = toggle, enter = confirm, esc = cancel\r\n")

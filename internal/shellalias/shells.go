@@ -6,7 +6,7 @@ package shellalias
 type Shell interface {
 	Name() string                                   // "bash" | "zsh" | "fish" | "pwsh"
 	AliasFile() string                              // absolute path under $CCM_HOME
-	RcFile() (string, error)                        // absolute path to the rc we modify
+	RcFiles() ([]string, error)                     // absolute paths to the rc files we modify (>=1)
 	EmitAlias(name string, payload []string) string // function body w/ proper quoting
 	Quote(arg string) string                        // single-token quoter
 }

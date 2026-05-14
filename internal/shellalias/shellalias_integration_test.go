@@ -62,7 +62,8 @@ func runPOSIXIntegration(t *testing.T, shellBin string) {
 		t.Fatal(errs[0])
 	}
 
-	rcPath, _ := sh.RcFile()
+	rcPaths, _ := sh.RcFiles()
+	rcPath := rcPaths[0]
 	script := "source " + rcPath + " && cld extra-arg"
 	cmd := exec.Command(shellBin, "-c", script)
 	cmd.Env = append(os.Environ(),
@@ -94,7 +95,8 @@ func TestIntegration_Fish(t *testing.T) {
 	if errs := Install("cld", []string{"--load-balance", "c"}, []Shell{sh}, false); errs[0] != nil {
 		t.Fatal(errs[0])
 	}
-	rcPath, _ := sh.RcFile()
+	rcPaths, _ := sh.RcFiles()
+	rcPath := rcPaths[0]
 	cmd := exec.Command("fish", "-c", "source "+rcPath+"; cld extra-arg")
 	cmd.Env = append(os.Environ(),
 		"PATH="+filepath.Dir(fakeCcm)+":"+os.Getenv("PATH"),
@@ -131,7 +133,8 @@ func TestIntegration_DoubleDashPreserved(t *testing.T) {
 		[]Shell{sh}, false); errs[0] != nil {
 		t.Fatal(errs[0])
 	}
-	rcPath, _ := sh.RcFile()
+	rcPaths, _ := sh.RcFiles()
+	rcPath := rcPaths[0]
 	cmd := exec.Command("bash", "-c", "source "+rcPath+" && cld --verbose")
 	cmd.Env = append(os.Environ(),
 		"PATH="+filepath.Dir(fakeCcm)+":"+os.Getenv("PATH"),

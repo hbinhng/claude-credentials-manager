@@ -16,12 +16,13 @@ func (fishShell) AliasFile() string {
 	return filepath.Join(resolveHome(), "aliases.fish")
 }
 
-func (fishShell) RcFile() (string, error) {
+func (fishShell) RcFiles() ([]string, error) {
 	home, err := userHomeDir()
 	if err != nil {
-		return "", err
+		// coverage: unreachable on supported OSes
+		return nil, err
 	}
-	return filepath.Join(home, ".config", "fish", "config.fish"), nil
+	return []string{filepath.Join(home, ".config", "fish", "config.fish")}, nil
 }
 
 func (fishShell) Quote(arg string) string { return fishQuote(arg) }

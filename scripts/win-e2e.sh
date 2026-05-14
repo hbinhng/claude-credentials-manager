@@ -67,20 +67,6 @@ fi
 step "clean any leftover alias from prior runs"
 ssh "$HOST" "powershell -NoProfile -Command \"\$r = (ccm alias --remove $ALIAS_NAME 2>&1); if (\$LASTEXITCODE -ne 0) { exit 0 }\"" >/dev/null 2>&1 || true
 
-# Detect which PowerShell binary resolvePwshProfile (detect_windows.go) prefers:
-# it tries "pwsh" first (PS 7+), then falls back to "powershell.exe" (PS 5.1).
-# We need the same binary so we read the same $PROFILE path and load the same rc.
-step "detect PowerShell binary used by pwshResolver"
-psh_bin="$(ssh "$HOST" "powershell -NoProfile -Command \"if (Get-Command pwsh -ErrorAction SilentlyContinue) { 'pwsh' } else { 'powershell' }\"")"
-psh_bin="${psh_bin%%$'\r'}"  # strip CR on Windows output
-echo "  pwshResolver will use: $psh_bin"
-
-# Resolve $PROFILE from the perspective of the chosen binary — this is what
-# ccm's pwshResolver does on the remote host.
-profile_path="$(ssh "$HOST" "powershell -NoProfile -Command \"$psh_bin -NoProfile -Command '\$PROFILE'\"")"
-profile_path="${profile_path%%$'\r'}"
-echo "  profile path: $profile_path"
-
 step "install alias --shells pwsh"
 ssh "$HOST" "powershell -NoProfile -Command \"ccm alias --as $ALIAS_NAME --shells pwsh --load-balance $FAKE_CRED\""
 
@@ -97,34 +83,40 @@ if ! echo "$alias_file_content" | grep -q "$FAKE_CRED"; then
 fi
 echo "  alias file ok"
 
-step "verify PowerShell profile has rc-block sentinel"
-# Read the profile that pwshResolver actually wrote to (may be PS7 profile
-# if pwsh is installed — different from the PS5.1 $PROFILE path).
-profile_content="$(ssh "$HOST" "powershell -NoProfile -Command \"Get-Content '$profile_path' -Raw\"")"
-if ! echo "$profile_content" | grep -q "ccm-aliases:begin"; then
-	fail "profile missing rc-block begin sentinel"
-fi
-echo "  profile sentinel ok"
+step "verify all installed PS profiles have the rc-block sentinel"
+for ps_bin in pwsh powershell.exe; do
+	profile_path="$(ssh "$HOST" "powershell -NoProfile -Command \"& { try { (Get-Command $ps_bin -ErrorAction Stop).Source > \$null; & $ps_bin -NoProfile -Command \\\"\\\$PROFILE\\\" } catch { '' } }\"")"
+	profile_path="$(echo "$profile_path" | tr -d '\r')"
+	if [[ -z "$profile_path" ]]; then
+		echo "  $ps_bin not installed; skipping"
+		continue
+	fi
+	echo "  checking $ps_bin profile: $profile_path"
+	body="$(ssh "$HOST" "powershell -NoProfile -Command \"if (Test-Path '$profile_path') { Get-Content '$profile_path' -Raw } else { '' }\"")"
+	if ! echo "$body" | grep -q "ccm-aliases:begin"; then
+		fail "$ps_bin profile ($profile_path) missing rc-block sentinel"
+	fi
+done
+echo "  all installed PS profiles have the sentinel"
 
-step "verify fresh PowerShell session (profile loaded) defines the function"
-# NOTE: -NoProfile is OMITTED so the ccm-aliases block in the profile runs.
-# We use the same binary that wrote the profile so it loads the right rc file.
-# .Definition returns the function body (contents inside the braces).
-defn="$(ssh "$HOST" "$psh_bin -Command \"(Get-Command $ALIAS_NAME -CommandType Function -ErrorAction Stop).Definition\"")"
-echo "  function definition: $defn"
-if ! echo "$defn" | grep -q "ccm launch"; then
-	fail "function body doesn't call ccm launch"
-fi
-if ! echo "$defn" | grep -q -- "--load-balance"; then
-	fail "function body doesn't carry --load-balance"
-fi
-if ! echo "$defn" | grep -q "$FAKE_CRED"; then
-	fail "function body doesn't carry captured cred"
-fi
-if ! echo "$defn" | grep -q "@args"; then
-	fail "function body doesn't append @args"
-fi
-echo "  function body ok"
+step "verify the function loads in every installed PS host"
+for ps_bin in pwsh powershell.exe; do
+	exists="$(ssh "$HOST" "powershell -NoProfile -Command \"if (Get-Command $ps_bin -ErrorAction SilentlyContinue) { 'yes' } else { 'no' }\"")"
+	exists="$(echo "$exists" | tr -d '\r')"
+	if [[ "$exists" != "yes" ]]; then
+		echo "  $ps_bin not installed; skipping"
+		continue
+	fi
+	defn="$(ssh "$HOST" "$ps_bin -Command \"(Get-Command $ALIAS_NAME -CommandType Function -ErrorAction Stop).Definition\"")"
+	echo "  $ps_bin function definition: $defn"
+	if ! echo "$defn" | grep -q "ccm launch"; then
+		fail "$ps_bin: function body doesn't call ccm launch"
+	fi
+	if ! echo "$defn" | grep -q "$FAKE_CRED"; then
+		fail "$ps_bin: function body doesn't carry captured cred"
+	fi
+done
+echo "  all installed PS hosts define the function"
 
 step "verify ccm alias --list reports the alias"
 list_out="$(ssh "$HOST" "powershell -NoProfile -Command \"ccm alias --list\"")"

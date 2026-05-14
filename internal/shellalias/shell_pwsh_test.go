@@ -50,29 +50,50 @@ func TestPwsh_AliasFile_RespectsCCMHome(t *testing.T) {
 	}
 }
 
-func TestPwsh_RcFile_DefaultResolverErrors(t *testing.T) {
+func TestPwsh_RcFiles_DefaultResolverErrors(t *testing.T) {
 	// Exercises the package-default pwshResolver, which is intentionally
-	// an error until Task 9 wires the real Windows resolver.
+	// an error until detect_windows.go wires the real Windows resolver.
 	orig := pwshResolver
 	t.Cleanup(func() { pwshResolver = orig })
 	// Don't replace — call through to the existing default.
-	if _, err := newPwsh().RcFile(); err == nil {
+	if _, err := newPwsh().RcFiles(); err == nil {
 		t.Fatal("expected error from default resolver")
 	}
 }
 
-func TestPwsh_RcFile_ConfiguredResolverReturnsPath(t *testing.T) {
+func TestPwsh_RcFiles_ConfiguredResolverReturnsPath(t *testing.T) {
 	orig := pwshResolver
 	t.Cleanup(func() { pwshResolver = orig })
-	pwshResolver = func() (string, error) {
-		return `C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`, nil
+	pwshResolver = func() ([]string, error) {
+		return []string{`C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`}, nil
 	}
-	got, err := newPwsh().RcFile()
+	rcs, err := newPwsh().RcFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(got, "Microsoft.PowerShell_profile.ps1") {
-		t.Fatalf("got %q", got)
+	if len(rcs) != 1 {
+		t.Fatalf("expected 1 path, got %d: %v", len(rcs), rcs)
+	}
+	if !strings.HasSuffix(rcs[0], "Microsoft.PowerShell_profile.ps1") {
+		t.Fatalf("got %q", rcs[0])
+	}
+}
+
+func TestPwsh_RcFiles_ReturnsAllProfiles(t *testing.T) {
+	orig := pwshResolver
+	t.Cleanup(func() { pwshResolver = orig })
+	pwshResolver = func() ([]string, error) {
+		return []string{
+			`C:\Users\u\Documents\PowerShell\Microsoft.PowerShell_profile.ps1`,
+			`C:\Users\u\Documents\WindowsPowerShell\Microsoft.PowerShell_profile.ps1`,
+		}, nil
+	}
+	rcs, err := newPwsh().RcFiles()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rcs) != 2 {
+		t.Fatalf("got %d paths, want 2: %v", len(rcs), rcs)
 	}
 }
 

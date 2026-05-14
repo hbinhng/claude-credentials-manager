@@ -56,21 +56,23 @@ func installOne(sh Shell, name string, payload []string) error {
 		return fmt.Errorf("write %s: %w", aliasPath, err)
 	}
 
-	rcPath, err := sh.RcFile()
+	rcPaths, err := sh.RcFiles()
 	if err != nil {
 		return fmt.Errorf("resolve %s rc: %w", sh.Name(), err)
 	}
-	if err := os.MkdirAll(filepath.Dir(rcPath), 0o755); err != nil {
-		return fmt.Errorf("create rc dir for %s: %w", sh.Name(), err)
-	}
-	rc, err := readOrEmpty(rcPath)
-	if err != nil {
-		return err
-	}
-	newRc := ensureRcSnippet(rc, flavorOf(sh), aliasPath)
-	if string(newRc) != string(rc) {
-		if err := os.WriteFile(rcPath, newRc, 0o600); err != nil {
-			return fmt.Errorf("write %s: %w", rcPath, err)
+	for _, rcPath := range rcPaths {
+		if err := os.MkdirAll(filepath.Dir(rcPath), 0o755); err != nil {
+			return fmt.Errorf("create rc dir for %s (%s): %w", sh.Name(), rcPath, err)
+		}
+		rc, err := readOrEmpty(rcPath)
+		if err != nil {
+			return err
+		}
+		newRc := ensureRcSnippet(rc, flavorOf(sh), aliasPath)
+		if string(newRc) != string(rc) {
+			if err := os.WriteFile(rcPath, newRc, 0o600); err != nil {
+				return fmt.Errorf("write %s: %w", rcPath, err)
+			}
 		}
 	}
 	return nil

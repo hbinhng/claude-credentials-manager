@@ -74,28 +74,35 @@ func TestPOSIX_AliasFile_RespectsCCMHome(t *testing.T) {
 	}
 }
 
-func TestPOSIX_RcFile_BashAndZsh(t *testing.T) {
-	bash, err := newBash().RcFile()
+func TestPOSIX_RcFiles_BashAndZsh(t *testing.T) {
+	bashRcs, err := newBash().RcFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	zsh, err := newZsh().RcFile()
+	if len(bashRcs) != 1 {
+		t.Fatalf("bash: expected 1 rc path, got %d: %v", len(bashRcs), bashRcs)
+	}
+	if !strings.HasSuffix(bashRcs[0], ".bashrc") {
+		t.Fatalf("bash rc: %q", bashRcs[0])
+	}
+
+	zshRcs, err := newZsh().RcFiles()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(bash, ".bashrc") {
-		t.Fatalf("bash rc: %q", bash)
+	if len(zshRcs) != 1 {
+		t.Fatalf("zsh: expected 1 rc path, got %d: %v", len(zshRcs), zshRcs)
 	}
-	if !strings.HasSuffix(zsh, ".zshrc") {
-		t.Fatalf("zsh rc: %q", zsh)
+	if !strings.HasSuffix(zshRcs[0], ".zshrc") {
+		t.Fatalf("zsh rc: %q", zshRcs[0])
 	}
 }
 
-func TestPOSIX_RcFile_UserHomeDirError(t *testing.T) {
+func TestPOSIX_RcFiles_UserHomeDirError(t *testing.T) {
 	orig := userHomeDir
 	t.Cleanup(func() { userHomeDir = orig })
 	userHomeDir = func() (string, error) { return "", errors.New("no home") }
-	if _, err := newBash().RcFile(); err == nil {
+	if _, err := newBash().RcFiles(); err == nil {
 		t.Fatal("expected error")
 	}
 }
