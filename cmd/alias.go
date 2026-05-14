@@ -275,14 +275,29 @@ EXAMPLES
   # Remove one:
   ccm alias --remove cld
 
+FLAGS
+
+  --as <name>       Alias name (required for create). Must match
+                    [A-Za-z_][A-Za-z0-9_-]*.
+  --shells <list>   Comma-separated subset of bash,zsh,fish,pwsh. If
+                    omitted on a TTY, an interactive picker runs;
+                    non-TTY falls back to the detected current shell.
+  --force           Reserved for future use (currently a no-op). Will
+                    eventually let you override shadow-binary warnings
+                    without prompting.
+  --list            List installed aliases. Mutually exclusive with
+                    create flags.
+  --remove <name>   Remove an installed alias. Mutually exclusive with
+                    create flags.
+
 NOTES
 
   * No '--' separator is required between 'ccm alias' flags and the
     captured payload. A literal '--' inside the payload is preserved
     because 'ccm launch' uses it to separate launch flags from claude
     args.
-  * Supported shells: bash, zsh, fish, PowerShell. CMD is detected
-    only to print a hint; nothing is written for it.
+  * Supported shells: bash, zsh, fish, PowerShell (5.1+). Other shells
+    (CMD, nushell, etc.) are not supported.
   * On macOS, bash login shells read ~/.bash_profile (not ~/.bashrc).
     If you use bash on macOS, source ~/.bashrc from ~/.bash_profile
     or run with --shells zsh (the macOS default).

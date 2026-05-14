@@ -32,6 +32,18 @@ func TestRcSnippet_Pwsh(t *testing.T) {
 	}
 }
 
+func TestRcSnippet_Pwsh_EscapesSingleQuoteInPath(t *testing.T) {
+	got := buildRcSnippet("pwsh", `C:\Users\O'Brien\.ccm\aliases.ps1`)
+	want := `'C:\Users\O''Brien\.ccm\aliases.ps1'`
+	if !strings.Contains(got, want) {
+		t.Fatalf("expected escaped path %q in snippet, got: %s", want, got)
+	}
+	// Ensure the line shape is still intact.
+	if !strings.Contains(got, "if (Test-Path ") {
+		t.Fatalf("missing Test-Path: %s", got)
+	}
+}
+
 func TestRcSnippet_HasSentinel_Detects(t *testing.T) {
 	if !hasRcSentinel([]byte("foo\n# ccm-aliases:begin\nbar\n# ccm-aliases:end\nbaz")) {
 		t.Fatal("should detect")

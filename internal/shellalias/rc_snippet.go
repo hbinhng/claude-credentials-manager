@@ -3,6 +3,7 @@ package shellalias
 import (
 	"bytes"
 	"fmt"
+	"strings"
 )
 
 const (
@@ -32,11 +33,12 @@ func buildRcSnippet(flavor, aliasFilePath string) string {
 			rcBeginSentinel, aliasFilePath, aliasFilePath, rcEndSentinel,
 		)
 	case "pwsh":
+		escaped := strings.ReplaceAll(aliasFilePath, "'", "''")
 		return fmt.Sprintf(
 			"%s\n"+
 				"if (Test-Path '%s') { . '%s' }\n"+
 				"%s\n",
-			rcBeginSentinel, aliasFilePath, aliasFilePath, rcEndSentinel,
+			rcBeginSentinel, escaped, escaped, rcEndSentinel,
 		)
 	default:
 		// coverage: unreachable — only the three flavors above call this.
