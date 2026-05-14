@@ -9,7 +9,7 @@ import (
 
 // ErrNotFound is returned by Remove when no shell file contained the
 // requested alias.
-var ErrNotFound = errors.New("ccm alias: alias not found")
+var ErrNotFound = errors.New("alias not found")
 
 // ListEntry is one ccm-managed alias as returned by List.
 type ListEntry struct {
