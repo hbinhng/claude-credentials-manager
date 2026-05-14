@@ -5,6 +5,7 @@ import (
 	"strings"
 )
 
+// fishShell implements Shell for fish.
 type fishShell struct{}
 
 func newFish() *fishShell { return &fishShell{} }
