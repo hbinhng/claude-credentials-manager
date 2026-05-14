@@ -1,6 +1,7 @@
 package shellalias
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -87,5 +88,14 @@ func TestPOSIX_RcFile_BashAndZsh(t *testing.T) {
 	}
 	if !strings.HasSuffix(zsh, ".zshrc") {
 		t.Fatalf("zsh rc: %q", zsh)
+	}
+}
+
+func TestPOSIX_RcFile_UserHomeDirError(t *testing.T) {
+	orig := userHomeDir
+	t.Cleanup(func() { userHomeDir = orig })
+	userHomeDir = func() (string, error) { return "", errors.New("no home") }
+	if _, err := newBash().RcFile(); err == nil {
+		t.Fatal("expected error")
 	}
 }
