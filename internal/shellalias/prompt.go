@@ -92,8 +92,11 @@ func selectShellsWithIO(shells []Shell, hintIndex int, readKey func() (rune, err
 }
 
 func render(out io.Writer, shells []Shell, checked []bool, cursor int) {
+	// In raw mode `\n` is line-feed only; we always pair it with `\r` so
+	// the cursor returns to column 0. Otherwise each line drifts right
+	// by the previous line's length.
 	fmt.Fprint(out, "\x1b[2J\x1b[H") // clear screen, home cursor
-	fmt.Fprintln(out, "ccm: where should the alias be installed?")
+	fmt.Fprint(out, "ccm: where should the alias be installed?\r\n")
 	for i, sh := range shells {
 		mark := " "
 		if checked[i] {
@@ -106,7 +109,7 @@ func render(out io.Writer, shells []Shell, checked []bool, cursor int) {
 		rc, _ := sh.RcFile()
 		fmt.Fprintf(out, "%s[%s] %-8s %s\r\n", prefix, mark, sh.Name(), rc)
 	}
-	fmt.Fprintln(out, "\r\nspace = toggle, enter = confirm, esc = cancel")
+	fmt.Fprint(out, "\r\nspace = toggle, enter = confirm, esc = cancel\r\n")
 }
 
 // readRawKey reads a single byte from stdin and casts to rune. Used in
