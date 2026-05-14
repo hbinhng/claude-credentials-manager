@@ -1,4 +1,4 @@
-.TH CCM 1 "May 2026" "ccm 1.19.0" "User Commands"
+.TH CCM 1 "May 2026" "ccm 1.21.0" "User Commands"
 .SH NAME
 ccm \- Claude Credentials Manager \(em manage multiple Claude OAuth sessions
 .SH SYNOPSIS
@@ -361,6 +361,57 @@ model names. Source patterns may use
 .B *
 as a wildcard; targets are literal. Boot-time validation rejects
 overlapping patterns.
+.RE
+.TP
+.B "alias \-\-as " \fIname\fR " " "\fI<ccm launch args...>\fR"
+Install a persistent shell alias bound to the captured
+.B "ccm launch"
+invocation. The alias is written to
+.B $CCM_HOME/aliases.sh
+(bash + zsh share this file),
+.BR aliases.fish ,
+or
+.B aliases.ps1
+depending on the chosen shell, and a sentinel-fenced source/dot snippet
+is added once to each target shell's rc file.
+.IP
+Supported shells: bash, zsh, fish, PowerShell (5.1+). On hosts where
+multiple shells are detected and
+.B \-\-shells
+is not passed, an interactive multi-select prompt runs (stdin must be a
+TTY); on non-TTY stdin the detected current shell is used and a stderr
+warning is emitted.
+.IP
+No
+.B --
+separator is required between
+.B "ccm alias"
+flags and the captured payload. A literal
+.B --
+inside the payload is preserved verbatim because
+.B "ccm launch"
+uses it to separate launch flags from claude args.
+.RS
+.PP
+.BR \-\-shells " " \fIlist\fR
+Comma-separated subset of
+.BR bash,zsh,fish,pwsh .
+Bypasses the interactive picker.
+.PP
+.B \-\-force
+Reserved for future use (currently a no-op).
+.PP
+.B \-\-list
+List installed aliases as a table with NAME, SHELLS, and LAUNCH ARGS
+columns. Tickets in
+.B \-\-via
+positions are redacted.
+.PP
+.BR \-\-remove " " \fIname\fR
+Remove a previously installed alias from every shell file it appears
+in. The rc snippet stays so future
+.B "ccm alias"
+invocations don't need to re-touch the rc.
 .RE
 .TP
 .B ticket --from-endpoint=\fIurl\fR --from-access-token=\fItoken\fR
