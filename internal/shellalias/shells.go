@@ -1,7 +1,5 @@
-// Package shellalias installs, lists, and removes ccm-managed shell
-// aliases across bash, zsh, fish, and PowerShell. It owns one alias
-// file per shell flavor under $CCM_HOME and a single sentinel-fenced
-// source/dot snippet inside each user's rc file.
+// Package shellalias defines the Shell interface and per-flavor
+// implementations that emit ccm alias definitions for a target shell.
 package shellalias
 
 // Shell is one target shell flavor.
