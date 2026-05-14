@@ -75,3 +75,18 @@ func TestPwsh_RcFile_ConfiguredResolverReturnsPath(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 }
+
+func TestPwsh_QuoteMultipleSingleQuotes(t *testing.T) {
+	// Verifies ReplaceAll doubles every ' not just the first.
+	if got := pwshQuote("a'b'c"); got != "'a''b''c'" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPwsh_EmitAlias_NoArgs(t *testing.T) {
+	got := newPwsh().EmitAlias("cld", nil)
+	want := `function cld { ccm launch @args }`
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
