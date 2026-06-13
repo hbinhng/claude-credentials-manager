@@ -17,7 +17,7 @@
     Override the install directory. Defaults to %LOCALAPPDATA%\Programs\ccm.
 
 .EXAMPLE
-    iwr https://raw.githubusercontent.com/hbinhng/claude-credentials-manager/main/scripts/install.ps1 -UseBasicParsing | iex
+    iwr https://raw.githubusercontent.com/hbinhng/claude-credentials-manager/main/scripts/install.ps1 | iex
 
 .EXAMPLE
     .\install.ps1 -Version v1.21.1
@@ -62,7 +62,7 @@ function Get-CcmArch {
 function Get-LatestVersion {
     $headers = @{ 'User-Agent' = 'ccm-installer' }
     $resp = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
-        -Headers $headers -UseBasicParsing
+        -Headers $headers
     if (-not $resp.tag_name) {
         throw "GitHub API returned no tag_name for $Repo/releases/latest"
     }
@@ -122,7 +122,7 @@ New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Write-Host "Downloading $asset ($Version) -> $target"
 $tmp = [IO.Path]::GetTempFileName()
 try {
-    Invoke-WebRequest -Uri $url -OutFile $tmp -UseBasicParsing `
+    Invoke-WebRequest -Uri $url -OutFile $tmp `
         -Headers @{ 'User-Agent' = 'ccm-installer' }
     Move-Item -Force -Path $tmp -Destination $target
 } catch {
