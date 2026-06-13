@@ -21,7 +21,7 @@ Installs the `ccm` binary and the `man ccm` manual page.
 ### Windows (PowerShell)
 
 ```powershell
-iwr https://raw.githubusercontent.com/hbinhng/claude-credentials-manager/main/scripts/install.ps1 -UseBasicParsing | iex
+iwr https://raw.githubusercontent.com/hbinhng/claude-credentials-manager/main/scripts/install.ps1 | iex
 ```
 
 Downloads the latest release for your CPU (amd64 / arm64) into `%LOCALAPPDATA%\Programs\ccm\ccm.exe` and adds that directory to your user PATH. No admin / elevation required. Open a new terminal once the script finishes so `ccm` is on `$env:Path`.
