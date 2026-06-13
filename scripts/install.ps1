@@ -7,7 +7,7 @@
     Downloads the latest ccm release binary for this CPU architecture,
     places it at %LOCALAPPDATA%\Programs\ccm\ccm.exe, and idempotently
     adds that directory to the user PATH so ccm is on $env:Path in new
-    shells. No admin / elevation required — every action is per-user.
+    shells. No admin / elevation required - every action is per-user.
 
 .PARAMETER Version
     Optional release tag to pin (e.g. v1.21.1). Defaults to the latest
@@ -79,7 +79,7 @@ function Add-UserPathEntry([string]$entry) {
         try {
             if ([IO.Path]::GetFullPath($p) -ieq $entryFull) { return $false }
         } catch {
-            # Malformed existing entry — skip the equality check rather
+            # Malformed existing entry - skip the equality check rather
             # than die on someone else's broken PATH.
         }
     }
@@ -88,7 +88,7 @@ function Add-UserPathEntry([string]$entry) {
 
     # Best-effort: broadcast WM_SETTINGCHANGE so any process listening
     # (Explorer, new Terminal tabs) re-reads Environment. Failure is
-    # non-fatal — new shells inherit the registry edit either way.
+    # non-fatal - new shells inherit the registry edit either way.
     try {
         if (-not ('Win32.NativeMethods' -as [type])) {
             Add-Type -Namespace Win32 -Name NativeMethods -MemberDefinition @'
@@ -128,7 +128,7 @@ try {
 } catch {
     if (Test-Path $tmp) { Remove-Item -Force $tmp -ErrorAction SilentlyContinue }
     if ($_.Exception.Message -match 'used by another process') {
-        throw "Cannot replace $target — another process (likely 'ccm serve') has it open. Stop it and re-run."
+        throw "Cannot replace $target - another process (likely 'ccm serve') has it open. Stop it and re-run."
     }
     throw
 }
@@ -144,7 +144,7 @@ if ($added) {
 }
 
 # Try printing the version from the absolute path. The CURRENT shell's
-# $env:Path is a snapshot taken at launch — even after we register the
+# $env:Path is a snapshot taken at launch - even after we register the
 # new directory, ccm.exe is not reachable by bare name here until the
 # user opens a new shell. Calling by absolute path sidesteps that.
 Write-Host ''
