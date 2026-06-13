@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/claude"
 )
 
 // DefaultCapturePrompt is the user-supplied prompt passed to `claude -p`
@@ -35,6 +37,17 @@ func RunCapture(ctx context.Context, proxy *Proxy, prompt string) error {
 	if _, err := exec.LookPath("claude"); err != nil {
 		return errors.New("could not find 'claude' on PATH — install Claude Code before running `ccm share`")
 	}
+
+	// On a fresh machine (notably codex-only setups) ~/.claude/.credentials.json
+	// may not exist yet, and `claude -p` refuses to start without it. Write a
+	// placeholder so claude boots far enough to emit identity headers; the
+	// CAPTURE-mode proxy never forwards the bogus tokens upstream, and the
+	// cleanup removes the stub iff its bytes are still unchanged.
+	stubCleanup, err := claude.EnsureFileStub()
+	if err != nil {
+		return fmt.Errorf("ensure claude credentials stub: %w", err)
+	}
+	defer stubCleanup()
 
 	runCtx, cancel := context.WithTimeout(ctx, DefaultCaptureTimeout)
 	defer cancel()
