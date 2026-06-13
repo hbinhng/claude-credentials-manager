@@ -18,6 +18,20 @@ brew install hbinhng/tap/ccm
 
 Installs the `ccm` binary and the `man ccm` manual page.
 
+### Windows (PowerShell)
+
+```powershell
+iwr https://raw.githubusercontent.com/hbinhng/claude-credentials-manager/main/scripts/install.ps1 -UseBasicParsing | iex
+```
+
+Downloads the latest release for your CPU (amd64 / arm64) into `%LOCALAPPDATA%\Programs\ccm\ccm.exe` and adds that directory to your user PATH. No admin / elevation required. Open a new terminal once the script finishes so `ccm` is on `$env:Path`.
+
+Pin a specific version or override the install directory by downloading the script and passing flags:
+
+```powershell
+.\install.ps1 -Version v1.21.1 -InstallDir 'C:\tools\ccm'
+```
+
 ### Download binary
 
 Grab the latest release for your platform from [Releases](https://github.com/hbinhng/claude-credentials-manager/releases), then:
