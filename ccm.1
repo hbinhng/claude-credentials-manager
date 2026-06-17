@@ -583,14 +583,14 @@ for
 .BR "ccm serve" .
 .TP
 .B \-\-load\-balance
-(share only) Pool every available credential (or every named credential
+(share and launch) Pool every available credential (or every named credential
 when arguments are given) and rotate the active entry every
 .B \-\-rebalance\-interval
 based on quota feasibility. Each entry is probed independently; degraded
 entries are demoted automatically and recovered when feasibility returns.
 .TP
 .BR \-\-rebalance\-interval " " \fIduration\fR
-(share only, requires
+(share and launch, requires
 .BR \-\-load\-balance )
 Tick interval for load\-balance rotation. Must be between 30s and 1h.
 Default:
