@@ -135,7 +135,7 @@ func (p *credPool) signalEntryFailed(sid, entryID string) {
 	count := e.consecutiveFail
 	name := e.state.credName()
 	p.mu.Unlock()
-	fmt.Fprintf(errLog(), "ccm share: hard failure on %s(%s), re-pinning session (failure %d/2)\n",
+	fmt.Fprintf(errLog(), "ccm share: hard failure on %s(%s), unpinning session (failure %d/2)\n",
 		name, shortID(entryID), count)
 }
 
