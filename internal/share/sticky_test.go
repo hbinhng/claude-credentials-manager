@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"testing"
 	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 )
 
 // stickyPool builds a pool and switches it into sticky mode with a fake
@@ -213,5 +215,150 @@ func TestRouteSessionPassthroughView(t *testing.T) {
 	}
 	if tok, _ := ts.Fresh(); tok != "ptok" {
 		t.Errorf("passthrough token = %q, want ptok", tok)
+	}
+}
+
+func TestSignalEntryFailedBumpsDegradesAndDropsPin(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 50
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+	_, _, _, _ = p.routeSession(sidA) // pins a
+
+	p.signalEntryFailed(sidA, "a")
+	if p.entries["a"].consecutiveFail != 1 {
+		t.Errorf("fail = %d, want 1", p.entries["a"].consecutiveFail)
+	}
+	if p.entries["a"].status != statusCandidate {
+		t.Errorf("status after 1 fail = %v, want candidate", p.entries["a"].status)
+	}
+	if _, ok := p.sessions[sidA]; ok {
+		t.Error("pin should be dropped on hard failure")
+	}
+
+	_, _, _, _ = p.routeSession(sidA) // re-pins a (still best, fail 1<2)
+	p.signalEntryFailed(sidA, "a")
+	if p.entries["a"].status != statusDegraded {
+		t.Errorf("status after 2 fails = %v, want degraded", p.entries["a"].status)
+	}
+}
+
+func TestSignalEntryFailedUnknownEntryNoPanic(t *testing.T) {
+	p, _ := stickyPool(t, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusCandidate, &fakeTokenSource{}),
+	})
+	p.signalEntryFailed("", "ghost") // must not panic
+}
+
+func TestQuotaExhausted(t *testing.T) {
+	if quotaExhausted(nil) {
+		t.Error("nil info must not be exhausted")
+	}
+	low := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 40}, {Name: "7d", Used: 80}}}
+	if quotaExhausted(low) {
+		t.Error("all windows below threshold must not be exhausted")
+	}
+	hi := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 40}, {Name: "7d", Used: 100}}}
+	if !quotaExhausted(hi) {
+		t.Error("a window at 100%% must be exhausted")
+	}
+}
+
+func TestNoteSuccessStampsLastSuccessAndResetsFail(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.consecutiveFail = 1
+	p, clk := stickyPool(t, map[string]*poolEntry{"a": eA})
+	_, _, _, _ = p.routeSession(sidA) // pin created; lastSuccess = t0
+	clk.Advance(5 * time.Minute)
+
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10, ResetsAt: "2099-01-01T00:00:00Z"}}}
+	p.noteSuccess(sidA, "a", info)
+
+	if p.entries["a"].consecutiveFail != 0 {
+		t.Errorf("consecutiveFail = %d, want 0", p.entries["a"].consecutiveFail)
+	}
+	if !p.sessions[sidA].lastSuccess.Equal(clk.Now()) {
+		t.Errorf("lastSuccess = %v, want %v", p.sessions[sidA].lastSuccess, clk.Now())
+	}
+	if p.entries["a"].lastUsage != info {
+		t.Error("lastUsage not stored")
+	}
+}
+
+func TestNoteEntryUsageRefreshesFeasibilityWithoutTouchingFail(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.consecutiveFail = 1
+	eA.lastFeasibility = 999
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA}) // clock = Unix(1_700_000_000)
+
+	// A fully-utilized 5h window resetting within the window → feasibility 0.
+	reset := time.Unix(1_700_000_000+3600, 0).UTC().Format(time.RFC3339)
+	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 100, ResetsAt: reset}}}
+	p.noteEntryUsage("a", info)
+
+	if p.entries["a"].consecutiveFail != 1 {
+		t.Errorf("consecutiveFail = %d, want 1 (unchanged)", p.entries["a"].consecutiveFail)
+	}
+	if p.entries["a"].lastFeasibility != 0 {
+		t.Errorf("lastFeasibility = %v, want 0 (exhausted window)", p.entries["a"].lastFeasibility)
+	}
+}
+
+func TestEvictSessionsDropsIdleAndStaleKeepsFresh(t *testing.T) {
+	const sidC = "33333333-3333-3333-3333-333333333333"
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	p, clk := stickyPool(t, map[string]*poolEntry{"a": eA})
+
+	// Three sessions pinned at t0 (lastSeen = lastSuccess = t0).
+	_, _, _, _ = p.routeSession(sidA)
+	_, _, _, _ = p.routeSession(sidB)
+	_, _, _, _ = p.routeSession(sidC)
+
+	// +45m: sidA fully refreshed (request + success); sidB request only
+	// (no success); sidC untouched.
+	clk.Advance(45 * time.Minute)
+	_, _, _, _ = p.routeSession(sidA)
+	p.noteSuccess(sidA, "a", nil)
+	_, _, _, _ = p.routeSession(sidB)
+
+	p.evictSessions(clk.Now())
+	if _, ok := p.sessions[sidC]; ok {
+		t.Error("sidC idle 45m should be evicted")
+	}
+	if _, ok := p.sessions[sidB]; !ok {
+		t.Error("sidB seen recently should be kept (45m < 60m grace)")
+	}
+	if _, ok := p.sessions[sidA]; !ok {
+		t.Error("fresh sidA should be kept")
+	}
+
+	// +20m more (65m since sidB's last success): keep sidB's lastSeen fresh
+	// so idle does not fire, and confirm the grace sweep drops it.
+	clk.Advance(20 * time.Minute)
+	_, _, _, _ = p.routeSession(sidB)
+	p.evictSessions(clk.Now())
+	if _, ok := p.sessions[sidB]; ok {
+		t.Error("sidB with no success for >60m should be evicted by grace")
+	}
+}
+
+func TestRefreshFeasibilities(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastUsage = &oauth.UsageInfo{Quotas: []oauth.Quota{
+		{Name: "5h", Used: 50, ResetsAt: "2026-01-01T01:00:00Z"},
+	}}
+	override := 4242.0
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.feasibilityOverride = &override
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+
+	p.refreshFeasibilities(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	if p.entries["a"].lastFeasibility <= 0 {
+		t.Errorf("entry a feasibility not recomputed: %v", p.entries["a"].lastFeasibility)
+	}
+	if p.entries["b"].lastFeasibility != 4242.0 {
+		t.Errorf("entry b feasibility = %v, want override 4242", p.entries["b"].lastFeasibility)
 	}
 }
