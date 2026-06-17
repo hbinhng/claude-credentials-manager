@@ -175,6 +175,11 @@ const (
 	// independently and could observe different snapshots if Promote
 	// fires between the two reads.
 	ctxKeyView
+	// ctxKeyEntryID / ctxKeySessionID carry the per-session routing
+	// result from handleServe (sticky mode) into ModifyResponse so a
+	// hard failure penalizes the right entry and drops the right pin.
+	ctxKeyEntryID
+	ctxKeySessionID
 )
 
 var upstreamBaseOverride string
@@ -491,17 +496,49 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 		}
 
 		if pool != nil {
-			if r.StatusCode == http.StatusUnauthorized {
-				// SignalActivatedFailed emits the formatted log line
-				// (with name, id8, and N/2 counter) per the spec; do
-				// not log here too.
-				pool.SignalActivatedFailed()
-			} else if !isPassthrough && r.StatusCode >= 200 && r.StatusCode < 300 {
-				if info := parseRatelimitHeadersFn(r.Header); info != nil {
-					pool.UpdateActiveFromHeaders(info)
-					if p.debug {
-						fmt.Fprintf(errLog(),
-							"ccm share [debug]: refreshed cache from response headers\n")
+			if pool.sticky {
+				entryID, _ := r.Request.Context().Value(ctxKeyEntryID).(string)
+				sid, _ := r.Request.Context().Value(ctxKeySessionID).(string)
+				switch {
+				case r.StatusCode == http.StatusUnauthorized:
+					// Dead token → degrade entry + drop pin.
+					pool.signalEntryFailed(sid, entryID)
+				case r.StatusCode == http.StatusTooManyRequests:
+					// Refresh feasibility from the reported utilization, then
+					// split: quota-exhausted → drop pin (re-select away from
+					// the capped cred); transient rate-limit → keep the pin.
+					info := parseRatelimitHeadersFn(r.Header)
+					if info != nil {
+						pool.noteEntryUsage(entryID, info)
+					}
+					if quotaExhausted(info) {
+						pool.dropPin(sid)
+					}
+				case r.StatusCode >= 200 && r.StatusCode < 300:
+					// Success → stamp lastSuccess + reset fail; refresh usage
+					// for local entries only (passthrough usage is accounted
+					// upstream).
+					if isPassthrough {
+						pool.noteSuccess(sid, entryID, nil)
+					} else {
+						pool.noteSuccess(sid, entryID, parseRatelimitHeadersFn(r.Header))
+					}
+				}
+				// 5xx / transport / other: pin untouched. Persistent failure
+				// is handled by the grace sweep (evictSessions), not here.
+			} else {
+				if r.StatusCode == http.StatusUnauthorized {
+					// SignalActivatedFailed emits the formatted log line
+					// (with name, id8, and N/2 counter) per the spec; do
+					// not log here too.
+					pool.SignalActivatedFailed()
+				} else if !isPassthrough && r.StatusCode >= 200 && r.StatusCode < 300 {
+					if info := parseRatelimitHeadersFn(r.Header); info != nil {
+						pool.UpdateActiveFromHeaders(info)
+						if p.debug {
+							fmt.Fprintf(errLog(),
+								"ccm share [debug]: refreshed cache from response headers\n")
+						}
 					}
 				}
 			}
@@ -653,30 +690,50 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	realToken, err := p.getFreshToken()
-	if err != nil {
-		if errors.Is(err, errNoActivated) {
+	var (
+		view      activatedView
+		realToken string
+		entryID   string
+		sid       string
+		err       error
+	)
+	if p.pool != nil && p.pool.sticky {
+		// Sticky: resolve the session's pinned entry, then refresh that
+		// entry's token (outside the pool lock — each credState owns its
+		// own mutex).
+		sid = r.Header.Get("X-Claude-Code-Session-Id")
+		var ts tokenSource
+		var rerr error
+		view, entryID, ts, rerr = p.pool.routeSession(sid)
+		if rerr != nil {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
 			return
 		}
-		writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: credential refresh failed: "+err.Error())
-		return
-	}
-
-	// Snapshot the activated entry ONCE per request and thread it
-	// through context. The director and ModifyResponse both read this
-	// same snapshot rather than calling pool.activatedView() again,
-	// closing the rotation-race window where a Promote() between two
-	// reads could cause the request to be routed under one view but
-	// have its response classified under another.
-	var view activatedView
-	if p.pool != nil {
-		view = p.pool.activatedView()
+		realToken, err = ts.Fresh()
+		if err != nil {
+			writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: credential refresh failed: "+err.Error())
+			return
+		}
+	} else {
+		realToken, err = p.getFreshToken()
+		if err != nil {
+			if errors.Is(err, errNoActivated) {
+				writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
+				return
+			}
+			writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: credential refresh failed: "+err.Error())
+			return
+		}
+		if p.pool != nil {
+			view = p.pool.activatedView()
+		}
 	}
 
 	ctx := context.WithValue(r.Context(), ctxKeyRealToken, realToken)
 	ctx = context.WithValue(ctx, ctxKeyIsPassthrough, view.ok && view.isPassthrough)
 	ctx = context.WithValue(ctx, ctxKeyView, view)
+	ctx = context.WithValue(ctx, ctxKeyEntryID, entryID)
+	ctx = context.WithValue(ctx, ctxKeySessionID, sid)
 	p.rp.ServeHTTP(w, r.WithContext(ctx))
 }
 
