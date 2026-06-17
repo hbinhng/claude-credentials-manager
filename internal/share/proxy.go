@@ -514,10 +514,13 @@ func (p *Proxy) Transition(accessToken string, tokens tokenSource, pool *credPoo
 					if quotaExhausted(info) {
 						pool.dropPin(sid)
 					}
+				// 2xx: stamp pin.lastSuccess (resets the cache-grace clock)
+				// and reset the entry's fail counter. This MUST run for
+				// passthrough entries too — otherwise a passthrough session
+				// that keeps succeeding would still be grace-evicted after 1h.
+				// Usage is refreshed for local entries only (passthrough usage
+				// is accounted at the upstream share).
 				case r.StatusCode >= 200 && r.StatusCode < 300:
-					// Success → stamp lastSuccess + reset fail; refresh usage
-					// for local entries only (passthrough usage is accounted
-					// upstream).
 					if isPassthrough {
 						pool.noteSuccess(sid, entryID, nil)
 					} else {
@@ -706,7 +709,11 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 		var rerr error
 		view, entryID, ts, rerr = p.pool.routeSession(sid)
 		if rerr != nil {
-			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
+			if errors.Is(rerr, errNoActivated) {
+				writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
+			} else {
+				writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: routing failed: "+rerr.Error())
+			}
 			return
 		}
 		realToken, err = ts.Fresh()
