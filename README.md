@@ -138,6 +138,26 @@ Ticket (give this to the remote side):
 
 On the remote machine, run `ccm launch --via <ticket>` (below). The proxy strips the remote side's keychain `Authorization` header and injects the target credential's real bearer on every forwarded request. Session stays alive until Ctrl-C.
 
+With a load-balance pool, add `--sticky` to pin each Claude Code session
+(identified by its `X-Claude-Code-Session-Id`) to one credential for the
+life of the conversation, instead of rotating the whole pool on the
+`--rebalance-interval` timer. This preserves Anthropic's prompt cache for
+long sessions — a conversation keeps its warm cache on one account rather
+than going cold each time the pool rotates. New sessions are pinned to the
+best-feasibility credential at first contact, so load spreads organically
+as each credential's quota is consumed.
+
+A session is re-pinned only when its credential can no longer serve it: a
+`401` (dead token) or a quota-exhausted `429` moves it immediately, while a
+transient rate-limit `429` or a `5xx` keeps the pin so a brief blip doesn't
+discard the cache. If failures persist with no successful response for ~1
+hour (by which point the prompt cache has expired anyway), the pin is
+released and the session re-selects. `--sticky` requires `--load-balance`.
+
+```bash
+ccm share --load-balance work personal --sticky
+```
+
 For a LAN-reachable setup that skips the Cloudflare round-trip (typical case: a container on the same host):
 
 ```bash
