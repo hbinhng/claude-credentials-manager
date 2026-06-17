@@ -325,7 +325,7 @@ func TestEvictSessionsDropsIdleAndStaleKeepsFresh(t *testing.T) {
 
 	p.evictSessions(clk.Now())
 	if _, ok := p.sessions[sidC]; ok {
-		t.Error("sidC idle 45m should be evicted")
+		t.Error("sidC idle 45m (>= 30m TTL) should be evicted")
 	}
 	if _, ok := p.sessions[sidB]; !ok {
 		t.Error("sidB seen recently should be kept (45m < 60m grace)")
@@ -341,6 +341,9 @@ func TestEvictSessionsDropsIdleAndStaleKeepsFresh(t *testing.T) {
 	p.evictSessions(clk.Now())
 	if _, ok := p.sessions[sidB]; ok {
 		t.Error("sidB with no success for >60m should be evicted by grace")
+	}
+	if _, ok := p.sessions[sidA]; !ok {
+		t.Error("sidA should survive the second sweep (within both TTLs)")
 	}
 }
 
