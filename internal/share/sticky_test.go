@@ -1,0 +1,95 @@
+package share
+
+import (
+	"net/http"
+	"testing"
+	"time"
+)
+
+// stickyPool builds a pool and switches it into sticky mode with a fake
+// clock. enableSticky initializes the sessions map (so routeSession can
+// store pins) and records the clock for pin timestamps / eviction.
+func stickyPool(t *testing.T, entries map[string]*poolEntry) (*credPool, *fakeClock) {
+	t.Helper()
+	p := makePool("", false, entries)
+	clk := newFakeClock(time.Unix(1_700_000_000, 0))
+	p.enableSticky(clk)
+	return p, clk
+}
+
+func TestEnableStickyResetsActivatedAndStoresCapture(t *testing.T) {
+	eA := newEntry("a", "alice", statusActivated, &fakeTokenSource{})
+	eA.captured = http.Header{"User-Agent": {"ccm-test"}}
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	p := makePool("a", false, map[string]*poolEntry{"a": eA, "b": eB})
+
+	clk := newFakeClock(time.Unix(1_700_000_000, 0))
+	p.enableSticky(clk)
+
+	if !p.sticky {
+		t.Error("sticky flag not set")
+	}
+	if p.activated != "" {
+		t.Errorf("activated = %q, want empty in sticky mode", p.activated)
+	}
+	if p.entries["a"].status != statusCandidate {
+		t.Errorf("activated entry not reset to candidate: %v", p.entries["a"].status)
+	}
+	if p.localCaptured.Get("User-Agent") != "ccm-test" {
+		t.Errorf("localCaptured not derived from captured entry: %v", p.localCaptured)
+	}
+	if p.sessions == nil {
+		t.Error("sessions map not initialized")
+	}
+}
+
+func TestBestCandidatePicksHighestFeasibility(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 50
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 100
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+
+	id, ok := p.bestCandidate()
+	if !ok || id != "b" {
+		t.Errorf("bestCandidate = (%q,%v), want (b,true)", id, ok)
+	}
+}
+
+func TestBestCandidateTieBreakByID(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 100
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+
+	id, _ := p.bestCandidate()
+	if id != "a" {
+		t.Errorf("tie should break to lex-smallest id; got %q", id)
+	}
+}
+
+func TestBestCandidateSkipsDegradedAndFailed(t *testing.T) {
+	eA := newEntry("a", "alice", statusDegraded, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 10
+	eB.consecutiveFail = 2 // not eligible
+	eC := newEntry("c", "carol", statusCandidate, &fakeTokenSource{})
+	eC.lastFeasibility = 5
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB, "c": eC})
+
+	id, ok := p.bestCandidate()
+	if !ok || id != "c" {
+		t.Errorf("bestCandidate = (%q,%v), want (c,true)", id, ok)
+	}
+}
+
+func TestBestCandidateNoneEligible(t *testing.T) {
+	eA := newEntry("a", "alice", statusDegraded, &fakeTokenSource{})
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
+
+	if _, ok := p.bestCandidate(); ok {
+		t.Error("bestCandidate should report ok=false when all degraded")
+	}
+}

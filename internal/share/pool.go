@@ -103,6 +103,15 @@ type credPool struct {
 	entries   map[string]*poolEntry
 	activated string
 	singleton bool
+
+	// Sticky-mode fields (nil/false unless enableSticky was called).
+	// sticky routing pins a Claude Code session to one entry for
+	// prompt-cache continuity; there is no global `activated` entry
+	// in sticky mode.
+	sticky        bool
+	sessions      map[string]*sessionPin // sessionID -> pin
+	localCaptured http.Header            // shared install identity, replayed for every local entry
+	clk           clock                  // time source for pin lastSeen / eviction
 }
 
 // Compile-time check.
