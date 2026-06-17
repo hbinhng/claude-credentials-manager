@@ -59,10 +59,17 @@ func nextRefreshDelay(cred *store.Credential, now time.Time, jitter func() time.
 // refreshes a token shortly before it expires. The loop runs until
 // done is closed.
 func runRefreshTimer(state poolEntryState, c clock, jitter func() time.Duration, done <-chan struct{}) {
+	// passthrough-safe: guard for entries where credPtr() == nil (e.g.
+	// test-only credStateAdapter). Production callers skip passthrough
+	// entries before spawning this goroutine, so credPtr() is always
+	// non-nil in production. coverage: unreachable in production.
+	if state.credPtr() == nil {
+		<-done
+		return
+	}
 	for {
-		// passthrough-safe: callers (StartSession + StartPoolBackground) skip
-		// runRefreshTimer for passthrough entries, so state.credPtr() here is
-		// always non-nil.
+		// passthrough-safe: nil credPtr guarded above; loop is unreachable
+		// when credPtr() == nil (early return before the for).
 		delay := nextRefreshDelay(state.credPtr(), c.Now(), jitter)
 		timer := c.NewTimer(delay)
 		select {
