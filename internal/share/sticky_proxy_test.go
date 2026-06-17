@@ -1,8 +1,10 @@
 package share
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -95,24 +97,14 @@ func TestStickyProxyRepinsAfterHardFailures(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}), 100, 50)
 
-	do := func(sid string) int {
-		req, _ := http.NewRequest("POST", srv.URL+"/v1/messages", nil)
-		req.Header.Set("Authorization", "Bearer secret")
-		req.Header.Set("X-Claude-Code-Session-Id", sid)
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatalf("request: %v", err)
-		}
-		_ = resp.Body.Close()
-		return resp.StatusCode
-	}
-
 	// 1st: picks a (best) -> 401 -> fail 1, pin dropped.
 	// 2nd: re-picks a (still best, fail<2) -> 401 -> fail 2 -> a degraded.
 	// 3rd: a degraded -> picks b -> 200.
-	_ = do(sidA)
-	_ = do(sidA)
-	code := do(sidA)
+	// Bearer sequence is captured by the upstream handler's `seen` slice, so
+	// stickyDo (which only differs in returning the status) is safe to use.
+	_ = stickyDo(t, srv.URL, sidA)
+	_ = stickyDo(t, srv.URL, sidA)
+	code := stickyDo(t, srv.URL, sidA)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -133,16 +125,10 @@ func TestStickyProxyNoSessionIDStillServes(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}), 100, 50)
 
-	req, _ := http.NewRequest("POST", srv.URL+"/v1/messages", nil)
-	req.Header.Set("Authorization", "Bearer secret")
-	// no X-Claude-Code-Session-Id
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("request: %v", err)
-	}
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("code = %d, want 200", resp.StatusCode)
+	// stickyDo with empty sid omits X-Claude-Code-Session-Id, matching the
+	// sessionless-request behaviour the test exercises.
+	if code := stickyDo(t, srv.URL, ""); code != http.StatusOK {
+		t.Errorf("code = %d, want 200", code)
 	}
 	if len(pool.sessions) != 0 {
 		t.Errorf("sessionless request must not create a pin; sessions=%v", pool.sessions)
@@ -194,5 +180,131 @@ func TestStickyProxyExhausted429DropsPin(t *testing.T) {
 
 	if _, ok := pool.sessions[sidA]; ok {
 		t.Errorf("quota-exhausted 429 must drop the pin; sessions=%v", pool.sessions)
+	}
+}
+
+// stickyProxyDegraded builds a serving-mode Proxy whose sticky pool has
+// only degraded entries so every routeSession call returns errNoActivated.
+func stickyProxyDegraded(t *testing.T) (*httptest.Server, *credPool) {
+	t.Helper()
+	p, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	p.accessToken = "secret"
+	p.mode = modeServing
+
+	eA := newEntry("a", "alice", statusDegraded, &fakeTokenSource{token: "tokA"})
+	eA.lastFeasibility = 100
+	pool := makePool("", false, map[string]*poolEntry{"a": eA})
+	pool.enableSticky(newFakeClock(time.Unix(1_700_000_000, 0)))
+	p.markCaptured(http.Header{})
+	if err := p.Transition("secret", pool, pool); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(p.handle))
+	t.Cleanup(srv.Close)
+	return srv, pool
+}
+
+// TestStickyProxyNoEligible503 exercises the sticky handleServe error path
+// where routeSession returns errNoActivated (all pool entries degraded).
+// The proxy must respond with HTTP 503.
+func TestStickyProxyNoEligible503(t *testing.T) {
+	srv, _ := stickyProxyDegraded(t)
+
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusServiceUnavailable {
+		t.Errorf("all-degraded pool: code = %d, want 503", code)
+	}
+}
+
+// TestStickyProxyFreshError502 exercises the sticky handleServe error path
+// where routeSession succeeds but ts.Fresh() returns an error. The proxy
+// must respond with HTTP 502.
+func TestStickyProxyFreshError502(t *testing.T) {
+	p, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	p.accessToken = "secret"
+	p.mode = modeServing
+
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{err: errors.New("refresh boom")})
+	eA.lastFeasibility = 100
+	pool := makePool("", false, map[string]*poolEntry{"a": eA})
+	pool.enableSticky(newFakeClock(time.Unix(1_700_000_000, 0)))
+	p.markCaptured(http.Header{})
+	if err := p.Transition("secret", pool, pool); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(p.handle))
+	t.Cleanup(srv.Close)
+
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusBadGateway {
+		t.Errorf("Fresh error: code = %d, want 502", code)
+	}
+}
+
+// TestStickyProxyPassthrough2xxNoteSuccess exercises the passthrough 2xx arm
+// in ModifyResponse: noteSuccess must be called for passthrough entries so
+// the session pin's lastSuccess is stamped and the cache-grace clock resets.
+func TestStickyProxyPassthrough2xxNoteSuccess(t *testing.T) {
+	// upstream is the real target the passthrough entry routes to.
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	// upstreamHost is the host:port the passthrough ticket points to (no scheme).
+	upstreamHost := strings.TrimPrefix(upstream.URL, "http://")
+
+	p, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	p.accessToken = "secret"
+	p.mode = modeServing
+
+	tk := Ticket{Scheme: "http", Host: upstreamHost, Token: "ptok"}
+	ptState := newPassthroughEntryState(tk)
+	ptID := ptState.credID()
+	eP := &poolEntry{
+		state:           ptState,
+		status:          statusCandidate,
+		lastFeasibility: 100,
+	}
+	pool := makePool("", false, map[string]*poolEntry{ptID: eP})
+	pool.enableSticky(newFakeClock(time.Unix(1_700_000_000, 0)))
+	p.markCaptured(http.Header{})
+	if err := p.Transition("secret", pool, pool); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(p.handle))
+	t.Cleanup(srv.Close)
+
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusOK {
+		t.Errorf("passthrough 2xx: code = %d, want 200", code)
+	}
+
+	// Verify the session was pinned to the passthrough entry and noteSuccess
+	// ran (lastSuccess was stamped, i.e. pin exists with the correct entryID).
+	pool.mu.RLock()
+	pin := pool.sessions[sidA]
+	pool.mu.RUnlock()
+	if pin == nil {
+		t.Fatal("passthrough 2xx must create a session pin")
+	}
+	if pin.entryID != ptID {
+		t.Errorf("pin.entryID = %q, want %q", pin.entryID, ptID)
+	}
+	if pin.lastSuccess.IsZero() {
+		t.Error("noteSuccess must stamp pin.lastSuccess for passthrough entries")
 	}
 }
