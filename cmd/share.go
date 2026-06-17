@@ -45,6 +45,7 @@ func init() {
 	shareCmd.Flags().Int("bind-port", 0, "pinned TCP port for the proxy listener (default: OS-assigned); works with or without --bind-host")
 	shareCmd.Flags().Bool("load-balance", false, "pool every credential and rotate every --rebalance-interval based on quota feasibility")
 	shareCmd.Flags().Duration("rebalance-interval", 5*time.Minute, "tick interval for load-balance rotation (min 30s, max 1h); only meaningful with --load-balance")
+	shareCmd.Flags().Bool("sticky", false, "pin each Claude Code session to one pooled credential for prompt-cache continuity; requires --load-balance")
 	shareCmd.Flags().StringArrayVar(&shareModelAliases, "model-alias", nil,
 		"model alias rule like 'claude-opus-*=gpt-5-codex' (repeatable)")
 	shareCmd.Flags().IntVar(&shareMaxConcurrency, "max-concurrency", 3,
@@ -63,6 +64,15 @@ func validateRebalanceInterval(s string) error {
 		return fmt.Errorf("--rebalance-interval %q: %w", s, err)
 	}
 	return validateRebalanceDuration(d)
+}
+
+// validateStickyFlag rejects --sticky when --load-balance is absent.
+// Sticky routing only has meaning over a pool.
+func validateStickyFlag(sticky, loadBalance bool) error {
+	if sticky && !loadBalance {
+		return errors.New("--sticky requires --load-balance")
+	}
+	return nil
 }
 
 // validateRebalanceDuration is the duration-typed core that
@@ -148,6 +158,10 @@ The share session stays alive until you press Ctrl-C.`,
 		bindPort, _ := cmd.Flags().GetInt("bind-port")
 		loadBalance, _ := cmd.Flags().GetBool("load-balance")
 		rebalanceInterval, _ := cmd.Flags().GetDuration("rebalance-interval")
+		sticky, _ := cmd.Flags().GetBool("sticky")
+		if err := validateStickyFlag(sticky, loadBalance); err != nil {
+			return err
+		}
 
 		aliasMap, err := alias.Parse(shareModelAliases)
 		if err != nil {
@@ -183,6 +197,7 @@ The share session stays alive until you press Ctrl-C.`,
 			PinnedAccessToken: pinnedToken,
 			AliasMap:          aliasMap,
 			MaxConcurrency:    shareMaxConcurrency,
+			Sticky:            sticky,
 		}
 
 		// Single-cred fast path: one local cred, no passthrough, no LB.

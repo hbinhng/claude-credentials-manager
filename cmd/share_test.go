@@ -63,6 +63,29 @@ func (f *fakeSession) Done() <-chan struct{}  { return f.done }
 func (f *fakeSession) Err() error             { return nil }
 func (f *fakeSession) Pool() share.PoolReader { return nil }
 
+func TestValidateStickyFlag(t *testing.T) {
+	cases := []struct {
+		name        string
+		sticky      bool
+		loadBalance bool
+		wantErr     bool
+	}{
+		{"sticky with load-balance", true, true, false},
+		{"sticky without load-balance", true, false, true},
+		{"no sticky", false, false, false},
+		{"no sticky with load-balance", false, true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateStickyFlag(tc.sticky, tc.loadBalance)
+			if (err != nil) != tc.wantErr {
+				t.Errorf("validateStickyFlag(%v,%v) err = %v, wantErr %v",
+					tc.sticky, tc.loadBalance, err, tc.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateShareArgsPassthroughCombinations(t *testing.T) {
 	type tc struct {
 		name        string
