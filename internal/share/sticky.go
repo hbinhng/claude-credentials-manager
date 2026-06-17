@@ -272,6 +272,8 @@ func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource,
 	defer p.mu.Unlock()
 
 	valid := usage.IsValidSessionID(sid)
+	rePin := false
+	oldName := ""
 	if valid {
 		if pin, ok := p.sessions[sid]; ok {
 			if e, ok := p.entries[pin.entryID]; ok &&
@@ -279,23 +281,13 @@ func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource,
 				pin.lastSeen = p.now()
 				return p.viewForEntryLocked(pin.entryID) // steady-state reuse — NO log
 			}
-			// Entry gone or degraded — capture old name before deleting pin.
-			oldName := shortID(pin.entryID)
+			// Entry gone or degraded — capture old name, drop pin, re-select.
+			rePin = true
+			oldName = shortID(pin.entryID)
 			if e, ok := p.entries[pin.entryID]; ok {
 				oldName = e.state.credName()
 			}
 			delete(p.sessions, sid)
-
-			id, ok := p.bestCandidateLocked()
-			if !ok {
-				return activatedView{}, "", nil, errNoActivated
-			}
-			now := p.now()
-			p.sessions[sid] = &sessionPin{entryID: id, lastSeen: now, lastSuccess: now}
-			newName := p.entries[id].state.credName()
-			logMsg = fmt.Sprintf("ccm share: sticky re-pin %s -> %s(%s) (was %s)\n",
-				shortID(sid), newName, shortID(id), oldName)
-			return p.viewForEntryLocked(id)
 		}
 	}
 
@@ -306,9 +298,14 @@ func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource,
 	if valid {
 		now := p.now()
 		p.sessions[sid] = &sessionPin{entryID: id, lastSeen: now, lastSuccess: now}
-		newName := p.entries[id].state.credName()
-		logMsg = fmt.Sprintf("ccm share: sticky pin %s -> %s(%s)\n",
-			shortID(sid), newName, shortID(id))
+		name := p.entries[id].state.credName()
+		if rePin {
+			logMsg = fmt.Sprintf("ccm share: sticky re-pin %s -> %s(%s) (was %s)\n",
+				shortID(sid), name, shortID(id), oldName)
+		} else {
+			logMsg = fmt.Sprintf("ccm share: sticky pin %s -> %s(%s)\n",
+				shortID(sid), name, shortID(id))
+		}
 	}
 	return p.viewForEntryLocked(id)
 }
