@@ -379,6 +379,38 @@ func TestSnapshotLinesIncludesStickyPinCount(t *testing.T) {
 	}
 }
 
+func TestStartSessionStickyPreflightFailsWhenNoCandidate(t *testing.T) {
+	ResetLastSchedulerForTest()
+	t.Cleanup(ResetLastSchedulerForTest)
+
+	now := time.Unix(1_700_000_000, 0)
+	clk := newFakeClock(now)
+
+	eA := newEntry("a", "alice", statusDegraded, &fakeTokenSource{token: "tokA"})
+	eA.lastUsage = &oauth.UsageInfo{}
+	eA.lastUsageAt = now
+	pool := makePool("", false, map[string]*poolEntry{"a": eA})
+
+	sess, err := StartSession(nil, Options{
+		BindHost:          "127.0.0.1",
+		Pool:              pool,
+		RebalanceInterval: time.Minute,
+		Clock:             clk,
+		Sticky:            true,
+		InitialEntryID:    "a",
+		InitialEntryName:  "alice",
+	})
+	if err == nil {
+		if sess != nil {
+			_ = sess.Stop()
+		}
+		t.Fatal("expected StartSession to fail when no candidate is eligible")
+	}
+	if !strings.Contains(err.Error(), "no usable credential") {
+		t.Errorf("error = %q, want it to mention 'no usable credential'", err.Error())
+	}
+}
+
 func TestStartSessionEnablesStickyOnPool(t *testing.T) {
 	ResetLastSchedulerForTest()
 	t.Cleanup(ResetLastSchedulerForTest)
