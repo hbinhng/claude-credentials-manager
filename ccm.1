@@ -582,6 +582,41 @@ that address with mandatory admin token auth.
 for
 .BR "ccm serve" .
 .TP
+.B \-\-load\-balance
+(share only) Pool every available credential (or every named credential
+when arguments are given) and rotate the active entry every
+.B \-\-rebalance\-interval
+based on quota feasibility. Each entry is probed independently; degraded
+entries are demoted automatically and recovered when feasibility returns.
+.TP
+.BR \-\-rebalance\-interval " " \fIduration\fR
+(share only, requires
+.BR \-\-load\-balance )
+Tick interval for load\-balance rotation. Must be between 30s and 1h.
+Default:
+.BR 5m .
+.TP
+.B \-\-sticky
+Pin each Claude Code session (identified by its
+.B X\-Claude\-Code\-Session\-Id
+header) to one pooled credential for the life of the conversation rather
+than rotating the whole pool on the
+.B \-\-rebalance\-interval
+timer. Preserves Anthropic's prompt cache for long sessions. New sessions
+are pinned to the best\-feasibility credential at first contact. A session
+is re\-pinned only when its credential cannot serve it: a
+.B 401
+or a quota\-exhausted
+.B 429
+moves it at once, while a transient rate\-limit
+.B 429
+or a
+.B 5xx
+keeps the pin. A pin is released after 30 minutes idle, or after one hour
+with no successful response (the prompt cache has expired by then).
+Requires
+.BR \-\-load\-balance .
+.TP
 .BR \-h ", " \-\-help
 Show help for any command.
 .TP
