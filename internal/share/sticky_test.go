@@ -378,3 +378,48 @@ func TestSnapshotLinesIncludesStickyPinCount(t *testing.T) {
 		t.Errorf("snapshot missing sticky pin count line:\n%s", joined)
 	}
 }
+
+func TestStartSessionEnablesStickyOnPool(t *testing.T) {
+	ResetLastSchedulerForTest()
+	t.Cleanup(ResetLastSchedulerForTest)
+
+	// Seed fresh cache (lastUsage non-nil + lastUsageAt == clock now) so
+	// the sticky preflight tick is a cache hit and never calls the real
+	// oauth.FetchUsageFn (no network). Empty UsageInfo → +Inf feasibility,
+	// so bestCandidate succeeds and the preflight passes.
+	now := time.Unix(1_700_000_000, 0)
+	clk := newFakeClock(now)
+
+	eA := newEntry("a", "alice", statusActivated, &fakeTokenSource{token: "tokA"})
+	eA.captured = http.Header{"User-Agent": {"ccm"}}
+	eA.lastUsage = &oauth.UsageInfo{}
+	eA.lastUsageAt = now
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{token: "tokB"})
+	eB.lastUsage = &oauth.UsageInfo{}
+	eB.lastUsageAt = now
+	eB.lastFeasibility = 50
+	pool := makePool("a", false, map[string]*poolEntry{"a": eA, "b": eB})
+
+	// Bind LAN so no Cloudflare tunnel is started.
+	sess, err := StartSession(nil, Options{
+		BindHost:          "127.0.0.1",
+		Pool:              pool,
+		RebalanceInterval: time.Minute,
+		Clock:             clk,
+		Sticky:            true,
+		InitialEntryID:    "a",
+		InitialEntryName:  "alice",
+	})
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+	t.Cleanup(func() { _ = sess.Stop() })
+
+	if !pool.sticky {
+		t.Error("pool.sticky not enabled by StartSession")
+	}
+	if pool.activated != "" {
+		t.Errorf("activated = %q, want empty in sticky mode", pool.activated)
+	}
+}

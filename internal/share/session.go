@@ -96,6 +96,10 @@ type Options struct {
 	// the proxy semaphore. 0 = no limit. Parsed from --max-concurrency.
 	MaxConcurrency int
 
+	// Sticky enables per-session credential pinning for prompt-cache
+	// continuity (ccm share --sticky). Only meaningful with Pool != nil.
+	Sticky bool
+
 	// InitialEntryID / InitialEntryName provide the credID/credName
 	// for sessionImpl when StartSession is called with cred == nil
 	// (passthrough-only pool). Both required when cred is nil;
@@ -319,9 +323,23 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		if c == nil {
 			c = realClock{}
 		}
-		// Pre-flight: if Fresh fails synchronously, run one tick to
-		// see if rotation can pick a replacement.
-		if _, ferr := opts.Pool.Fresh(); ferr != nil {
+
+		if opts.Sticky {
+			opts.Pool.enableSticky(c)
+			// Sticky preflight: one probe tick refreshes feasibility +
+			// health; then require at least one eligible candidate. The
+			// single-active Fresh() preflight does not apply — there is
+			// no global activated entry in sticky mode.
+			pre := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
+			pre.sticky = true
+			pre.runOnce()
+			if _, ok := opts.Pool.bestCandidate(); !ok {
+				_ = proxy.Close()
+				return nil, fmt.Errorf("pool transition: no usable credential after pre-flight probe")
+			}
+		} else if _, ferr := opts.Pool.Fresh(); ferr != nil {
+			// Pre-flight: if Fresh fails synchronously, run one tick to
+			// see if rotation can pick a replacement.
 			sch := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
 			sch.runOnce()
 			if _, ferr2 := opts.Pool.Fresh(); ferr2 != nil {
@@ -339,6 +357,7 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		sch := newScheduler(opts.Pool, productionProbe, c, opts.RebalanceInterval)
 		sch.SetDebug(opts.Debug)
 		sch.prompt = opts.CapturePrompt // empty OK — captureFn defaults to DefaultCapturePrompt
+		sch.sticky = opts.Sticky
 		go sch.Run(proxy.done)
 	}
 
