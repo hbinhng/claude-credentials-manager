@@ -429,6 +429,13 @@ func (p *credPool) SnapshotLines() []string {
 			unit = "pin"
 		}
 		out = append(out, fmt.Sprintf("  sticky: %d active session %s", n, unit))
+		for sid, pin := range p.sessions {
+			credName := shortID(pin.entryID)
+			if e, ok := p.entries[pin.entryID]; ok {
+				credName = e.state.credName()
+			}
+			out = append(out, fmt.Sprintf("    %s -> %s(%s)", shortID(sid), credName, shortID(pin.entryID)))
+		}
 	}
 	return out
 }

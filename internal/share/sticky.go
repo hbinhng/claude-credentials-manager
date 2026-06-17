@@ -252,8 +252,23 @@ func (p *credPool) refreshFeasibilities(now time.Time) {
 // it drops the pin and re-selects. An invalid/empty sessionID is routed
 // to the best candidate WITHOUT storing a pin. Returns errNoActivated
 // when no entry is eligible.
+//
+// Lock discipline: logMsg is set under the lock, but emitted AFTER the
+// unlock. Defers run LIFO: p.mu.Unlock() (declared last) runs first,
+// then the logging defer runs — so we never write to stderr while
+// holding p.mu. This matches the pattern used by signalEntryFailed and
+// SignalActivatedFailed throughout this package.
 func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource, error) {
 	p.mu.Lock()
+	var logMsg string
+	// defers run LIFO: the Unlock (declared last) runs first, then this
+	// logging defer runs AFTER the lock is released — never write to
+	// stderr while holding p.mu.
+	defer func() {
+		if logMsg != "" {
+			fmt.Fprint(errLog(), logMsg)
+		}
+	}()
 	defer p.mu.Unlock()
 
 	valid := usage.IsValidSessionID(sid)
@@ -262,9 +277,25 @@ func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource,
 			if e, ok := p.entries[pin.entryID]; ok &&
 				e.status != statusDegraded && e.consecutiveFail < 2 {
 				pin.lastSeen = p.now()
-				return p.viewForEntryLocked(pin.entryID)
+				return p.viewForEntryLocked(pin.entryID) // steady-state reuse — NO log
 			}
-			delete(p.sessions, sid) // gone or degraded — re-select
+			// Entry gone or degraded — capture old name before deleting pin.
+			oldName := shortID(pin.entryID)
+			if e, ok := p.entries[pin.entryID]; ok {
+				oldName = e.state.credName()
+			}
+			delete(p.sessions, sid)
+
+			id, ok := p.bestCandidateLocked()
+			if !ok {
+				return activatedView{}, "", nil, errNoActivated
+			}
+			now := p.now()
+			p.sessions[sid] = &sessionPin{entryID: id, lastSeen: now, lastSuccess: now}
+			newName := p.entries[id].state.credName()
+			logMsg = fmt.Sprintf("ccm share: sticky re-pin %s -> %s(%s) (was %s)\n",
+				shortID(sid), newName, shortID(id), oldName)
+			return p.viewForEntryLocked(id)
 		}
 	}
 
@@ -275,6 +306,9 @@ func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource,
 	if valid {
 		now := p.now()
 		p.sessions[sid] = &sessionPin{entryID: id, lastSeen: now, lastSuccess: now}
+		newName := p.entries[id].state.credName()
+		logMsg = fmt.Sprintf("ccm share: sticky pin %s -> %s(%s)\n",
+			shortID(sid), newName, shortID(id))
 	}
 	return p.viewForEntryLocked(id)
 }

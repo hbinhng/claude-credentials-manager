@@ -1,6 +1,8 @@
 package share
 
 import (
+	"bytes"
+	"io"
 	"net/http"
 	"strings"
 	"testing"
@@ -453,5 +455,85 @@ func TestStartSessionEnablesStickyOnPool(t *testing.T) {
 	}
 	if pool.activated != "" {
 		t.Errorf("activated = %q, want empty in sticky mode", pool.activated)
+	}
+}
+
+func TestRouteSessionLogsPinAndRePin(t *testing.T) {
+	// Swap errLog to capture output.
+	orig := errLog
+	var buf bytes.Buffer
+	errLog = func() io.Writer { return &buf }
+	defer func() { errLog = orig }()
+
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{token: "tokA"})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{token: "tokB"})
+	eB.lastFeasibility = 50
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+
+	// First routeSession(sidA) -> new pin to alice.
+	_, _, _, err := p.routeSession(sidA)
+	if err != nil {
+		t.Fatalf("routeSession err: %v", err)
+	}
+	logAfterPin := buf.String()
+	if !strings.Contains(logAfterPin, "sticky pin") {
+		t.Errorf("first pin must log 'sticky pin'; got: %q", logAfterPin)
+	}
+	if !strings.Contains(logAfterPin, shortID(sidA)) {
+		t.Errorf("log must contain sid prefix; got: %q", logAfterPin)
+	}
+	if !strings.Contains(logAfterPin, "alice") {
+		t.Errorf("log must contain cred name 'alice'; got: %q", logAfterPin)
+	}
+
+	// Second routeSession(sidA) -> steady-state reuse; must add NO new log.
+	lenBefore := buf.Len()
+	_, _, _, _ = p.routeSession(sidA)
+	if buf.Len() != lenBefore {
+		t.Errorf("steady-state reuse must not log; got new bytes: %q", buf.String()[lenBefore:])
+	}
+
+	// Degrade entry a; next routeSession(sidA) -> re-pin to bob.
+	p.entries["a"].status = statusDegraded
+	_, id, _, err := p.routeSession(sidA)
+	if err != nil {
+		t.Fatalf("re-pin routeSession err: %v", err)
+	}
+	if id != "b" {
+		t.Errorf("re-pin should route to bob; got %q", id)
+	}
+	logAfterRePin := buf.String()
+	if !strings.Contains(logAfterRePin, "sticky re-pin") {
+		t.Errorf("re-pin must log 'sticky re-pin'; got: %q", logAfterRePin)
+	}
+	if !strings.Contains(logAfterRePin, "(was alice)") {
+		t.Errorf("re-pin log must contain '(was alice)'; got: %q", logAfterRePin)
+	}
+	if !strings.Contains(logAfterRePin, "bob") {
+		t.Errorf("re-pin log must contain new cred name 'bob'; got: %q", logAfterRePin)
+	}
+
+	// Invalid sid must log nothing additional.
+	lenBeforeInvalid := buf.Len()
+	_, _, _, _ = p.routeSession("not-a-uuid")
+	if buf.Len() != lenBeforeInvalid {
+		t.Errorf("invalid sid must not log; got new bytes: %q", buf.String()[lenBeforeInvalid:])
+	}
+}
+
+func TestSnapshotLinesListsStickyPins(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
+
+	_, _, _, _ = p.routeSession(sidA)
+
+	joined := strings.Join(p.SnapshotLines(), "\n")
+	if !strings.Contains(joined, shortID(sidA)) {
+		t.Errorf("snapshot must list sidA prefix %q; got:\n%s", shortID(sidA), joined)
+	}
+	if !strings.Contains(joined, "alice") {
+		t.Errorf("snapshot must list cred name 'alice'; got:\n%s", joined)
 	}
 }
