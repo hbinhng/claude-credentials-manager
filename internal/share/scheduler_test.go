@@ -1036,10 +1036,20 @@ func TestSchedulerStickyDoesNotRotate(t *testing.T) {
 	}
 	s := newScheduler(p, probe, clk, time.Minute)
 	s.sticky = true
+
+	restore := SetCaptureCredFnForTest(func(_ *store.Credential, _ string) (http.Header, error) {
+		t.Error("captureCredFn must not be called in sticky mode (rotation attempted)")
+		return nil, nil
+	})
+	defer restore()
+
 	s.runOnce()
 
 	if p.activated != "" {
 		t.Errorf("sticky scheduler must not set activated; got %q", p.activated)
+	}
+	if p.entries["a"].lastFeasibility == 10 {
+		t.Error("refreshFeasibilities did not run during sticky tick")
 	}
 }
 
