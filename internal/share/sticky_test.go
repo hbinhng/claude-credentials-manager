@@ -2,6 +2,7 @@ package share
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -363,5 +364,17 @@ func TestRefreshFeasibilities(t *testing.T) {
 	}
 	if p.entries["b"].lastFeasibility != 4242.0 {
 		t.Errorf("entry b feasibility = %v, want override 4242", p.entries["b"].lastFeasibility)
+	}
+}
+
+func TestSnapshotLinesIncludesStickyPinCount(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA}) // enableSticky sets p.sticky
+	_, _, _, _ = p.routeSession(sidA)
+
+	joined := strings.Join(p.SnapshotLines(), "\n")
+	if !strings.Contains(joined, "sticky: 1 active session pin") {
+		t.Errorf("snapshot missing sticky pin count line:\n%s", joined)
 	}
 }
