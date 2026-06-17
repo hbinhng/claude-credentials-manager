@@ -370,6 +370,10 @@ func TestRefreshFeasibilities(t *testing.T) {
 }
 
 func TestSnapshotLinesIncludesStickyPinCount(t *testing.T) {
+	orig := errLog
+	errLog = func() io.Writer { return io.Discard }
+	defer func() { errLog = orig }()
+
 	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
 	eA.lastFeasibility = 100
 	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA}) // enableSticky sets p.sticky
@@ -523,6 +527,10 @@ func TestRouteSessionLogsPinAndRePin(t *testing.T) {
 }
 
 func TestSnapshotLinesListsStickyPins(t *testing.T) {
+	orig := errLog
+	errLog = func() io.Writer { return io.Discard }
+	defer func() { errLog = orig }()
+
 	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
 	eA.lastFeasibility = 100
 	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
@@ -530,10 +538,12 @@ func TestSnapshotLinesListsStickyPins(t *testing.T) {
 	_, _, _, _ = p.routeSession(sidA)
 
 	joined := strings.Join(p.SnapshotLines(), "\n")
-	if !strings.Contains(joined, shortID(sidA)) {
-		t.Errorf("snapshot must list sidA prefix %q; got:\n%s", shortID(sidA), joined)
+	// Assert the full rendered pin line: "    <sid8> -> <credName>(<entryID8>)"
+	wantPinLine := shortID(sidA) + " -> alice(a)"
+	if !strings.Contains(joined, wantPinLine) {
+		t.Errorf("snapshot must contain pin line %q; got:\n%s", wantPinLine, joined)
 	}
-	if !strings.Contains(joined, "alice") {
-		t.Errorf("snapshot must list cred name 'alice'; got:\n%s", joined)
+	if !strings.Contains(joined, "sticky: 1 active session pin") {
+		t.Errorf("snapshot missing sticky pin count line:\n%s", joined)
 	}
 }
