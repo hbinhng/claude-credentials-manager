@@ -158,6 +158,7 @@ type scheduler struct {
 	debug       bool
 	prompt      string // passed to captureCredFn during rotation; empty → DefaultCapturePrompt
 	skipCapture bool   // launch --load-balance: short-circuit captureCredFn in branch (b)
+	sticky      bool   // sticky share: probe + evict only, never rotate
 
 	// tickDone is pulsed at the end of every runOnce (buffered size
 	// 1; unread pulses coalesce). Tests use it to synchronize
@@ -271,6 +272,21 @@ func (s *scheduler) runOnce() {
 			fmt.Fprintf(errLog(), "ccm: probe failed for %s: %v\n", shortID(j.id), err)
 		}
 		s.pool.MarkProbe(j.id, result, err)
+	}
+
+	// Sticky mode: probes above already refreshed usage and applied
+	// degrade/recover via MarkProbe. Keep feasibility fresh for
+	// per-session selection, sweep idle pins, and return — there is no
+	// single activated entry to rotate.
+	if s.sticky {
+		now := s.clock.Now()
+		s.pool.refreshFeasibilities(now)
+		s.pool.evictSessions(now)
+		select {
+		case s.tickDone <- struct{}{}:
+		default:
+		}
+		return
 	}
 
 	// Compute feasibility for eligible entries; pick winner.

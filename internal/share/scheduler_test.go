@@ -1014,3 +1014,56 @@ func TestSchedulerSkipsCaptureForPassthroughWinner(t *testing.T) {
 		t.Errorf("expected rotation to pt; activated = %s", p.activated)
 	}
 }
+
+func TestSchedulerStickyDoesNotRotate(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastUsage = &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 90}}}
+	eA.lastUsageAt = now // fresh cache → probe skipped, no network
+	eA.lastFeasibility = 10
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastUsage = &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 1}}}
+	eB.lastUsageAt = now
+	eB.lastFeasibility = 1000
+	p := makePool("", false, map[string]*poolEntry{"a": eA, "b": eB})
+	clk := newFakeClock(now)
+	p.enableSticky(clk)
+
+	// productionProbe is never reached (cache is fresh), but pass a
+	// no-network stub for safety.
+	probe := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
+	}
+	s := newScheduler(p, probe, clk, time.Minute)
+	s.sticky = true
+	s.runOnce()
+
+	if p.activated != "" {
+		t.Errorf("sticky scheduler must not set activated; got %q", p.activated)
+	}
+}
+
+func TestSchedulerStickyEvictsIdlePins(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastUsage = &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 1}}}
+	eA.lastUsageAt = now
+	eA.lastFeasibility = 100
+	p := makePool("", false, map[string]*poolEntry{"a": eA})
+	clk := newFakeClock(now)
+	p.enableSticky(clk)
+	_, _, _, _ = p.routeSession(sidA) // lastSeen = now
+
+	probe := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: eA.lastUsage}, nil
+	}
+	s := newScheduler(p, probe, clk, time.Minute)
+	s.sticky = true
+
+	clk.Advance(31 * time.Minute)
+	s.runOnce() // evicts: (now+31m) - now >= 30m TTL
+
+	if len(p.sessions) != 0 {
+		t.Errorf("idle pin not evicted by sticky tick; sessions=%v", p.sessions)
+	}
+}
