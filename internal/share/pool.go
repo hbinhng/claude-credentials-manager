@@ -422,5 +422,13 @@ func (p *credPool) SnapshotLines() []string {
 				name, e.status, e.consecutiveFail, e.lastFeasibility, last))
 		}
 	}
+	if p.sticky {
+		n := len(p.sessions)
+		unit := "pins"
+		if n == 1 {
+			unit = "pin"
+		}
+		out = append(out, fmt.Sprintf("  sticky: %d active session %s", n, unit))
+	}
 	return out
 }
