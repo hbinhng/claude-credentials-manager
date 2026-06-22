@@ -154,6 +154,13 @@ discard the cache. If failures persist with no successful response for ~1
 hour (by which point the prompt cache has expired anyway), the pin is
 released and the session re-selects. `--sticky` requires `--load-balance`.
 
+A credential whose OAuth refresh token has been revoked or expired (the token
+endpoint returns `invalid_grant`) is dropped from the pool the moment a request
+hits it: the sticky session re-pins to a healthy credential, a load-balance pool
+rotates to one, and a single-credential session returns a `502` telling you to run
+`ccm login`. New sessions are only ever provisioned to a credential with a clean
+recent record, so a failing account stops receiving new sessions immediately.
+
 ```bash
 ccm share --load-balance work personal --sticky
 ```
