@@ -120,6 +120,9 @@ func accessTokenDiffers(disk, mem *store.Credential) bool {
 func refreshClaudeLocked(cred *store.Credential) (*store.Credential, error) {
 	tokens, err := oauthRefreshFn(cred.ClaudeAiOauth.RefreshToken)
 	if err != nil {
+		if errors.Is(err, oauth.ErrInvalidGrant) {
+			return nil, fmt.Errorf("refresh token revoked or expired; re-authenticate with `ccm login claude`: %w", err)
+		}
 		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "403") {
 			return nil, fmt.Errorf("refresh token expired or revoked. Re-authenticate with `ccm login claude`")
 		}

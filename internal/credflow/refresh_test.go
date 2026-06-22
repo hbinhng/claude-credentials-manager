@@ -2,6 +2,7 @@ package credflow
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -622,5 +623,62 @@ func TestRefreshCredential_Codex_UsageNil_RefreshStillSucceeds(t *testing.T) {
 	}
 	if out.Tokens.AccessToken != "a_new" {
 		t.Errorf("AccessToken = %q, want a_new", out.Tokens.AccessToken)
+	}
+}
+
+// TestRefreshClaudeLocked_InvalidGrantBodyWith403_PreservesSentinel tests that
+// when the OAuth error contains "403" in the body (e.g. in error_description or
+// a token id) AND is an invalid_grant (HTTP 400), the ErrInvalidGrant sentinel
+// is preserved through %w wrapping rather than being flattened by the
+// string-match branch. Against the OLD code this FAILS (RED) because
+// "403xyz" triggers the non-%w branch; after the fix it passes (GREEN).
+func TestRefreshClaudeLocked_InvalidGrantBodyWith403_PreservesSentinel(t *testing.T) {
+	setupFakeHome(t, "ig-0000-0000-0000-0000-000000000001")
+	defer stubSeams(
+		func(rt string) (*oauth.TokenResponse, error) {
+			// Body contains "403" — the exact substring that the old string-match fires on.
+			return nil, fmt.Errorf("refresh failed (HTTP 400): {\"error\":\"invalid_grant\",\"error_description\":\"token 403xyz revoked\"}: %w", oauth.ErrInvalidGrant)
+		},
+		func(string) oauth.Profile { return oauth.Profile{} },
+	)()
+
+	cred := &store.Credential{
+		ClaudeAiOauth: store.OAuthTokens{RefreshToken: "dead"},
+	}
+	err := func() error {
+		_, e := refreshClaudeLocked(cred)
+		return e
+	}()
+
+	if !errors.Is(err, oauth.ErrInvalidGrant) {
+		t.Errorf("errors.Is(err, oauth.ErrInvalidGrant) = false; got %v", err)
+	}
+	if err == nil || !strings.Contains(err.Error(), "ccm login claude") {
+		t.Errorf("want message containing 'ccm login claude'; got %v", err)
+	}
+}
+
+// TestRefreshClaudeLocked_Plain401_StillFriendlyMessage tests that a plain
+// HTTP 401 error (no sentinel) still produces a friendly "ccm login claude"
+// message without ErrInvalidGrant being attached (existing behavior preserved).
+func TestRefreshClaudeLocked_Plain401_StillFriendlyMessage(t *testing.T) {
+	setupFakeHome(t, "plain-401-0000-0000-0000-000000000002")
+	defer stubSeams(
+		func(rt string) (*oauth.TokenResponse, error) {
+			return nil, fmt.Errorf("refresh failed (HTTP 401): unauthorized")
+		},
+		func(string) oauth.Profile { return oauth.Profile{} },
+	)()
+
+	cred := &store.Credential{
+		ClaudeAiOauth: store.OAuthTokens{RefreshToken: "dead"},
+	}
+	_, err := refreshClaudeLocked(cred)
+
+	if err == nil || !strings.Contains(err.Error(), "ccm login claude") {
+		t.Errorf("want friendly message containing 'ccm login claude'; got %v", err)
+	}
+	if errors.Is(err, oauth.ErrInvalidGrant) {
+		t.Errorf("errors.Is(err, oauth.ErrInvalidGrant) = true; want false for plain 401")
 	}
 }
