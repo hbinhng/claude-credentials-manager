@@ -112,6 +112,12 @@ type credPool struct {
 	sessions      map[string]*sessionPin // sessionID -> pin
 	localCaptured http.Header            // shared install identity, replayed for every local entry
 	clk           clock                  // time source for pin lastSeen / eviction
+
+	// wake lets the request path ask the long-running scheduler for an
+	// immediate tick (e.g. after clearing the activated entry on a dead
+	// credential) instead of waiting for the next interval. Buffered size 1;
+	// nil in bare test pools that never run a scheduler. Non-blocking send.
+	wake chan struct{}
 }
 
 // Compile-time check.
