@@ -270,9 +270,9 @@ func TestQuotaExhausted(t *testing.T) {
 
 func TestNoteSuccessStampsLastSuccessAndResetsFail(t *testing.T) {
 	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
-	eA.consecutiveFail = 1
 	p, clk := stickyPool(t, map[string]*poolEntry{"a": eA})
 	_, _, _, _ = p.routeSession(sidA) // pin created; lastSuccess = t0
+	p.entries["a"].consecutiveFail = 1 // simulate a failure after pinning
 	clk.Advance(5 * time.Minute)
 
 	info := &oauth.UsageInfo{Quotas: []oauth.Quota{{Name: "5h", Used: 10, ResetsAt: "2099-01-01T00:00:00Z"}}}
@@ -545,5 +545,58 @@ func TestSnapshotLinesListsStickyPins(t *testing.T) {
 	}
 	if !strings.Contains(joined, "sticky: 1 active session pin") {
 		t.Errorf("snapshot missing sticky pin count line:\n%s", joined)
+	}
+}
+
+func TestBestCandidateExcludesEntryWithAnyFailure(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eA.consecutiveFail = 1 // one failure on record — must be barred from NEW sessions
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 50 // clean
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+
+	id, ok := p.bestCandidate()
+	if !ok || id != "b" {
+		t.Errorf("new-session selection must skip failed (fail=1) a even at higher feasibility; got (%q,%v)", id, ok)
+	}
+}
+
+func TestBestCandidateNoneWhenAllHaveFailures(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eA.consecutiveFail = 1
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
+	if _, ok := p.bestCandidate(); ok {
+		t.Error("all-failed pool must yield no new-session candidate")
+	}
+}
+
+func TestNewSessionGuardStricterThanPinRetention(t *testing.T) {
+	const sidC = "33333333-3333-3333-3333-333333333333"
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{token: "tokA"})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{token: "tokB"})
+	eB.lastFeasibility = 50
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+
+	_, _, _, _ = p.routeSession(sidA) // pins a
+	p.entries["a"].consecutiveFail = 1 // a failed once, still < 2
+
+	// Pinned session keeps a (retention predicate is fail < 2):
+	_, idSame, _, _ := p.routeSession(sidA)
+	if idSame != "a" {
+		t.Errorf("pinned session should ride through fail=1; got %q", idSame)
+	}
+	// A NEW session must avoid a (new-session guard is fail == 0) → picks b:
+	_, idNew, _, _ := p.routeSession(sidB)
+	if idNew != "b" {
+		t.Errorf("new session must avoid failed a; got %q", idNew)
+	}
+	// After a success resets a's counter, new sessions can use a again:
+	p.noteSuccess(sidA, "a", nil)
+	_, idC, _, _ := p.routeSession(sidC)
+	if idC != "a" {
+		t.Errorf("after reset, a new session should pick best (a); got %q", idC)
 	}
 }
