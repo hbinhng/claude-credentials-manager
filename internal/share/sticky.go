@@ -72,7 +72,7 @@ func (p *credPool) now() time.Time {
 }
 
 // bestCandidate returns the highest-feasibility eligible entry id.
-// Eligible = not degraded AND consecutiveFail < 2. ok=false when none
+// Eligible = not degraded AND consecutiveFail == 0. ok=false when none
 // qualify (caller maps to 503).
 func (p *credPool) bestCandidate() (string, bool) {
 	p.mu.RLock()
