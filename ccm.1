@@ -616,6 +616,12 @@ keeps the pin. A pin is released after 30 minutes idle, or after one hour
 with no successful response (the prompt cache has expired by then).
 Requires
 .BR \-\-load\-balance .
+A pooled credential whose refresh token is revoked or expired (OAuth
+.B invalid_grant )
+is dropped immediately: sticky sessions re\-pin, load\-balance pools rotate, and a
+single credential returns a 502 advising
+.BR "ccm login" .
+New sessions are only provisioned to a credential with a clean recent record.
 .TP
 .BR \-h ", " \-\-help
 Show help for any command.
