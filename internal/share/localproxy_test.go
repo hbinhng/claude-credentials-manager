@@ -1,6 +1,7 @@
 package share
 
 import (
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
 
@@ -186,4 +188,50 @@ func waitForListener(t *testing.T, addr string) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("listener at %s did not become ready within 1s", addr)
+}
+
+func localInvalidGrantErr() error {
+	return fmt.Errorf("refresh: refresh failed (HTTP 400): {\"error\":\"invalid_grant\"}: %w", oauth.ErrInvalidGrant)
+}
+
+func TestLaunchPoolInvalidGrantClearsActivatedAndWakes(t *testing.T) {
+	eA := newEntry("a", "alice", statusActivated, &fakeTokenSource{err: localInvalidGrantErr()})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{token: "tokB"})
+	eB.lastFeasibility = 50
+	pool := makePool("a", false, map[string]*poolEntry{"a": eA, "b": eB})
+	lp := &LocalProxy{tokens: pool, pool: pool}
+
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	lp.serveWithToken(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502", rr.Code)
+	}
+	if pool.entries["a"].status != statusDegraded {
+		t.Errorf("a must be degraded")
+	}
+	if pool.activated != "" {
+		t.Errorf("activated must be cleared; got %q", pool.activated)
+	}
+	select {
+	case <-pool.wake:
+	default:
+		t.Error("wake must be signaled")
+	}
+}
+
+func TestLaunchSingleCredInvalidGrantReLoginMessage(t *testing.T) {
+	lp := &LocalProxy{tokens: &fakeTokenSource{err: localInvalidGrantErr()}} // pool nil
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest("POST", "/v1/messages", nil)
+	lp.serveWithToken(rr, req)
+
+	if rr.Code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502", rr.Code)
+	}
+	if !strings.Contains(rr.Body.String(), "ccm login") {
+		t.Errorf("single-cred invalid_grant body should mention `ccm login`; got %s", rr.Body.String())
+	}
 }
