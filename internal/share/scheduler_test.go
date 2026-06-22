@@ -1053,6 +1053,35 @@ func TestSchedulerStickyDoesNotRotate(t *testing.T) {
 	}
 }
 
+func TestSchedulerRunWakeTriggersTick(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastUsage = &oauth.UsageInfo{}
+	eA.lastUsageAt = now
+	eA.lastFeasibility = 100
+	p := makePool("", false, map[string]*poolEntry{"a": eA})
+	clk := newFakeClock(now)
+	p.enableSticky(clk)
+
+	probe := func(state poolEntryState) (probeResult, error) {
+		return probeResult{info: &oauth.UsageInfo{}}, nil
+	}
+	s := newScheduler(p, probe, clk, time.Minute)
+	s.sticky = true
+	done := make(chan struct{})
+	defer close(done)
+	go s.Run(done)
+
+	// The fake clock's ticker never fires (not advanced); the only thing
+	// that can trigger a tick is the wake signal.
+	p.wake <- struct{}{}
+	select {
+	case <-s.TickDone():
+	case <-time.After(2 * time.Second):
+		t.Fatal("wake signal did not trigger a scheduler tick")
+	}
+}
+
 func TestSchedulerStickyEvictsIdlePins(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})

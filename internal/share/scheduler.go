@@ -212,6 +212,11 @@ func (s *scheduler) Run(done <-chan struct{}) {
 			return
 		case <-tick.C():
 			s.runOnce()
+		case <-s.pool.wake:
+			// Out-of-band tick requested by the request path (a credential
+			// went dead and the activated slot was cleared) — re-rank and
+			// promote a healthy entry now.
+			s.runOnce()
 		}
 	}
 }

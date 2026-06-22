@@ -61,7 +61,7 @@ func BuildPoolFromMixed(
 		cred  *store.Credential
 	}
 
-	pool := &credPool{entries: make(map[string]*poolEntry)}
+	pool := &credPool{entries: make(map[string]*poolEntry), wake: make(chan struct{}, 1)}
 	var rejections []string
 	var passA []passAEntry
 

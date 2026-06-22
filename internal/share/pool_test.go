@@ -33,6 +33,7 @@ func makePool(activated string, singleton bool, entries map[string]*poolEntry) *
 		entries:   entries,
 		activated: activated,
 		singleton: singleton,
+		wake:      make(chan struct{}, 1),
 	}
 }
 
