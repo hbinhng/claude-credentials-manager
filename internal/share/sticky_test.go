@@ -600,3 +600,66 @@ func TestNewSessionGuardStricterThanPinRetention(t *testing.T) {
 		t.Errorf("after reset, a new session should pick best (a); got %q", idC)
 	}
 }
+
+func TestFailEntryInvalidGrantStickyDropsPinAndDegrades(t *testing.T) {
+	orig := errLog
+	errLog = func() io.Writer { return io.Discard }
+	defer func() { errLog = orig }()
+
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{token: "tokA"})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{token: "tokB"})
+	eB.lastFeasibility = 50
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB}) // sticky → activated ""
+	_, _, _, _ = p.routeSession(sidA)                              // pins a
+
+	p.failEntryInvalidGrant(sidA, "a")
+
+	if p.entries["a"].status != statusDegraded {
+		t.Errorf("a status = %v, want degraded", p.entries["a"].status)
+	}
+	if _, ok := p.sessions[sidA]; ok {
+		t.Error("session pin must be dropped")
+	}
+	// Next request re-selects b (a is degraded):
+	_, id, _, _ := p.routeSession(sidA)
+	if id != "b" {
+		t.Errorf("re-pin should pick healthy b; got %q", id)
+	}
+}
+
+func TestFailEntryInvalidGrantSingleActiveClearsAndWakes(t *testing.T) {
+	orig := errLog
+	errLog = func() io.Writer { return io.Discard }
+	defer func() { errLog = orig }()
+
+	eA := newEntry("a", "alice", statusActivated, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 50
+	p := makePool("a", false, map[string]*poolEntry{"a": eA, "b": eB}) // single-active
+
+	p.failEntryInvalidGrant("", "") // empty entryID resolves to activated "a"
+
+	if p.entries["a"].status != statusDegraded {
+		t.Errorf("a status = %v, want degraded", p.entries["a"].status)
+	}
+	if p.activated != "" {
+		t.Errorf("activated = %q, want cleared", p.activated)
+	}
+	select {
+	case <-p.wake:
+	default:
+		t.Error("wake must be signaled when the activated entry is cleared")
+	}
+}
+
+func TestFailEntryInvalidGrantUnknownNoOp(t *testing.T) {
+	orig := errLog
+	errLog = func() io.Writer { return io.Discard }
+	defer func() { errLog = orig }()
+	p := makePool("", false, map[string]*poolEntry{
+		"a": newEntry("a", "alice", statusCandidate, &fakeTokenSource{}),
+	})
+	p.failEntryInvalidGrant("", "ghost") // must not panic
+}

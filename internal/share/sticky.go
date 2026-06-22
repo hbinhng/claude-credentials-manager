@@ -252,6 +252,51 @@ func (p *credPool) refreshFeasibilities(now time.Time) {
 	}
 }
 
+// failEntryInvalidGrant degrades a credential whose refresh token is permanently
+// dead (OAuth invalid_grant) and moves routing off it. Mode-agnostic and
+// idempotent:
+//   - drops the session pin (sid) if present     → sticky flip: next request re-selects
+//   - if the entry is the activated one, clears   → single-active / launch pool:
+//     it and wakes the scheduler to re-promote
+// An empty entryID resolves to the currently-activated entry (single-active and
+// launch callers that don't track a per-request id). No-op for an unknown entry.
+func (p *credPool) failEntryInvalidGrant(sid, entryID string) {
+	p.mu.Lock()
+	if entryID == "" {
+		entryID = p.activated
+	}
+	if sid != "" {
+		delete(p.sessions, sid)
+	}
+	e, ok := p.entries[entryID]
+	if !ok {
+		p.mu.Unlock()
+		return
+	}
+	e.status = statusDegraded
+	e.consecutiveFail = 2
+	name := e.state.credName()
+	cleared := false
+	if p.activated == entryID {
+		p.activated = ""
+		cleared = true
+		if p.wake != nil {
+			select {
+			case p.wake <- struct{}{}:
+			default:
+			}
+		}
+	}
+	p.mu.Unlock()
+
+	action := "re-pinning sessions"
+	if cleared {
+		action = "rotating"
+	}
+	fmt.Fprintf(errLog(), "ccm: %s(%s) refresh token invalid (invalid_grant) — degrading + %s\n",
+		name, shortID(entryID), action)
+}
+
 // routeSession resolves the credential a session should use. On first
 // contact it selects the best candidate and pins (sessionID -> entryID);
 // it reuses the pin while the entry is healthy; on a gone/degraded entry
