@@ -85,7 +85,13 @@ func (p *credPool) bestCandidateLocked() (string, bool) {
 	bestID := ""
 	var bestFeas float64
 	for id, e := range p.entries {
-		if e.status == statusDegraded || e.consecutiveFail >= 2 {
+		// New-session / re-pin selection requires a CLEAN record: exclude
+		// degraded entries AND any entry with an unresolved failure
+		// (consecutiveFail > 0). Pin RETENTION (routeSession's reuse check)
+		// stays at the looser fail < 2 so an already-pinned session rides
+		// through a transient blip. consecutiveFail resets to 0 on a
+		// successful probe / response, re-admitting the entry.
+		if e.status == statusDegraded || e.consecutiveFail > 0 {
 			continue
 		}
 		f := e.lastFeasibility

@@ -97,22 +97,21 @@ func TestStickyProxyRepinsAfterHardFailures(t *testing.T) {
 		_, _ = w.Write([]byte(`{}`))
 	}), 100, 50)
 
-	// 1st: picks a (best) -> 401 -> fail 1, pin dropped.
-	// 2nd: re-picks a (still best, fail<2) -> 401 -> fail 2 -> a degraded.
-	// 3rd: a degraded -> picks b -> 200.
+	// 1st: picks a (best, fail=0) -> 401 -> fail=1, pin dropped.
+	// 2nd: a has fail=1, excluded from new-session selection (strict guard:
+	//      fail==0 required) -> picks b (clean) -> 200.
 	// Bearer sequence is captured by the upstream handler's `seen` slice, so
 	// stickyDo (which only differs in returning the status) is safe to use.
-	_ = stickyDo(t, srv.URL, sidA)
 	_ = stickyDo(t, srv.URL, sidA)
 	code := stickyDo(t, srv.URL, sidA)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(seen) != 3 {
-		t.Fatalf("want 3 upstream hits, got %d: %v", len(seen), seen)
+	if len(seen) != 2 {
+		t.Fatalf("want 2 upstream hits, got %d: %v", len(seen), seen)
 	}
-	if seen[0] != "Bearer tokA" || seen[1] != "Bearer tokA" || seen[2] != "Bearer tokB" {
-		t.Errorf("expected [tokA tokA tokB], got %v", seen)
+	if seen[0] != "Bearer tokA" || seen[1] != "Bearer tokB" {
+		t.Errorf("expected [tokA tokB], got %v", seen)
 	}
 	if code != http.StatusOK {
 		t.Errorf("final request code = %d, want 200", code)
