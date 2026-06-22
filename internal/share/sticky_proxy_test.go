@@ -2,12 +2,16 @@ package share
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 )
 
 // stickyProxy wires a serving-mode Proxy with a sticky two-cred pool in
@@ -245,6 +249,109 @@ func TestStickyProxyFreshError502(t *testing.T) {
 
 	if code := stickyDo(t, srv.URL, sidA); code != http.StatusBadGateway {
 		t.Errorf("Fresh error: code = %d, want 502", code)
+	}
+}
+
+// invalidGrantErr is a Fresh() error that errors.Is matches oauth.ErrInvalidGrant,
+// wrapped the way the real refresh chain wraps it.
+func invalidGrantErr() error {
+	return fmt.Errorf("refresh: refresh failed (HTTP 400): {\"error\":\"invalid_grant\"}: %w", oauth.ErrInvalidGrant)
+}
+
+func TestStickyProxyInvalidGrantFlipsPin(t *testing.T) {
+	srv, _, pool := stickyProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}), 100, 50)
+	// Make entry "a" (the higher-feasibility pick) fail refresh with invalid_grant.
+	pool.entries["a"].state = &credStateAdapter{id: "a", name: "alice",
+		src: &fakeTokenSource{err: invalidGrantErr()}}
+
+	sid := sidA
+	if code := stickyDo(t, srv.URL, sid); code != http.StatusBadGateway {
+		t.Fatalf("first request: code = %d, want 502", code)
+	}
+	if pool.entries["a"].status != statusDegraded {
+		t.Errorf("a must be degraded after invalid_grant")
+	}
+	if _, ok := pool.sessions[sid]; ok {
+		t.Errorf("pin must be dropped after invalid_grant")
+	}
+	// Second request flips to healthy b → 200.
+	if code := stickyDo(t, srv.URL, sid); code != http.StatusOK {
+		t.Errorf("second request should flip to b and 200; got %d", code)
+	}
+}
+
+func TestShareSingleActiveInvalidGrantClearsAndWakes(t *testing.T) {
+	prev := SetUpstreamBaseForTest("http://127.0.0.1:1") // unused on the error path
+	t.Cleanup(func() { SetUpstreamBaseForTest(prev) })
+
+	p, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	p.accessToken = "secret"
+	p.mode = modeServing
+
+	eA := newEntry("a", "alice", statusActivated, &fakeTokenSource{err: invalidGrantErr()})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{token: "tokB"})
+	eB.lastFeasibility = 50
+	pool := makePool("a", false, map[string]*poolEntry{"a": eA, "b": eB}) // single-active, NOT sticky
+	p.markCaptured(http.Header{})
+	if err := p.Transition("secret", pool, pool); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(p.handle))
+	t.Cleanup(srv.Close)
+
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502", code)
+	}
+	if pool.entries["a"].status != statusDegraded {
+		t.Errorf("a must be degraded")
+	}
+	if pool.activated != "" {
+		t.Errorf("activated must be cleared; got %q", pool.activated)
+	}
+	select {
+	case <-pool.wake:
+	default:
+		t.Error("wake must be signaled")
+	}
+}
+
+func TestShareSingleCredInvalidGrantReLoginMessage(t *testing.T) {
+	p, err := NewProxy("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("NewProxy: %v", err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	p.accessToken = "secret"
+	p.mode = modeServing
+	p.markCaptured(http.Header{})
+	// Single-cred: tokens is a plain source, pool stays nil.
+	if err := p.Transition("secret", &fakeTokenSource{err: invalidGrantErr()}, nil); err != nil {
+		t.Fatalf("Transition: %v", err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(p.handle))
+	t.Cleanup(srv.Close)
+
+	req, _ := http.NewRequest("POST", srv.URL+"/v1/messages", nil)
+	req.Header.Set("Authorization", "Bearer secret")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("code = %d, want 502", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "ccm login") {
+		t.Errorf("single-cred invalid_grant body should mention `ccm login`; got %s", string(body))
 	}
 }
 
