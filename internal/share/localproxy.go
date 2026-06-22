@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
+	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
@@ -256,6 +257,15 @@ func (p *LocalProxy) serveWithToken(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, errNoActivated) {
 			writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm: no usable credentials")
+			return
+		}
+		if errors.Is(err, oauth.ErrInvalidGrant) {
+			if p.pool != nil {
+				p.pool.failEntryInvalidGrant("", "")
+				writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm launch: credential refresh failed: "+err.Error())
+			} else {
+				writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm launch: credential refresh token is invalid (revoked or expired) — run `ccm login` to re-authenticate")
+			}
 			return
 		}
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm launch: credential refresh failed: "+err.Error())
