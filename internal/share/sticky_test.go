@@ -764,3 +764,18 @@ func TestCommitPinInvalidSidNoOp(t *testing.T) {
 		t.Error("commitPin must no-op for an invalid sid")
 	}
 }
+
+// routeSession selects a candidate and immediately commits the pin (no token
+// validation). Test-only convenience for setting up session pins — production
+// uses routeCandidate + commitPin with a Fresh() check between them
+// (see proxy.go handleServe).
+func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource, error) {
+	v, id, ts, pinned, err := p.routeCandidate(sid)
+	if err != nil {
+		return activatedView{}, "", nil, err
+	}
+	if !pinned {
+		p.commitPin(sid, id)
+	}
+	return v, id, ts, nil
+}
