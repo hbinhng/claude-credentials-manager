@@ -508,11 +508,8 @@ func TestRouteSessionLogsPinAndRePin(t *testing.T) {
 		t.Errorf("re-pin should route to bob; got %q", id)
 	}
 	logAfterRePin := buf.String()
-	if !strings.Contains(logAfterRePin, "sticky re-pin") {
-		t.Errorf("re-pin must log 'sticky re-pin'; got: %q", logAfterRePin)
-	}
-	if !strings.Contains(logAfterRePin, "(was alice)") {
-		t.Errorf("re-pin log must contain '(was alice)'; got: %q", logAfterRePin)
+	if !strings.Contains(logAfterRePin, "sticky pin") {
+		t.Errorf("re-pin must log 'sticky pin'; got: %q", logAfterRePin)
 	}
 	if !strings.Contains(logAfterRePin, "bob") {
 		t.Errorf("re-pin log must contain new cred name 'bob'; got: %q", logAfterRePin)
@@ -662,4 +659,108 @@ func TestFailEntryInvalidGrantUnknownNoOp(t *testing.T) {
 		"a": newEntry("a", "alice", statusCandidate, &fakeTokenSource{}),
 	})
 	p.failEntryInvalidGrant("", "ghost") // must not panic
+}
+
+func TestRouteCandidateDoesNotPinOnFreshSelect(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{token: "tokA"})
+	eA.lastFeasibility = 100
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
+
+	view, id, ts, pinned, err := p.routeCandidate(sidA)
+	if err != nil {
+		t.Fatalf("routeCandidate err: %v", err)
+	}
+	if pinned {
+		t.Error("a fresh selection must report pinned=false")
+	}
+	if id != "a" || !view.ok {
+		t.Errorf("expected candidate a; got id=%q view.ok=%v", id, view.ok)
+	}
+	if tok, _ := ts.Fresh(); tok != "tokA" {
+		t.Errorf("token source = %q, want tokA", tok)
+	}
+	if _, ok := p.sessions[sidA]; ok {
+		t.Error("routeCandidate must NOT create a pin for a fresh selection")
+	}
+}
+
+func TestRouteCandidateReusesExistingHealthyPin(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{token: "tokA"})
+	eA.lastFeasibility = 100
+	p, clk := stickyPool(t, map[string]*poolEntry{"a": eA})
+	p.commitPin(sidA, "a") // pin exists
+	clk.Advance(time.Minute)
+
+	_, id, _, pinned, err := p.routeCandidate(sidA)
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !pinned || id != "a" {
+		t.Errorf("must reuse existing pin a with pinned=true; got id=%q pinned=%v", id, pinned)
+	}
+	if !p.sessions[sidA].lastSeen.Equal(clk.Now()) {
+		t.Errorf("reuse must bump lastSeen to %v; got %v", clk.Now(), p.sessions[sidA].lastSeen)
+	}
+}
+
+func TestRouteCandidateDropsStalePinAndReselects(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	eB := newEntry("b", "bob", statusCandidate, &fakeTokenSource{})
+	eB.lastFeasibility = 50
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA, "b": eB})
+	p.commitPin(sidA, "a")
+	p.entries["a"].status = statusDegraded
+
+	_, id, _, pinned, _ := p.routeCandidate(sidA)
+	if pinned {
+		t.Error("a degraded pin must be dropped, yielding a fresh selection (pinned=false)")
+	}
+	if id != "b" {
+		t.Errorf("re-select must pick healthy b; got %q", id)
+	}
+	if _, ok := p.sessions[sidA]; ok {
+		t.Error("stale pin must be dropped and not re-created by routeCandidate")
+	}
+}
+
+func TestRouteCandidateNoneEligible(t *testing.T) {
+	eA := newEntry("a", "alice", statusDegraded, &fakeTokenSource{})
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
+	if _, _, _, _, err := p.routeCandidate(sidA); err != errNoActivated {
+		t.Errorf("err = %v, want errNoActivated", err)
+	}
+}
+
+func TestCommitPinRecordsAndLogs(t *testing.T) {
+	orig := errLog
+	var buf bytes.Buffer
+	errLog = func() io.Writer { return &buf }
+	defer func() { errLog = orig }()
+
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	eA.lastFeasibility = 100
+	p, clk := stickyPool(t, map[string]*poolEntry{"a": eA})
+
+	p.commitPin(sidA, "a")
+
+	pin := p.sessions[sidA]
+	if pin == nil || pin.entryID != "a" {
+		t.Fatalf("commitPin must record the pin; got %+v", pin)
+	}
+	if !pin.lastSuccess.Equal(clk.Now()) || !pin.lastSeen.Equal(clk.Now()) {
+		t.Errorf("commitPin must set lastSeen=lastSuccess=now")
+	}
+	if !strings.Contains(buf.String(), "sticky pin") || !strings.Contains(buf.String(), "alice") {
+		t.Errorf("commitPin must log the pin event; got %q", buf.String())
+	}
+}
+
+func TestCommitPinInvalidSidNoOp(t *testing.T) {
+	eA := newEntry("a", "alice", statusCandidate, &fakeTokenSource{})
+	p, _ := stickyPool(t, map[string]*poolEntry{"a": eA})
+	p.commitPin("not-a-uuid", "a")
+	if len(p.sessions) != 0 {
+		t.Error("commitPin must no-op for an invalid sid")
+	}
 }
