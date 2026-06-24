@@ -297,24 +297,51 @@ func (p *credPool) failEntryInvalidGrant(sid, entryID string) {
 		name, shortID(entryID), action)
 }
 
-// routeSession resolves the credential a session should use. On first
-// contact it selects the best candidate and pins (sessionID -> entryID);
-// it reuses the pin while the entry is healthy; on a gone/degraded entry
-// it drops the pin and re-selects. An invalid/empty sessionID is routed
-// to the best candidate WITHOUT storing a pin. Returns errNoActivated
-// when no entry is eligible.
-//
-// Lock discipline: logMsg is set under the lock, but emitted AFTER the
-// unlock. Defers run LIFO: p.mu.Unlock() (declared last) runs first,
-// then the logging defer runs — so we never write to stderr while
-// holding p.mu. This matches the pattern used by signalEntryFailed and
-// SignalActivatedFailed throughout this package.
-func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource, error) {
+// routeCandidate resolves the credential a request should TRY for session sid,
+// WITHOUT creating a new pin. pinned==true means it came from an existing healthy
+// session pin (already committed; lastSeen is bumped) and the caller must NOT
+// commit. pinned==false is a fresh selection: the caller must commitPin only
+// after the token refreshes successfully, so a dead credential — discovered at
+// refresh time — never enters the session map. Returns errNoActivated when no
+// entry is eligible.
+func (p *credPool) routeCandidate(sid string) (activatedView, string, tokenSource, bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if usage.IsValidSessionID(sid) {
+		if pin, ok := p.sessions[sid]; ok {
+			if e, ok := p.entries[pin.entryID]; ok &&
+				e.status != statusDegraded && e.consecutiveFail < 2 {
+				pin.lastSeen = p.now()
+				v, id, ts, _ := p.viewForEntryLocked(pin.entryID)
+				return v, id, ts, true, nil
+			}
+			delete(p.sessions, sid) // stale pin (gone/degraded) — drop, re-select
+		}
+	}
+
+	id, ok := p.bestCandidateLocked()
+	if !ok {
+		return activatedView{}, "", nil, false, errNoActivated
+	}
+	v, eid, ts, _ := p.viewForEntryLocked(id)
+	return v, eid, ts, false, nil
+}
+
+// commitPin records sid -> entryID after the caller verified the credential's
+// token refreshes. Sets lastSeen = lastSuccess = now and emits the sticky
+// pin-event log (after unlocking — never write to stderr under p.mu). No-op for
+// an invalid/empty sid or an unknown entry. A failover departure from a dead
+// account is already announced by failEntryInvalidGrant's log, so commitPin
+// emits a single "sticky pin" line (no separate re-pin wording).
+func (p *credPool) commitPin(sid, entryID string) {
+	if !usage.IsValidSessionID(sid) {
+		return
+	}
 	p.mu.Lock()
 	var logMsg string
-	// defers run LIFO: the Unlock (declared last) runs first, then this
-	// logging defer runs AFTER the lock is released — never write to
-	// stderr while holding p.mu.
+	// defers run LIFO: Unlock (declared last) runs first, then the log defer
+	// runs with the lock released.
 	defer func() {
 		if logMsg != "" {
 			fmt.Fprint(errLog(), logMsg)
@@ -322,41 +349,28 @@ func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource,
 	}()
 	defer p.mu.Unlock()
 
-	valid := usage.IsValidSessionID(sid)
-	rePin := false
-	oldName := ""
-	if valid {
-		if pin, ok := p.sessions[sid]; ok {
-			if e, ok := p.entries[pin.entryID]; ok &&
-				e.status != statusDegraded && e.consecutiveFail < 2 {
-				pin.lastSeen = p.now()
-				return p.viewForEntryLocked(pin.entryID) // steady-state reuse — NO log
-			}
-			// Entry gone or degraded — capture old name, drop pin, re-select.
-			rePin = true
-			oldName = shortID(pin.entryID)
-			if e, ok := p.entries[pin.entryID]; ok {
-				oldName = e.state.credName()
-			}
-			delete(p.sessions, sid)
-		}
-	}
-
-	id, ok := p.bestCandidateLocked()
+	e, ok := p.entries[entryID]
 	if !ok {
-		return activatedView{}, "", nil, errNoActivated
+		return
 	}
-	if valid {
-		now := p.now()
-		p.sessions[sid] = &sessionPin{entryID: id, lastSeen: now, lastSuccess: now}
-		name := p.entries[id].state.credName()
-		if rePin {
-			logMsg = fmt.Sprintf("ccm share: sticky re-pin %s -> %s(%s) (was %s)\n",
-				shortID(sid), name, shortID(id), oldName)
-		} else {
-			logMsg = fmt.Sprintf("ccm share: sticky pin %s -> %s(%s)\n",
-				shortID(sid), name, shortID(id))
-		}
+	now := p.now()
+	p.sessions[sid] = &sessionPin{entryID: entryID, lastSeen: now, lastSuccess: now}
+	logMsg = fmt.Sprintf("ccm share: sticky pin %s -> %s(%s)\n",
+		shortID(sid), e.state.credName(), shortID(entryID))
+}
+
+// routeSession selects a candidate for sid and immediately commits the pin
+// WITHOUT validating the token. It composes routeCandidate + commitPin and exists
+// only as a test convenience for setting up pins; production uses the two-phase
+// select / validate (Fresh) / commit flow in handleServe so a dead credential is
+// never pinned.
+func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource, error) {
+	v, id, ts, pinned, err := p.routeCandidate(sid)
+	if err != nil {
+		return activatedView{}, "", nil, err
 	}
-	return p.viewForEntryLocked(id)
+	if !pinned {
+		p.commitPin(sid, id)
+	}
+	return v, id, ts, nil
 }
