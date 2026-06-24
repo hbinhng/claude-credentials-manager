@@ -89,6 +89,12 @@ type tokenSource interface {
 // where the token expires between requests.
 const backgroundRefreshInterval = 30 * time.Minute
 
+// maxInvalidGrantFailovers bounds the in-request failover loop in handleServe's
+// sticky branch. Each invalid_grant degrades one entry, so the loop terminates in
+// at most (pool size) iterations via errNoActivated; this is a backstop against
+// pathology.
+const maxInvalidGrantFailovers = 16
+
 // Proxy is the HTTP reverse proxy that powers `ccm share`.
 //
 // It starts in CAPTURE mode: any inbound request records its identity
@@ -702,26 +708,43 @@ func (p *Proxy) handleServe(w http.ResponseWriter, r *http.Request) {
 		err       error
 	)
 	if p.pool != nil && p.pool.sticky {
-		// Sticky: resolve the session's pinned entry, then refresh that
-		// entry's token (outside the pool lock — each credState owns its
-		// own mutex).
+		// Sticky: select a candidate, refresh its token OUTSIDE the pool lock,
+		// and pin it only on success. If the selected credential's refresh token
+		// is permanently dead (invalid_grant), degrade it and re-select a healthy
+		// one IN THIS REQUEST — a session must never get pinned to a dead account
+		// just because deadness is only discoverable at refresh time. Re-selection
+		// is cheap (shared captured headers, no per-cred capture).
 		sid = r.Header.Get("X-Claude-Code-Session-Id")
-		var ts tokenSource
-		var rerr error
-		view, entryID, ts, rerr = p.pool.routeSession(sid)
-		if rerr != nil {
-			if errors.Is(rerr, errNoActivated) {
-				writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
-			} else {
-				writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: routing failed: "+rerr.Error())
+		for attempt := 0; ; attempt++ {
+			var (
+				ts     tokenSource
+				pinned bool
+				rerr   error
+			)
+			view, entryID, ts, pinned, rerr = p.pool.routeCandidate(sid)
+			if rerr != nil {
+				if errors.Is(rerr, errNoActivated) {
+					writeAnthropicError(w, http.StatusServiceUnavailable, "api_error", "ccm share: no usable credentials")
+				} else {
+					writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: routing failed: "+rerr.Error())
+				}
+				return
 			}
-			return
-		}
-		realToken, err = ts.Fresh()
-		if err != nil {
-			if errors.Is(err, oauth.ErrInvalidGrant) {
+			realToken, err = ts.Fresh()
+			if err == nil {
+				if !pinned {
+					p.pool.commitPin(sid, entryID)
+				}
+				break
+			}
+			if errors.Is(err, oauth.ErrInvalidGrant) && attempt < maxInvalidGrantFailovers {
+				// Dead credential: degrade it (and drop the pin if it was a
+				// committed one) and re-select a healthy account.
 				p.pool.failEntryInvalidGrant(sid, entryID)
+				continue
 			}
+			// Transient refresh error, or failover budget exhausted: do not pin
+			// a fresh selection; keep any existing pin and ride through.
 			writeAnthropicError(w, http.StatusBadGateway, "api_error", "ccm share: credential refresh failed: "+err.Error())
 			return
 		}
