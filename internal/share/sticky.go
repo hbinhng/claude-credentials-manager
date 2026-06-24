@@ -359,18 +359,3 @@ func (p *credPool) commitPin(sid, entryID string) {
 		shortID(sid), e.state.credName(), shortID(entryID))
 }
 
-// routeSession selects a candidate for sid and immediately commits the pin
-// WITHOUT validating the token. It composes routeCandidate + commitPin and exists
-// only as a test convenience for setting up pins; production uses the two-phase
-// select / validate (Fresh) / commit flow in handleServe so a dead credential is
-// never pinned.
-func (p *credPool) routeSession(sid string) (activatedView, string, tokenSource, error) {
-	v, id, ts, pinned, err := p.routeCandidate(sid)
-	if err != nil {
-		return activatedView{}, "", nil, err
-	}
-	if !pinned {
-		p.commitPin(sid, id)
-	}
-	return v, id, ts, nil
-}
