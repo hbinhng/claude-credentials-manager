@@ -1,6 +1,7 @@
 package share
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -263,23 +264,18 @@ func TestStickyProxyInvalidGrantFlipsPin(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(`{}`))
 	}), 100, 50)
-	// Make entry "a" (the higher-feasibility pick) fail refresh with invalid_grant.
 	pool.entries["a"].state = &credStateAdapter{id: "a", name: "alice",
 		src: &fakeTokenSource{err: invalidGrantErr()}}
 
-	sid := sidA
-	if code := stickyDo(t, srv.URL, sid); code != http.StatusBadGateway {
-		t.Fatalf("first request: code = %d, want 502", code)
+	// invalid_grant on the best pick now fails over in-request → 200, pinned to b.
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusOK {
+		t.Fatalf("first call should fail over to b and 200; got %d", code)
 	}
 	if pool.entries["a"].status != statusDegraded {
 		t.Errorf("a must be degraded after invalid_grant")
 	}
-	if _, ok := pool.sessions[sid]; ok {
-		t.Errorf("pin must be dropped after invalid_grant")
-	}
-	// Second request flips to healthy b → 200.
-	if code := stickyDo(t, srv.URL, sid); code != http.StatusOK {
-		t.Errorf("second request should flip to b and 200; got %d", code)
+	if pin := pool.sessions[sidA]; pin == nil || pin.entryID != "b" {
+		t.Errorf("session must be pinned to healthy b; got %+v", pin)
 	}
 }
 
@@ -412,5 +408,89 @@ func TestStickyProxyPassthrough2xxNoteSuccess(t *testing.T) {
 	}
 	if pin.lastSuccess.IsZero() {
 		t.Error("noteSuccess must stamp pin.lastSuccess for passthrough entries")
+	}
+}
+
+func TestStickyProxyFirstCallFailsOverPastDeadAccount(t *testing.T) {
+	srv, _, pool := stickyProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}), 100, 50)
+	// Best pick "a" (feas 100) is dead; "b" (feas 50) is healthy.
+	pool.entries["a"].state = &credStateAdapter{id: "a", name: "alice",
+		src: &fakeTokenSource{err: invalidGrantErr()}}
+
+	// A brand-new session's first call must transparently fail over to b → 200.
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusOK {
+		t.Fatalf("first call must fail over to a healthy account (200); got %d", code)
+	}
+	if pool.entries["a"].status != statusDegraded {
+		t.Errorf("dead account a must be degraded")
+	}
+	pin := pool.sessions[sidA]
+	if pin == nil || pin.entryID != "b" {
+		t.Errorf("session must be pinned to healthy b; got %+v", pin)
+	}
+	// The dead account was never committed: the only pin is b.
+	if pin != nil && pin.entryID == "a" {
+		t.Error("dead account a must never have been pinned")
+	}
+}
+
+func TestStickyProxyAllDeadReturns503(t *testing.T) {
+	srv, _, pool := stickyProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), 100, 50)
+	pool.entries["a"].state = &credStateAdapter{id: "a", name: "alice", src: &fakeTokenSource{err: invalidGrantErr()}}
+	pool.entries["b"].state = &credStateAdapter{id: "b", name: "bob", src: &fakeTokenSource{err: invalidGrantErr()}}
+
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusServiceUnavailable {
+		t.Fatalf("all-dead pool must 503; got %d", code)
+	}
+	if len(pool.sessions) != 0 {
+		t.Errorf("no pin should be committed when every candidate is dead; got %v", pool.sessions)
+	}
+}
+
+func TestStickyProxyTransientOnFreshSelectionNoPin(t *testing.T) {
+	srv, _, pool := stickyProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), 100, 50)
+	// "a" (best) returns a TRANSIENT (non-invalid_grant) refresh error.
+	pool.entries["a"].state = &credStateAdapter{id: "a", name: "alice",
+		src: &fakeTokenSource{err: errors.New("refresh: network blip")}}
+
+	if code := stickyDo(t, srv.URL, sidA); code != http.StatusBadGateway {
+		t.Fatalf("transient Fresh error must 502 (no failover); got %d", code)
+	}
+	if _, ok := pool.sessions[sidA]; ok {
+		t.Error("a transient failure on a fresh selection must NOT commit a pin")
+	}
+	if pool.entries["a"].status == statusDegraded {
+		t.Error("a transient failure must NOT degrade the entry")
+	}
+}
+
+func TestStickyProxyFailoverLogsPinOnlyForHealthy(t *testing.T) {
+	orig := errLog
+	var buf bytes.Buffer
+	errLog = func() io.Writer { return &buf }
+	defer func() { errLog = orig }()
+
+	srv, _, pool := stickyProxy(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{}`))
+	}), 100, 50)
+	pool.entries["a"].state = &credStateAdapter{id: "a", name: "alice",
+		src: &fakeTokenSource{err: invalidGrantErr()}}
+
+	_ = stickyDo(t, srv.URL, sidA)
+
+	out := buf.String()
+	if !strings.Contains(out, "sticky pin") || !strings.Contains(out, "bob") {
+		t.Errorf("must log the committed pin to healthy bob; got %q", out)
+	}
+	if strings.Contains(out, "sticky pin "+shortID(sidA)+" -> alice") {
+		t.Errorf("must NOT log a pin to the dead account alice; got %q", out)
 	}
 }
