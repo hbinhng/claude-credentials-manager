@@ -765,6 +765,14 @@ func TestCommitPinInvalidSidNoOp(t *testing.T) {
 	}
 }
 
+func TestCommitPinUnknownEntryNoOp(t *testing.T) {
+	p, _ := stickyPool(t, map[string]*poolEntry{})
+	p.commitPin(sidA, "ghost") // valid sid, unknown entry id -> must no-op, not panic/write
+	if len(p.sessions) != 0 {
+		t.Error("commitPin must no-op for an unknown entry")
+	}
+}
+
 // routeSession selects a candidate and immediately commits the pin (no token
 // validation). Test-only convenience for setting up session pins — production
 // uses routeCandidate + commitPin with a Fresh() check between them
