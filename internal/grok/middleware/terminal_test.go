@@ -659,3 +659,84 @@ func TestEnsureToolRequired_MalformedToolEntries_Unchanged(t *testing.T) {
 		t.Errorf("malformed tool entries must be skipped, body unchanged")
 	}
 }
+
+// ── context-overflow → reactive-compact translation ──────────────────────────
+
+func TestDetectContextOverflow(t *testing.T) {
+	cases := []struct {
+		name     string
+		body     string
+		want     bool
+		in, max  int
+	}{
+		{"openai-nested", `{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 131072 tokens. However, your messages resulted in 200000 tokens."}}`, true, 200000, 131072},
+		{"xai-flat", `{"code":"context_length_exceeded","error":"maximum context length is 256000 tokens, but the request has 300000 tokens"}`, true, 300000, 256000},
+		{"generic-too-long", `{"code":"invalid_request_error","error":"prompt is too long"}`, true, 0, 0},
+		{"not-overflow-required", `{"code":"invalid-argument","error":"Invalid request content: Schema validation failed: /required: null is not of type array"}`, false, 0, 0},
+		{"not-overflow-modelnf", `{"error":{"code":"model_not_found","message":"unknown model"}}`, false, 0, 0},
+		{"empty", ``, false, 0, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ov, in, max := detectContextOverflow([]byte(c.body))
+			if ov != c.want {
+				t.Fatalf("overflow = %v, want %v", ov, c.want)
+			}
+			if ov && (in != c.in || max != c.max) {
+				t.Errorf("tokens = %d/%d, want %d/%d", in, max, c.in, c.max)
+			}
+		})
+	}
+}
+
+func TestTerminal_OverflowTranslatesToPromptTooLong(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"context_length_exceeded","error":"maximum context length is 256000 tokens, but the request has 300000 tokens"}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+	rr := httptest.NewRecorder()
+	withAlias(t, "", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	var out struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if out.Error.Type != "invalid_request_error" {
+		t.Errorf("error type = %q, want invalid_request_error", out.Error.Type)
+	}
+	if !strings.Contains(out.Error.Message, "prompt is too long") {
+		t.Errorf("message = %q, want it to contain 'prompt is too long' (triggers reactive compact)", out.Error.Message)
+	}
+}
+
+func TestTerminal_NonOverflow400StaysApiError(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"code":"invalid-argument","error":"some other problem"}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+	rr := httptest.NewRecorder()
+	withAlias(t, "", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if strings.Contains(rr.Body.String(), "prompt is too long") {
+		t.Errorf("non-overflow 400 must not be rewritten to prompt-too-long: %s", rr.Body.String())
+	}
+}

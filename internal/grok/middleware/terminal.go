@@ -16,6 +16,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
 
 	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
@@ -101,6 +103,18 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		errBody, _ := io.ReadAll(resp.Body)
 		if shouldDieFast(errBody, targetModel) {
 			t.opts.OnSessionDie(fmt.Sprintf("grok returned model_not_found for %q", targetModel))
+		}
+		// Grok's context window is smaller than the Claude model Claude Code
+		// thinks it is talking to, so a long conversation overflows before
+		// Claude Code proactively compacts. xAI rejects it with a
+		// context-length error; translate that into the Anthropic-shape
+		// "prompt is too long" 400 that Claude Code's reactive-compact path
+		// recognizes (mirrors the codex overflow translation). Proxy-faithful
+		// signal translation — no harness env-var poking.
+		if overflow, inTok, maxTok := detectContextOverflow(errBody); overflow {
+			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+				fmt.Sprintf("prompt is too long: %d tokens > %d maximum", inTok, maxTok))
+			return
 		}
 		writeAnthropicError(w, resp.StatusCode, "api_error", string(errBody))
 		return
@@ -225,6 +239,85 @@ func ensureToolRequired(body []byte) []byte {
 		// untestable: a map decoded from valid JSON always re-marshals.
 		return body
 	}
+	return out
+}
+
+// detectContextOverflow reports whether an upstream error body indicates the
+// prompt exceeded grok's context window, and (best-effort) the requested and
+// maximum token counts. It recognizes both error shapes xAI/OpenAI use —
+// nested {"error":{"message":…}} and flat {"code":…,"error":"…"}} — plus the
+// raw body as a last resort. Token counts are extracted heuristically: in an
+// overflow the requested count exceeds the limit, so the larger token-like
+// integer is the input and the next is the maximum. Counts are advisory;
+// Claude Code's reactive compaction triggers on the "prompt is too long"
+// message text, and zeros are an acceptable fallback (as in the codex path).
+func detectContextOverflow(errBody []byte) (overflow bool, inTokens, maxTokens int) {
+	msg := errorMessage(errBody)
+	if msg == "" {
+		return false, 0, 0
+	}
+	low := strings.ToLower(msg)
+	markers := []string{
+		"context length", "context window", "maximum context",
+		"context_length_exceeded", "too long", "too many tokens",
+		"reduce the length", "exceeds the maximum", "maximum number of tokens",
+	}
+	hit := false
+	for _, m := range markers {
+		if strings.Contains(low, m) {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return false, 0, 0
+	}
+	nums := tokenLikeInts(msg)
+	if len(nums) >= 2 {
+		inTokens, maxTokens = nums[0], nums[1]
+	}
+	return true, inTokens, maxTokens
+}
+
+// errorMessage extracts a human-readable message from the two upstream error
+// JSON shapes; falls back to the raw body so marker matching still works.
+func errorMessage(body []byte) string {
+	var nested struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if json.Unmarshal(body, &nested) == nil && nested.Error.Message != "" {
+		return nested.Error.Message
+	}
+	var flat struct {
+		Error string `json:"error"`
+	}
+	if json.Unmarshal(body, &flat) == nil && flat.Error != "" {
+		return flat.Error
+	}
+	return string(body)
+}
+
+// tokenLikeInts returns the integers >= 1000 found in s (token counts are
+// large), sorted descending so the requested count precedes the limit.
+func tokenLikeInts(s string) []int {
+	var out []int
+	for i := 0; i < len(s); {
+		if s[i] >= '0' && s[i] <= '9' {
+			j := i
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
+			}
+			if n, err := strconv.Atoi(s[i:j]); err == nil && n >= 1000 {
+				out = append(out, n)
+			}
+			i = j
+		} else {
+			i++
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(out)))
 	return out
 }
 
