@@ -90,7 +90,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if sharemw.AliasMatched(r.Context()) {
 		targetModel = sharemw.EffectiveModel(r.Context())
 	}
-	outBody := ensureToolRequired(orderPreservingRewrite(body, targetModel))
+	outBody := ensureToolRequired(hoistSystemMessages(orderPreservingRewrite(body, targetModel)))
 
 	resp, err := t.doWith401Retry(r.Context(), outBody)
 	if err != nil {
@@ -192,6 +192,81 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 // rewriteModelField in internal/share/middleware/alias.go, which this
 // mirrors). Falls back to returning body unchanged when the "model" key
 // isn't present in the expected shape.
+// hoistSystemMessages moves any role:"system" message out of the messages
+// array and into the top-level `system` field. Claude Code injects
+// SessionStart-hook / skill context as a role:"system" message, which the
+// real Anthropic API tolerates but xAI's /v1/messages validator rejects
+// ("Invalid message role" — it only accepts user/assistant). Hoisting keeps
+// the content as a system instruction (its correct Anthropic home) and
+// yields a request xAI accepts.
+//
+// Best-effort: a body with no role:"system" message, or one that doesn't
+// parse, is returned unchanged (no re-marshal).
+func hoistSystemMessages(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"role":"system"`)) {
+		return body
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	msgs, ok := m["messages"].([]any)
+	if !ok {
+		return body
+	}
+	var hoisted []any
+	kept := make([]any, 0, len(msgs))
+	for _, raw := range msgs {
+		if msg, ok := raw.(map[string]any); ok {
+			if role, _ := msg["role"].(string); role == "system" {
+				hoisted = append(hoisted, systemContentBlocks(msg["content"])...)
+				continue
+			}
+		}
+		kept = append(kept, raw)
+	}
+	if len(hoisted) == 0 {
+		return body
+	}
+	m["messages"] = kept
+	m["system"] = mergeSystem(m["system"], hoisted)
+	out, err := json.Marshal(m)
+	if err != nil {
+		// untestable: a map decoded from valid JSON always re-marshals.
+		return body
+	}
+	return out
+}
+
+// systemContentBlocks normalizes a message's content (string or []block)
+// into a slice of Anthropic content blocks.
+func systemContentBlocks(content any) []any {
+	switch c := content.(type) {
+	case string:
+		return []any{map[string]any{"type": "text", "text": c}}
+	case []any:
+		return c
+	default:
+		return nil
+	}
+}
+
+// mergeSystem appends blocks to an existing top-level system value,
+// normalizing it to a content-block array (string → one text block;
+// nil → just the new blocks).
+func mergeSystem(sys any, blocks []any) []any {
+	var out []any
+	switch s := sys.(type) {
+	case string:
+		if s != "" {
+			out = append(out, map[string]any{"type": "text", "text": s})
+		}
+	case []any:
+		out = append(out, s...)
+	}
+	return append(out, blocks...)
+}
+
 // ensureToolRequired makes every tool's input_schema carry a `required`
 // array. xAI's /v1/messages validator rejects a tool schema whose
 // `required` is absent or null ("/required: null is not of type array"),
