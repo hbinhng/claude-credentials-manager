@@ -14,8 +14,10 @@ import (
 	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
+	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/trace"
 )
 
 // ErrInvalidPinnedToken is returned (wrapped) by StartSession and
@@ -307,6 +309,18 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		// injects the token via ctxKeyRealToken → director, and adding
 		// UpstreamAuthReplace on that path would clobber the inbound
 		// access-token check.
+		proxy.SetBearerSource(tokens)
+	}
+
+	if cred != nil && cred.ProviderName() == "grok" {
+		handlers, hErr := grokHandlersFn(cred)
+		if hErr != nil {
+			_ = proxy.Close()
+			return nil, fmt.Errorf("grok handlers: %w", hErr)
+		}
+		proxy.SetGrokHandlers(handlers)
+		// Wire the bearer source so the grok terminal fetches the current
+		// token and can trigger a refresh on 401.
 		proxy.SetBearerSource(tokens)
 	}
 
@@ -722,4 +736,28 @@ func SetCodexHandlersFnForTest(fn func(*store.Credential) (CodexHandlers, error)
 	orig := codexHandlersFn
 	codexHandlersFn = fn
 	return func() { codexHandlersFn = orig }
+}
+
+// grokHandlersFn assembles the per-session grok transport (a plain
+// net/http client routed through httpx.Transport so CCM_PROXY applies).
+// No TLS fingerprinting — api.x.ai is a normal API endpoint.
+//
+// Unlike codexHandlersFn, this never fails at construction time —
+// trace.WrapDoer and httpx.Transport() have no error path — so the
+// (GrokHandlers, error) return shape exists purely to mirror codex's
+// signature and let SetGrokHandlersFnForTest inject a failure for the
+// StartSession error branch. Exercised directly (not just via the test
+// seam) by TestGrokHandlersFn_TraceWrapsDoer /
+// TestGrokHandlersFn_NoTraceIsPlainClient in session_grok_test.go.
+var grokHandlersFn = func(cred *store.Credential) (GrokHandlers, error) {
+	doer := trace.WrapDoer(&http.Client{Transport: httpx.Transport()})
+	return GrokHandlers{Cred: cred, Transport: doer}, nil
+}
+
+// SetGrokHandlersFnForTest overrides grokHandlersFn for the duration of
+// a test. Returns a restorer the caller can defer.
+func SetGrokHandlersFnForTest(fn func(*store.Credential) (GrokHandlers, error)) func() {
+	orig := grokHandlersFn
+	grokHandlersFn = fn
+	return func() { grokHandlersFn = orig }
 }
