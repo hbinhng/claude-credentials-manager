@@ -861,3 +861,59 @@ func TestHoistSystemMessages_OddEntriesAndContent_Unchanged(t *testing.T) {
 		t.Errorf("nothing hoistable → unchanged, got %s", out)
 	}
 }
+
+// ── clamp output_config.effort xhigh → high (grok has only low/medium/high) ──
+
+func TestClampEffort_XhighToHigh(t *testing.T) {
+	body := []byte(`{"model":"m","output_config":{"effort":"xhigh"},"messages":[]}`)
+	out := clampEffort(body)
+	var m struct {
+		OC struct {
+			Effort string `json:"effort"`
+		} `json:"output_config"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.OC.Effort != "high" {
+		t.Fatalf("effort should be clamped to high, got %q", m.OC.Effort)
+	}
+}
+
+func TestClampEffort_HighUnchanged(t *testing.T) {
+	body := []byte(`{"output_config":{"effort":"high"}}`)
+	if out := clampEffort(body); !bytes.Equal(out, body) {
+		t.Errorf("non-xhigh effort must be returned unchanged")
+	}
+}
+
+func TestClampEffort_NoXhigh_Unchanged(t *testing.T) {
+	body := []byte(`{"output_config":{"effort":"medium"},"messages":[]}`)
+	if out := clampEffort(body); !bytes.Equal(out, body) {
+		t.Errorf("body without xhigh must be returned unchanged")
+	}
+}
+
+func TestClampEffort_XhighInContentNotConfig_Unchanged(t *testing.T) {
+	// "xhigh" appears in message text, not output_config.effort → no change.
+	body := []byte(`{"messages":[{"role":"user","content":"what is xhigh"}]}`)
+	if out := clampEffort(body); !bytes.Equal(out, body) {
+		t.Errorf("xhigh outside output_config.effort must not mutate the body")
+	}
+}
+
+func TestClampEffort_BadJSON_Unchanged(t *testing.T) {
+	body := []byte(`{"effort":"xhigh" not json`)
+	if out := clampEffort(body); !bytes.Equal(out, body) {
+		t.Errorf("unparseable body must be returned unchanged")
+	}
+}
+
+func TestClampEffort_XhighElsewhere_ConfigNotXhigh_Unchanged(t *testing.T) {
+	// The quoted "xhigh" appears as another field's value (guard passes),
+	// but output_config.effort is not xhigh → nothing is clamped.
+	body := []byte(`{"output_config":{"effort":"high"},"marker":"xhigh"}`)
+	if out := clampEffort(body); !bytes.Equal(out, body) {
+		t.Errorf("must not mutate when output_config.effort is not xhigh, got %s", out)
+	}
+}
