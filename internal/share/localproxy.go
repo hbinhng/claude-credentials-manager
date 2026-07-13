@@ -12,11 +12,16 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
+	codexmw "github.com/hbinhng/claude-credentials-manager/internal/codex/middleware"
+	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
+	grokmw "github.com/hbinhng/claude-credentials-manager/internal/grok/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
+	"github.com/hbinhng/claude-credentials-manager/internal/trace"
 )
 
 // LocalProxy is a passthrough reverse proxy that runs on a random
@@ -62,6 +67,13 @@ type LocalProxy struct {
 	pool     *credPool   // nil in single-cred mode
 	aliasMap *alias.Map  // model alias rewrite rules; nil = no rewrite
 
+	// providerTerminal is non-nil for single-cred grok/codex launch —
+	// it replaces the Anthropic passthrough leaf (serveWithToken) with
+	// the provider-specific Terminal built by setupProviderTerminal.
+	// Always nil for claude credentials and for NewLocalProxyWithPool
+	// (load-balance is claude-only). See handle.
+	providerTerminal http.Handler
+
 	debug bool
 
 	// done is closed by Close() to signal the background token refresher
@@ -74,6 +86,11 @@ type LocalProxy struct {
 // NewLocalProxy builds a local passthrough proxy for the given
 // credential. It listens on a random loopback port; call Start to run
 // the HTTP server loop and Close to stop it.
+//
+// For grok/codex credentials, the proxy additionally routes every
+// request through the provider's Terminal (see setupProviderTerminal)
+// so `ccm launch` translates the same way `ccm share`/`ccm serve` do.
+// Claude credentials keep the existing Anthropic passthrough.
 func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	if cred == nil {
 		return nil, errors.New("NewLocalProxy: nil credential")
@@ -82,7 +99,64 @@ func NewLocalProxy(cred *store.Credential) (*LocalProxy, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newLocalProxyInternal(state, nil, os.Getenv("CCM_LAUNCH_DEBUG") == "1")
+	p, err := newLocalProxyInternal(state, nil, os.Getenv("CCM_LAUNCH_DEBUG") == "1")
+	if err != nil {
+		// coverage: unreachable — newLocalProxyInternal only fails when
+		// net.Listen/url.Parse fail (see the "coverage: unreachable"
+		// comments on those call sites below), neither of which is
+		// exercisable in unit tests.
+		return nil, err
+	}
+	if err := p.setupProviderTerminal(cred, state); err != nil {
+		_ = p.Close()
+		return nil, err
+	}
+	return p, nil
+}
+
+// setupProviderTerminal wires a provider-specific Terminal for
+// single-cred launch of a codex/grok credential. For claude it is a
+// no-op (nil terminal => existing Anthropic passthrough). Mirrors
+// Proxy.terminalForProvider (proxy.go), reusing the same seamable
+// grokHandlersFn / codexHandlersFn factories the share pipeline uses so
+// acceptance tests can inject fake upstreams via
+// SetGrokHandlersFnForTest / SetCodexHandlersFnForTest.
+func (p *LocalProxy) setupProviderTerminal(cred *store.Credential, bearerSrc middleware.BearerSource) error {
+	onDie := func(string) { go p.Close() } //nolint:errcheck
+	switch cred.ProviderName() {
+	case "grok":
+		h, err := grokHandlersFn(cred)
+		if err != nil {
+			return fmt.Errorf("grok handlers: %w", err)
+		}
+		// grokHandlersFn already trace-wraps its doer; do not double-wrap.
+		p.providerTerminal = grokmw.NewTerminal(grokmw.TerminalOpts{
+			Transport:    h.Transport,
+			UpstreamURL:  h.UpstreamURL,
+			BearerSrc:    bearerSrc,
+			OnSessionDie: onDie,
+		})
+	case "codex":
+		h, err := codexHandlersFn(cred)
+		if err != nil {
+			return fmt.Errorf("codex handlers: %w", err)
+		}
+		// h.Transport is the raw bogdanfinn *transport.Transport; wrap it
+		// with the trace recorder here, mirroring Proxy.terminalForProvider.
+		var doer transport.Doer = h.Transport
+		doer = trace.WrapDoer(doer)
+		p.providerTerminal = codexmw.NewTerminal(codexmw.TerminalOpts{
+			Cred:         cred,
+			Transport:    doer,
+			Bundle:       identity.New(cred),
+			UpstreamURL:  h.UpstreamURL,
+			BearerSrc:    bearerSrc,
+			OnSessionDie: onDie,
+		})
+	default:
+		// claude (or empty): leave providerTerminal nil → Anthropic passthrough.
+	}
+	return nil
 }
 
 // NewLocalProxyWithPool builds a load-balance LocalProxy. The
@@ -234,19 +308,27 @@ func (p *LocalProxy) refreshLoop() {
 	}
 }
 
-// handle forwards any inbound request to api.anthropic.com with a
-// freshly minted OAuth bearer. If an alias map is installed, it
-// applies the model alias rewrite via the shared AliasRewrite
-// middleware before obtaining the bearer.
+// handle forwards any inbound request either to the provider Terminal
+// (grok/codex single-cred launch) or to api.anthropic.com with a
+// freshly minted OAuth bearer (claude / pool mode). If an alias map is
+// installed, it applies the model alias rewrite via the shared
+// AliasRewrite middleware before the leaf handler runs — the provider
+// terminal reads AliasMatched/EffectiveModel from the context
+// AliasRewrite sets, exactly as in the share pipeline.
 func (p *LocalProxy) handle(w http.ResponseWriter, r *http.Request) {
+	leaf := http.HandlerFunc(p.serveWithToken)
+	var next http.Handler = leaf
+	if p.providerTerminal != nil {
+		next = p.providerTerminal
+	}
 	// Apply model alias rewrite when an alias map is configured.
 	// The rewrite is lightweight (body read + single JSON field swap)
 	// and is a no-op when the alias map is empty.
 	if p.aliasMap != nil {
-		middleware.NewAliasRewrite(p.aliasMap).Apply(http.HandlerFunc(p.serveWithToken)).ServeHTTP(w, r)
+		middleware.NewAliasRewrite(p.aliasMap).Apply(next).ServeHTTP(w, r)
 		return
 	}
-	p.serveWithToken(w, r)
+	next.ServeHTTP(w, r)
 }
 
 // serveWithToken obtains a fresh OAuth bearer and proxies the request

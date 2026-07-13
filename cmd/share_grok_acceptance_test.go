@@ -160,32 +160,30 @@ func startSessionWithFakeGrokBackend(
 // ── S1: grok launch with alias ───────────────────────────────────────────────
 
 // TestGrokLaunch_WithAlias drives `ccm launch` for a grok credential via
-// runLaunchLocal. Unlike the share/StartSession path, `ccm launch` uses
-// share.LocalProxy, a provider-agnostic passthrough that forwards to
-// upstreamBase() and applies the --model-alias rewrite to the request
-// body before forwarding — it never touches the grok Terminal. This
-// test drives that exact path: it overrides upstreamBase() with a fake
-// server, sets --model-alias 'sonnet=grok-4.5', stubs the launch exec
-// seam to fire a real POST /v1/messages naming "sonnet" through the
-// proxy, and asserts the fake upstream received the aliased model name
-// and the "client" (the exec stub) got the relayed response back.
+// runLaunchLocal and proves it now routes through the grok Terminal
+// (Task 13): the single-cred share.LocalProxy path builds a
+// grokmw.Terminal via the same seamable grokHandlersFn factory the
+// share pipeline uses, so installGrokHandlersFake points the terminal's
+// UpstreamURL at the fake grok backend below. This asserts the fake
+// GROK upstream — not upstreamBase() — receives the aliased model and
+// the grok bearer, and that the response is relayed back to the client.
 func TestGrokLaunch_WithAlias(t *testing.T) {
 	setupHomeWithCcm(t)
-
 	cred := newGrokCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa01", "grok-launch-alias")
 
-	var gotModel string
+	var gotModel, gotAuth, gotPath string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
 		gotModel = extractJSONField(t, b, "model")
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"hi from grok"}]}`))
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"hi from grok launch"}]}`))
 	}))
 	defer upstream.Close()
 
-	share.SetUpstreamBaseForTest(upstream.URL)
-	t.Cleanup(share.ResetUpstreamBaseForTest)
+	// Route launch through the grok terminal at the fake upstream.
+	defer installGrokHandlersFake(t, upstream.URL)()
 
 	origAliases := launchModelAliases
 	launchModelAliases = []string{"sonnet=grok-4.5"}
@@ -204,12 +202,8 @@ func TestGrokLaunch_WithAlias(t *testing.T) {
 			return fmt.Errorf("no ANTHROPIC_BASE_URL in env")
 		}
 		waitForProxy(t, baseURL)
-
-		req, err := http.NewRequest("POST", baseURL+"/v1/messages",
+		req, _ := http.NewRequest("POST", baseURL+"/v1/messages",
 			strings.NewReader(`{"model":"sonnet","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
-		if err != nil {
-			return err
-		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
@@ -227,14 +221,20 @@ func TestGrokLaunch_WithAlias(t *testing.T) {
 		t.Fatalf("runLaunchLocal: %v", err)
 	}
 
+	if gotPath != "/v1/messages" {
+		t.Errorf("upstream path = %q, want /v1/messages (grok terminal path)", gotPath)
+	}
 	if gotModel != "grok-4.5" {
-		t.Errorf("upstream received model = %q, want grok-4.5 (alias rewrite of sonnet)", gotModel)
+		t.Errorf("upstream model = %q, want grok-4.5", gotModel)
+	}
+	if gotAuth != "Bearer gk-access" {
+		t.Errorf("upstream Authorization = %q, want Bearer gk-access", gotAuth)
 	}
 	if got := respStatus.Load(); got != http.StatusOK {
 		t.Errorf("client status = %d, want 200", got)
 	}
-	if body, _ := respBody.Load().(string); !strings.Contains(body, "hi from grok") {
-		t.Errorf("client body = %q, want it to contain the relayed upstream response", body)
+	if body, _ := respBody.Load().(string); !strings.Contains(body, "hi from grok launch") {
+		t.Errorf("client body = %q, want relayed upstream response", body)
 	}
 }
 
