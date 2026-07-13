@@ -61,6 +61,15 @@ type CodexTokens struct {
 	AccountID    string `json:"account_id"`
 }
 
+// GrokTokens is the xAI OAuth token shape. Unlike codex there is no
+// id_token/account_id kept at rest — the access token drives auth and
+// expiry is stored as an absolute millis timestamp (see expires_at in
+// MarshalJSON) because xAI access tokens may be opaque.
+type GrokTokens struct {
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 // Credential is a tagged union. ClaudeAiOauth/Subscription stay
 // value-typed because 25+ existing read sites dereference them
 // without nil-guards; making them pointers would force a far larger
@@ -70,7 +79,7 @@ type CodexTokens struct {
 type Credential struct {
 	ID              string `json:"-"`
 	Name            string `json:"-"`
-	Provider        string `json:"-"` // "claude" | "codex"; empty == "claude"
+	Provider        string `json:"-"` // "claude" | "codex" | "grok"; empty == "claude"
 	CreatedAt       string `json:"-"`
 	LastRefreshedAt string `json:"-"`
 
@@ -83,6 +92,9 @@ type Credential struct {
 	OpenAIAPIKey *string      `json:"-"` // null when chatgpt mode; ALWAYS emitted for codex
 	Tokens       *CodexTokens `json:"-"`
 	LastRefresh  string       `json:"-"`
+
+	// Grok shape
+	GrokTokens *GrokTokens `json:"-"`
 
 	expiresAtMillis int64 // cached at unmarshal; keeps IsExpired O(1)
 }
@@ -108,6 +120,17 @@ func (c *Credential) MarshalJSON() ([]byte, error) {
 		out["auth_mode"] = c.AuthMode
 		if c.OpenAIAPIKey != nil { out["OPENAI_API_KEY"] = *c.OpenAIAPIKey } else { out["OPENAI_API_KEY"] = nil }
 		if c.Tokens != nil { out["tokens"] = c.Tokens } else { out["tokens"] = CodexTokens{} }
+		out["last_refresh"] = c.LastRefresh
+		if c.Subscription.Tier != "" {
+			out["subscription"] = c.Subscription
+		}
+	case "grok":
+		if c.GrokTokens != nil {
+			out["tokens"] = c.GrokTokens
+		} else {
+			out["tokens"] = GrokTokens{}
+		}
+		out["expires_at"] = c.expiresAtMillis
 		out["last_refresh"] = c.LastRefresh
 		if c.Subscription.Tier != "" {
 			out["subscription"] = c.Subscription
@@ -170,6 +193,26 @@ func (c *Credential) UnmarshalJSON(data []byte) error {
 		if c.Tokens != nil {
 			c.expiresAtMillis = parseJWTExpMillis(c.Tokens.AccessToken)
 		}
+	case "grok":
+		if v, ok := raw["tokens"]; ok {
+			c.GrokTokens = &GrokTokens{}
+			if err := json.Unmarshal(v, c.GrokTokens); err != nil {
+				return err
+			}
+		}
+		if v, ok := raw["expires_at"]; ok {
+			if err := json.Unmarshal(v, &c.expiresAtMillis); err != nil {
+				return err
+			}
+		}
+		if c.LastRefresh, err = getString("last_refresh"); err != nil {
+			return err
+		}
+		if v, ok := raw["subscription"]; ok {
+			if err := json.Unmarshal(v, &c.Subscription); err != nil {
+				return err
+			}
+		}
 	default:
 		return fmt.Errorf("store: unknown provider %q", provider)
 	}
@@ -211,6 +254,11 @@ func (c *Credential) AccessToken() string {
 			return ""
 		}
 		return c.Tokens.AccessToken
+	case "grok":
+		if c.GrokTokens == nil {
+			return ""
+		}
+		return c.GrokTokens.AccessToken
 	}
 	return ""
 }
@@ -225,6 +273,11 @@ func (c *Credential) RefreshToken() string {
 			return ""
 		}
 		return c.Tokens.RefreshToken
+	case "grok":
+		if c.GrokTokens == nil {
+			return ""
+		}
+		return c.GrokTokens.RefreshToken
 	}
 	return ""
 }
@@ -252,6 +305,12 @@ func (c *Credential) SetTokens(access, refresh string, expiresAtMillis int64) {
 		}
 		c.Tokens.AccessToken = access
 		c.Tokens.RefreshToken = refresh
+	case "grok":
+		if c.GrokTokens == nil {
+			c.GrokTokens = &GrokTokens{}
+		}
+		c.GrokTokens.AccessToken = access
+		c.GrokTokens.RefreshToken = refresh
 	}
 	c.expiresAtMillis = expiresAtMillis
 }
