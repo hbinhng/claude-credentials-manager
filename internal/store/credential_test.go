@@ -90,6 +90,47 @@ func TestCredential_SetTokens_CodexNilTokens(t *testing.T) {
 	}
 }
 
+func TestCredential_AccessToken_Grok(t *testing.T) {
+	c := &Credential{
+		Provider:   "grok",
+		GrokTokens: &GrokTokens{AccessToken: "grok-bearer", RefreshToken: "grok-rt"},
+	}
+	c.expiresAtMillis = 13579
+	if got := c.AccessToken(); got != "grok-bearer" {
+		t.Errorf("AccessToken = %q, want grok-bearer", got)
+	}
+	if got := c.RefreshToken(); got != "grok-rt" {
+		t.Errorf("RefreshToken = %q, want grok-rt", got)
+	}
+	if got := c.ExpiresAtMillis(); got != 13579 {
+		t.Errorf("ExpiresAtMillis = %d, want 13579", got)
+	}
+}
+
+func TestCredential_AccessToken_GrokNilTokens(t *testing.T) {
+	c := &Credential{Provider: "grok", GrokTokens: nil}
+	if got := c.AccessToken(); got != "" {
+		t.Errorf("AccessToken with nil GrokTokens = %q, want empty", got)
+	}
+	if got := c.RefreshToken(); got != "" {
+		t.Errorf("RefreshToken with nil GrokTokens = %q, want empty", got)
+	}
+}
+
+func TestCredential_SetTokens_GrokNilTokens(t *testing.T) {
+	c := &Credential{Provider: "grok", GrokTokens: nil}
+	c.SetTokens("a", "r", 1)
+	if c.GrokTokens == nil {
+		t.Fatal("GrokTokens still nil after SetTokens")
+	}
+	if c.GrokTokens.AccessToken != "a" {
+		t.Errorf("AccessToken = %q", c.GrokTokens.AccessToken)
+	}
+	if c.GrokTokens.RefreshToken != "r" {
+		t.Errorf("RefreshToken = %q", c.GrokTokens.RefreshToken)
+	}
+}
+
 // TestCredential_AccessToken_UnknownProvider exercises the fallthrough
 // branch in AccessToken/RefreshToken/SetTokens. Defensive: keeps the
 // switch's default arm covered so silent regressions don't slip through.
