@@ -20,6 +20,7 @@
 //  S5 — die-fast on unknown model                  → TestGrokShare_DieFastOnUnknownModel
 //  S6 — claude launch/share unaffected (regression) → TestClaudeLaunch_UnaffectedByGrokWiring,
 //                                                      TestClaudeShare_UnaffectedByGrokWiring
+//  S7 — unauthenticated inbound request rejected   → TestGrokShare_RejectsUnauthenticated (Task 15)
 package cmd
 
 import (
@@ -544,5 +545,56 @@ func TestClaudeShare_UnaffectedByGrokWiring(t *testing.T) {
 
 	if sess.CredID() != claudeCred.ID {
 		t.Errorf("CredID() = %q, want %q", sess.CredID(), claudeCred.ID)
+	}
+}
+
+// ── S7: unauthenticated inbound request rejected (Task 15, SECURITY) ────────
+
+// TestGrokShare_RejectsUnauthenticated proves the grok share/serve tunnel
+// gates inbound requests the same way the claude path's handleServe does.
+// Before Task 15, share.StartSession never called proxy.SetSharedSecret
+// for the grok branch, so middleware.NewDownstreamAuth's expected secret
+// was "" — a no-op — and any request (no Authorization header at all)
+// reached the grok terminal and spent the victim's subscription. This
+// test posts with NO Authorization header and asserts both that the
+// response is 401 and that the fake grok upstream was never hit (the
+// upstream-hit counter stays 0), proving the provider bearer/quota is
+// never touched for an unauthenticated caller.
+func TestGrokShare_RejectsUnauthenticated(t *testing.T) {
+	setupHomeWithCcm(t)
+
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"should never be seen"}]}`))
+	}))
+	defer upstream.Close()
+
+	cred := newGrokCred(t, "99999999-9999-9999-9999-999999999909", "grok-unauth-reject")
+
+	sess := startSessionWithFakeGrokBackend(t, cred, upstream.URL, nil)
+
+	inbound := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	req, err := http.NewRequest("POST", sess.Reach()+"/v1/messages", strings.NewReader(inbound))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Deliberately no Authorization header.
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 401 for unauthenticated request; body: %s", resp.StatusCode, body)
+	}
+	if n := upstreamHits.Load(); n != 0 {
+		t.Errorf("fake grok upstream hit %d times, want 0 — unauthenticated request must be rejected before reaching upstream", n)
 	}
 }

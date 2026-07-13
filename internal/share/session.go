@@ -310,6 +310,7 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		// UpstreamAuthReplace on that path would clobber the inbound
 		// access-token check.
 		proxy.SetBearerSource(tokens)
+		proxy.SetSharedSecret(accessToken) // gate inbound tunnel requests (parity with claude handleServe)
 	}
 
 	if cred != nil && cred.ProviderName() == "grok" {
@@ -322,6 +323,7 @@ func (*defaultStarter) StartSession(cred *store.Credential, opts Options) (Sessi
 		// Wire the bearer source so the grok terminal fetches the current
 		// token and can trigger a refresh on 401.
 		proxy.SetBearerSource(tokens)
+		proxy.SetSharedSecret(accessToken) // gate inbound tunnel requests (parity with claude handleServe)
 	}
 
 	if err := proxy.Transition(accessToken, tokens, opts.Pool); err != nil {
