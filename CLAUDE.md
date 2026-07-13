@@ -42,6 +42,8 @@ internal/
   store/       Credential CRUD — each credential is ~/.ccm/{uuid}.credentials.json
   oauth/       OAuth 2.0 PKCE flow (copy-code, no local server), token refresh, usage quota API
   claude/      Activates a credential for Claude Code by managing ~/.claude/.credentials.json
+  codex/       Activates a credential for the codex CLI by managing ~/.codex/auth.json; also translates share/launch traffic to OpenAI's Responses API
+  grok/        Anthropic-compatible passthrough proxy to api.x.ai/v1/messages (OAuth subscription; single-active, no pool)
 ```
 
 **Credential activation (Unix):** `.credentials.json` is an absolute symlink pointing directly into the store (`~/.ccm/{id}.credentials.json`). No intermediate copy — `store.Save()` updates the file Claude Code reads through the symlink. Backup of original credentials goes to `~/.claude/bk.credentials.json`.
