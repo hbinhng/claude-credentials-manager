@@ -1,0 +1,240 @@
+// Package middleware provides the grok proxy terminal handler. xAI's
+// /v1/messages is Anthropic-compatible, so this is a near-passthrough:
+//  1. rewrite the request's model field (alias target when matched, else
+//     DefaultModel), preserving JSON key order for prompt-cache prefixes
+//  2. swap in the grok OAuth bearer (only ever sent to UpstreamURL)
+//  3. POST to UpstreamURL/v1/messages
+//  4. 401 -> refresh + retry once
+//  5. model_not_found -> die-fast
+//  6. relay the response (flushing for SSE)
+package middleware
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+
+	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
+	"github.com/hbinhng/claude-credentials-manager/internal/trace"
+)
+
+const (
+	defaultUpstream = "https://api.x.ai"
+	defaultModel    = "grok-composer-2.5-fast"
+	userAgent       = "grok-cli (ccm)"
+)
+
+// TerminalOpts configures the grok terminal handler.
+type TerminalOpts struct {
+	// Transport is anything that can execute HTTP requests. Defaults to
+	// trace.WrapDoer(&http.Client{}) when nil.
+	Transport trace.Doer
+	// UpstreamURL overrides the grok backend (default "https://api.x.ai").
+	// Test-only; production callers leave it blank.
+	UpstreamURL string
+	// BearerSrc fetches the cred's current grok access token. On a 401
+	// from upstream, the terminal calls BearerSrc.Fresh() to trigger
+	// credflow refresh and retries once with the new token.
+	BearerSrc sharemw.BearerSource
+	// OnSessionDie is called when a model_not_found error from upstream
+	// triggers die-fast. Wired by share.Session to call proxy.Stop.
+	OnSessionDie func(reason string)
+	// DefaultModel is used when the inbound request's model did not
+	// match an alias rule. Defaults to "grok-composer-2.5-fast".
+	DefaultModel string
+}
+
+// Terminal is the grok-specific http.Handler that lives at the end of the
+// share pipeline.
+type Terminal struct {
+	opts TerminalOpts
+}
+
+// NewTerminal constructs a Terminal, filling in defaults for UpstreamURL,
+// DefaultModel, OnSessionDie, and Transport when left zero-valued.
+func NewTerminal(opts TerminalOpts) *Terminal {
+	if opts.UpstreamURL == "" {
+		opts.UpstreamURL = defaultUpstream
+	}
+	if opts.DefaultModel == "" {
+		opts.DefaultModel = defaultModel
+	}
+	if opts.OnSessionDie == nil {
+		opts.OnSessionDie = func(string) {} // no-op default
+	}
+	if opts.Transport == nil {
+		opts.Transport = trace.WrapDoer(&http.Client{})
+	}
+	return &Terminal{opts: opts}
+}
+
+// ServeHTTP implements http.Handler.
+func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", "read body: "+err.Error())
+		return
+	}
+
+	// AliasRewrite (the pipeline step upstream of this terminal) already
+	// rewrote the body's model field order-preservingly when a rule
+	// matched, so this is a no-op on the matched path. On the unmatched
+	// path it injects DefaultModel.
+	targetModel := t.opts.DefaultModel
+	if sharemw.AliasMatched(r.Context()) {
+		targetModel = sharemw.EffectiveModel(r.Context())
+	}
+	outBody := orderPreservingRewrite(body, targetModel)
+
+	resp, err := t.doWith401Retry(r.Context(), outBody)
+	if err != nil {
+		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		errBody, _ := io.ReadAll(resp.Body)
+		if shouldDieFast(errBody, targetModel) {
+			t.opts.OnSessionDie(fmt.Sprintf("grok returned model_not_found for %q", targetModel))
+		}
+		writeAnthropicError(w, resp.StatusCode, "api_error", string(errBody))
+		return
+	}
+
+	// 2xx: relay headers + body, flushing per-write for SSE.
+	for k, vs := range resp.Header {
+		for _, v := range vs {
+			w.Header().Add(k, v)
+		}
+	}
+	w.WriteHeader(resp.StatusCode)
+	flusher, _ := w.(http.Flusher)
+	if flusher != nil {
+		flusher.Flush()
+	}
+	buf := make([]byte, 32*1024)
+	for {
+		n, rerr := resp.Body.Read(buf)
+		if n > 0 {
+			_, _ = w.Write(buf[:n])
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if rerr != nil {
+			break
+		}
+	}
+}
+
+// doWith401Retry POSTs body to UpstreamURL/v1/messages. On a 401 response
+// it calls BearerSrc.Fresh() and retries once with the rotated token.
+func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Response, error) {
+	build := func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.opts.UpstreamURL+"/v1/messages", bytes.NewReader(body))
+		if err != nil {
+			return nil, err // unreachable: method + URL are always well-formed
+		}
+		token, terr := t.opts.BearerSrc.Fresh()
+		if terr != nil {
+			return nil, terr
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json")
+		req.Header.Set("User-Agent", userAgent)
+		return req, nil
+	}
+
+	req, err := build()
+	if err != nil {
+		return nil, err
+	}
+	resp, err := t.opts.Transport.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusUnauthorized {
+		return resp, nil
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	req2, err := build()
+	if err != nil {
+		return nil, err
+	}
+	return t.opts.Transport.Do(req2)
+}
+
+// orderPreservingRewrite does a best-effort textual rewrite of the body's
+// "model" value, splicing in place rather than unmarshal/remarshal, so
+// unrelated key order is preserved (prompt-cache prefix discipline; see
+// rewriteModelField in internal/share/middleware/alias.go, which this
+// mirrors). Falls back to returning body unchanged when the "model" key
+// isn't present in the expected shape.
+func orderPreservingRewrite(body []byte, model string) []byte {
+	const key = `"model"`
+	idx := bytes.Index(body, []byte(key))
+	if idx < 0 {
+		return body
+	}
+	rest := body[idx+len(key):]
+	colonIdx := bytes.IndexByte(rest, ':')
+	if colonIdx < 0 {
+		return body
+	}
+	rest = rest[colonIdx+1:]
+	q1 := bytes.IndexByte(rest, '"')
+	if q1 < 0 {
+		return body
+	}
+	rest = rest[q1+1:]
+	q2 := bytes.IndexByte(rest, '"')
+	if q2 < 0 {
+		return body
+	}
+	prefix := body[:len(body)-len(rest)] // up to and including opening quote
+	suffix := rest[q2:]                  // closing quote + rest
+	return append(append([]byte{}, prefix...), append([]byte(model), suffix...)...)
+}
+
+// writeAnthropicError writes an Anthropic-shaped {"type":"error",...} body.
+func writeAnthropicError(w http.ResponseWriter, status int, errType, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	b, _ := json.Marshal(map[string]any{
+		"type":  "error",
+		"error": map[string]any{"type": errType, "message": message},
+	})
+	_, _ = w.Write(b)
+}
+
+// shouldDieFast reports whether errBody (an upstream error response)
+// indicates the target model doesn't exist on xAI's side, in which case
+// the session should die immediately rather than keep retrying.
+func shouldDieFast(errBody []byte, modelOnWire string) bool {
+	var parsed struct {
+		Error struct {
+			Code    string `json:"code"`
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(errBody, &parsed); err != nil {
+		return false
+	}
+	if parsed.Error.Code == "model_not_found" {
+		return true
+	}
+	if parsed.Error.Type == "invalid_request_error" && modelOnWire != "" &&
+		strings.Contains(strings.ToLower(parsed.Error.Message), strings.ToLower(modelOnWire)) {
+		return true
+	}
+	return false
+}
