@@ -740,3 +740,124 @@ func TestTerminal_NonOverflow400StaysApiError(t *testing.T) {
 		t.Errorf("non-overflow 400 must not be rewritten to prompt-too-long: %s", rr.Body.String())
 	}
 }
+
+// ── hoist role:"system" messages into the top-level system field ─────────────
+
+func TestHoistSystemMessages_MovesSystemRoleToTopLevel(t *testing.T) {
+	body := []byte(`{"model":"m","system":[{"type":"text","text":"base"}],"messages":[{"role":"user","content":"hi"},{"role":"system","content":"hook ctx"}]}`)
+	out := hoistSystemMessages(body)
+	var m struct {
+		System []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"system"`
+		Messages []struct {
+			Role string `json:"role"`
+		} `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("bad output: %v", err)
+	}
+	if len(m.Messages) != 1 || m.Messages[0].Role != "user" {
+		t.Fatalf("messages should be [user], got %+v", m.Messages)
+	}
+	if len(m.System) != 2 || m.System[1].Type != "text" || m.System[1].Text != "hook ctx" {
+		t.Fatalf("system should be base + hoisted text block, got %+v", m.System)
+	}
+}
+
+func TestHoistSystemMessages_StringSystem(t *testing.T) {
+	body := []byte(`{"system":"base","messages":[{"role":"system","content":"ctx"}]}`)
+	out := hoistSystemMessages(body)
+	var m struct {
+		System []struct {
+			Text string `json:"text"`
+		} `json:"system"`
+		Messages []any `json:"messages"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("bad output: %v", err)
+	}
+	if len(m.System) != 2 || m.System[0].Text != "base" || m.System[1].Text != "ctx" {
+		t.Fatalf("string system should convert+append, got %+v", m.System)
+	}
+	if len(m.Messages) != 0 {
+		t.Fatalf("system-role message should be removed, got %d messages", len(m.Messages))
+	}
+}
+
+func TestHoistSystemMessages_NoSystemRole_Unchanged(t *testing.T) {
+	body := []byte(`{"system":"s","messages":[{"role":"user","content":"hi"}]}`)
+	if out := hoistSystemMessages(body); !bytes.Equal(out, body) {
+		t.Errorf("no system-role message must be returned unchanged")
+	}
+}
+
+func TestHoistSystemMessages_BadJSON_Unchanged(t *testing.T) {
+	body := []byte(`{"role":"system" not json`)
+	if out := hoistSystemMessages(body); !bytes.Equal(out, body) {
+		t.Errorf("unparseable body must be returned unchanged")
+	}
+}
+
+func TestTerminal_HoistsSystemRole_EndToEnd(t *testing.T) {
+	var roles []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m struct {
+			Messages []struct {
+				Role string `json:"role"`
+			} `json:"messages"`
+		}
+		_ = json.Unmarshal(b, &m)
+		roles = nil
+		for _, msg := range m.Messages {
+			roles = append(roles, msg.Role)
+		}
+		_, _ = w.Write([]byte(`{"type":"message"}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	body := `{"model":"claude-sonnet","system":"base","messages":[{"role":"user","content":"hi"},{"role":"system","content":"ctx"}]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	withAlias(t, "", term, req, rr)
+
+	if len(roles) != 1 || roles[0] != "user" {
+		t.Fatalf("upstream should see only [user] after hoist, got %v", roles)
+	}
+}
+
+func TestHoistSystemMessages_ArrayContent(t *testing.T) {
+	body := []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"blk"}]}]}`)
+	out := hoistSystemMessages(body)
+	var m struct {
+		System []struct {
+			Text string `json:"text"`
+		} `json:"system"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	if len(m.System) != 1 || m.System[0].Text != "blk" {
+		t.Fatalf("array content should hoist as blocks, got %+v", m.System)
+	}
+}
+
+func TestHoistSystemMessages_MessagesNotArray_Unchanged(t *testing.T) {
+	body := []byte(`{"role":"system","messages":5}`)
+	if out := hoistSystemMessages(body); !bytes.Equal(out, body) {
+		t.Errorf("non-array messages must be returned unchanged")
+	}
+}
+
+func TestHoistSystemMessages_OddEntriesAndContent_Unchanged(t *testing.T) {
+	// A non-object message entry is skipped; a system message with
+	// non-string/array content yields nothing to hoist, so the body is
+	// returned unchanged (nothing actionable).
+	body := []byte(`{"messages":[123,{"role":"system","content":42}]}`)
+	if out := hoistSystemMessages(body); !bytes.Equal(out, body) {
+		t.Errorf("nothing hoistable → unchanged, got %s", out)
+	}
+}
