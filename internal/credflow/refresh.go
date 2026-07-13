@@ -12,6 +12,7 @@ import (
 	"time"
 
 	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
+	grokoauth "github.com/hbinhng/claude-credentials-manager/internal/grok/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
@@ -93,6 +94,21 @@ func RefreshCredential(id string) (*store.Credential, error) {
 			}
 			refreshed = out
 			return nil
+		case "grok":
+			out, err := refreshGrokLocked(fresh)
+			if err != nil {
+				if errors.Is(err, grokoauth.ErrRefreshRotated) {
+					disk2, derr := store.Load(cred.ID)
+					if derr == nil && accessTokenDiffers(disk2, cred) {
+						refreshed = disk2
+						return nil
+					}
+					return fmt.Errorf("refresh token has been invalidated; run `ccm login grok` to re-authenticate")
+				}
+				return err
+			}
+			refreshed = out
+			return nil
 		default:
 			// untestable: store.UnmarshalJSON rejects unknown providers before reaching this switch
 			return fmt.Errorf("credflow: unknown provider %q", fresh.ProviderName())
@@ -110,6 +126,11 @@ func accessTokenDiffers(disk, mem *store.Credential) bool {
 			return false
 		}
 		return disk.Tokens.AccessToken != mem.Tokens.AccessToken
+	case "grok":
+		if disk.GrokTokens == nil || mem.GrokTokens == nil {
+			return false
+		}
+		return disk.GrokTokens.AccessToken != mem.GrokTokens.AccessToken
 	}
 	return false
 }
