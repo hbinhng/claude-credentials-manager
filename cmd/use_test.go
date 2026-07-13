@@ -1,14 +1,46 @@
 package cmd
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/codex"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
+
+func TestUseCmd_Grok_ShowsProxyGuidance(t *testing.T) {
+	setupHomeWithCcm(t)
+	cred := &store.Credential{
+		ID: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaad", Name: "grok-use", Provider: "grok",
+		GrokTokens: &store.GrokTokens{AccessToken: "a", RefreshToken: "r"},
+	}
+	cred.SetTokens("a", "r", time.Now().Add(time.Hour).UnixMilli())
+	if err := store.Save(cred); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	useCmd.SetOut(&out)
+	defer useCmd.SetOut(nil)
+
+	// Must not error (grok is proxy-only; there is nothing to activate),
+	// and must point the user at the proxy commands.
+	if err := useCmd.RunE(useCmd, []string{"aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaad"}); err != nil {
+		t.Fatalf("ccm use grok should not error, got: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "ccm launch") {
+		t.Errorf("guidance should mention `ccm launch`, got: %q", s)
+	}
+	if !strings.Contains(strings.ToLower(s), "proxy") {
+		t.Errorf("guidance should explain grok is proxy-only, got: %q", s)
+	}
+}
 
 func TestUseCallsPreSync(t *testing.T) {
 	calls := 0
