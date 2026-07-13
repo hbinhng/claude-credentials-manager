@@ -41,6 +41,26 @@ var useCmd = &cobra.Command{
 			return err
 		}
 
+		// grok is proxy-only: Claude Code speaks the Anthropic API and ccm
+		// translates it to grok on the fly, so there is no credential file to
+		// activate (unlike claude's ~/.claude or codex's ~/.codex). Point the
+		// user at the proxy commands instead of failing with a raw error.
+		if cred.ProviderName() == "grok" {
+			id := cred.ID
+			if len(id) > 8 {
+				id = id[:8]
+			}
+			fmt.Fprintf(cmd.OutOrStdout(),
+				"grok credentials are used through ccm's proxy, not activated like claude/codex.\n"+
+					"(Claude Code speaks the Anthropic API; ccm translates it to grok — there's nothing to activate.)\n\n"+
+					"Run one of:\n"+
+					"  ccm launch %s   run Claude Code on grok locally\n"+
+					"  ccm serve             persistent local proxy (pick this credential in the dashboard)\n"+
+					"  ccm share %s    expose grok to a remote machine\n",
+				id, id)
+			return nil
+		}
+
 		preSync()
 		// Re-resolve in case sync changed the active cred's tokens.
 		cred, err = store.Resolve(args[0])
