@@ -14,6 +14,7 @@
 //  S8 — Mid-session refresh on 401               → TestCodexShare_MidSession401Refresh
 //  S9 — Die-fast on unknown model                 → TestCodexShare_DieFastOnUnknownModel
 //  S10 — Reasoning round-trip                     → TestCodexShare_ReasoningRoundTrip
+//  S11 — Unauthenticated inbound request rejected → TestCodexShare_RejectsUnauthenticated (Task 15)
 package cmd
 
 import (
@@ -880,6 +881,64 @@ func TestCodexShare_ReasoningRoundTrip(t *testing.T) {
 	}
 	if !strings.Contains(outStr, "message_stop") {
 		t.Errorf("reasoning round-trip: missing message_stop in SSE; got:\n%s", outStr)
+	}
+}
+
+// ── S11: unauthenticated inbound request rejected (Task 15, SECURITY) ───────
+
+// TestCodexShare_RejectsUnauthenticated proves the codex share/serve
+// tunnel gates inbound requests the same way the claude path's
+// handleServe does. Before Task 15, share.StartSession never called
+// proxy.SetSharedSecret for the codex branch, so
+// middleware.NewDownstreamAuth's expected secret was "" — a no-op —
+// and any request (no Authorization header at all) reached the codex
+// terminal and spent the victim's ChatGPT subscription. This test
+// posts with NO Authorization header and asserts both that the
+// response is 401 and that the fake codex upstream was never hit (the
+// upstream-hit counter stays 0), proving the provider bearer/quota is
+// never touched for an unauthenticated caller.
+func TestCodexShare_RejectsUnauthenticated(t *testing.T) {
+	setupHomeWithCcm(t)
+
+	var upstreamHits atomic.Int32
+	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamHits.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
+		io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer upstream.Close()
+
+	restoreCapture := installCodexHandlersFake(t, upstream.URL)
+	defer restoreCapture()
+
+	cred := buildCodexCredAndStore(t,
+		"88888888-8888-8888-8888-888888888810",
+		"codex-unauth-reject",
+	)
+
+	sess := startSessionWithFakeCodexBackend(t, cred, upstream.URL, nil)
+
+	inbound := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
+	req, err := http.NewRequest("POST", sess.Reach()+"/v1/messages", strings.NewReader(inbound))
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	// Deliberately no Authorization header.
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("POST /v1/messages: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusUnauthorized {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status = %d, want 401 for unauthenticated request; body: %s", resp.StatusCode, body)
+	}
+	if n := upstreamHits.Load(); n != 0 {
+		t.Errorf("fake codex upstream hit %d times, want 0 — unauthenticated request must be rejected before reaching upstream", n)
 	}
 }
 
