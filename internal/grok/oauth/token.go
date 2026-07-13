@@ -46,7 +46,7 @@ func ExchangeCode(code, codeVerifier, redirectURI string) (*TokenResponse, error
 func postTokenForm(form url.Values) (*TokenResponse, error) {
 	req, err := http.NewRequest("POST", TokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		// Unreachable: TokenURL is a valid URL and "POST" a valid method.
+		// TokenURL is a package var; a malformed override (see TestExchangeCode_InvalidTokenURL) reaches this branch.
 		return nil, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
