@@ -33,41 +33,51 @@ var loginClaudeCmd = &cobra.Command{
 }
 
 func runLoginClaude(cmd *cobra.Command, args []string) error {
-	hs, err := beginLoginFn()
+	cred, err := captureClaudeLogin(cmd)
 	if err != nil {
 		return err
 	}
 
-	fmt.Println("\nOpen this URL in your browser to authenticate:")
-	fmt.Printf("\n  %s\n\n", hs.AuthorizeURL)
+	out := cmd.OutOrStdout()
+	fmt.Fprintf(out, "\nLogged in as %s\n", cred.Name)
+	if cred.Name == cred.ID {
+		fmt.Fprintf(out, "Use `ccm rename %s <name>` to set a friendly name.\n", cred.ID[:8])
+	}
+	return nil
+}
+
+// captureClaudeLogin runs the interactive Anthropic paste-code flow
+// (begin → show URL → read pasted code → exchange) and returns the
+// persisted credential. Shared by `ccm login claude` and `ccm relogin`
+// of a claude credential so the two never diverge.
+func captureClaudeLogin(cmd *cobra.Command) (*store.Credential, error) {
+	out := cmd.OutOrStdout()
+	hs, err := beginLoginFn()
+	if err != nil {
+		return nil, err
+	}
+
+	fmt.Fprintln(out, "\nOpen this URL in your browser to authenticate:")
+	fmt.Fprintf(out, "\n  %s\n\n", hs.AuthorizeURL)
 	tryOpenBrowserFn(hs.AuthorizeURL)
 
-	fmt.Print("Paste the code here: ")
+	fmt.Fprint(out, "Paste the code here: ")
 	r, err := claudeLoginStdinFn()
 	if err != nil {
-		return fmt.Errorf("open stdin: %w", err)
+		return nil, fmt.Errorf("open stdin: %w", err)
 	}
 	reader := bufio.NewReader(r)
 	raw, err := reader.ReadString('\n')
 	if err != nil && err != io.EOF {
-		return fmt.Errorf("read code: %w", err)
+		return nil, fmt.Errorf("read code: %w", err)
 	}
 	code := strings.TrimSpace(raw)
 	if code == "" {
-		return fmt.Errorf("no code provided")
+		return nil, fmt.Errorf("no code provided")
 	}
 
-	fmt.Println("Exchanging code for tokens...")
-	cred, err := completeLoginFn(hs, code)
-	if err != nil {
-		return err
-	}
-
-	fmt.Printf("\nLogged in as %s\n", cred.Name)
-	if cred.Name == cred.ID {
-		fmt.Printf("Use `ccm rename %s <name>` to set a friendly name.\n", cred.ID[:8])
-	}
-	return nil
+	fmt.Fprintln(out, "Exchanging code for tokens...")
+	return completeLoginFn(hs, code)
 }
 
 // SeamClaudeLogin replaces both credflow entry points and the stdin
