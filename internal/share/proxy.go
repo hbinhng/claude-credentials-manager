@@ -19,6 +19,7 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	codexmw "github.com/hbinhng/claude-credentials-manager/internal/codex/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
+	grokmw "github.com/hbinhng/claude-credentials-manager/internal/grok/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/httpx"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
@@ -160,6 +161,11 @@ type Proxy struct {
 	codexCred        *store.Credential
 	codexTransport   *transport.Transport
 	codexUpstreamURL string // test override; empty in production
+
+	// Grok provider fields. Populated by SetGrokHandlers before Start.
+	grokCred        *store.Credential
+	grokTransport   trace.Doer
+	grokUpstreamURL string // test override; empty in production
 
 	// viaID is a per-process loop-detection marker. NewProxy mints
 	// it; handleServe rejects inbound requests whose Via header
@@ -336,11 +342,32 @@ func (p *Proxy) SetCodexHandlers(opts CodexHandlers) {
 	p.codexUpstreamURL = opts.UpstreamURL
 }
 
+// GrokHandlers carries the per-session grok transport config assembled
+// before Start.
+type GrokHandlers struct {
+	Cred        *store.Credential
+	Transport   trace.Doer
+	UpstreamURL string // test override; empty in production
+}
+
+// SetGrokHandlers wires the grok transport into the proxy and marks the
+// provider as "grok". Must be called before Start.
+func (p *Proxy) SetGrokHandlers(opts GrokHandlers) {
+	p.provider = "grok"
+	p.grokCred = opts.Cred
+	p.grokTransport = opts.Transport
+	p.grokUpstreamURL = opts.UpstreamURL
+}
+
 // cred returns the credential associated with the proxy. For the codex
-// path this is codexCred (set via SetCodexHandlers). The claude path
-// does not expose the credential through the proxy (it lives in the
-// credState owned by the session).
+// path this is codexCred (set via SetCodexHandlers); for the grok path
+// this is grokCred (set via SetGrokHandlers). The claude path does not
+// expose the credential through the proxy (it lives in the credState
+// owned by the session).
 func (p *Proxy) cred() *store.Credential {
+	if p.provider == "grok" {
+		return p.grokCred
+	}
 	return p.codexCred
 }
 
@@ -370,6 +397,13 @@ func (p *Proxy) terminalForProvider() http.Handler {
 			Transport:    doer,
 			Bundle:       identity.New(p.cred()),
 			UpstreamURL:  p.codexUpstreamURL,
+			BearerSrc:    p.bearerSrc,
+			OnSessionDie: p.handleSessionDie,
+		})
+	case "grok":
+		return grokmw.NewTerminal(grokmw.TerminalOpts{
+			Transport:    p.grokTransport,
+			UpstreamURL:  p.grokUpstreamURL,
 			BearerSrc:    p.bearerSrc,
 			OnSessionDie: p.handleSessionDie,
 		})
