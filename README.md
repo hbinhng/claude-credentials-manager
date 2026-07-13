@@ -311,6 +311,45 @@ a logged reason.
 - Mixed-provider pools (claude + codex creds in one `--load-balance`
   set) are not yet supported; targeted for v1.19.
 
+## Grok upstream (single-account)
+
+ccm supports using a grok (xAI) credential as the upstream for Claude
+Code. xAI's `/v1/messages` endpoint is already Anthropic-compatible,
+so this is a near-passthrough: the proxy rewrites the request's
+`model` field and swaps in the grok OAuth bearer before forwarding to
+`api.x.ai`, with no request/response translation needed.
+
+### Requirements
+
+- A logged-in grok credential (`ccm login grok`, an OAuth subscription
+  login for SuperGrok / X Premium+)
+
+### Quick start
+
+```bash
+# Launch Claude Code against a grok credential
+ccm launch <grok-cred-name>
+
+# Share a grok credential as a tunnel
+ccm share <grok-cred-name>
+```
+
+A request whose model doesn't match a `--model-alias` rule is sent as
+`grok-composer-2.5-fast` by default:
+
+```bash
+--model-alias 'claude-opus-*=grok-4.5'         # opus variants → grok-4.5
+```
+
+### Limitations
+
+- Grok credentials are single-active: there is no `ccm use` /
+  `~/.grok` activation path, and they never join a `--load-balance`
+  pool. They work only through `ccm serve`, `ccm share`, and
+  `ccm launch`.
+- `ccm status` does not fetch grok usage/quota (no xAI usage endpoint
+  integration).
+
 ## Environment
 
 - **`CCM_PROXY`** — route all outbound ccm traffic through an HTTP(S) or SOCKS5 proxy (e.g. `socks5://user:pass@proxy.example:1080`). Applies to `ccm login`, `ccm refresh`, `ccm status`, `ccm backup`, and the reverse-proxy forwarding of `ccm share` and `ccm launch`. `ccm use` is deliberately excluded — activation is local, and the opportunistic token refresh it does on expired credentials runs direct. The stdlib `HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` variables are **not** consulted; only `CCM_PROXY` is respected. Does not affect `cloudflared`'s own connections — set `HTTPS_PROXY` in the shell for those.

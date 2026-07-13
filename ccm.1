@@ -76,7 +76,7 @@ marker. If the token is expired, prompts to refresh before activation.
 .TP
 .B status
 List all credentials in a table with columns: ID (8-char prefix), NAME,
-PROVIDER (claude or codex), TIER (e.g.
+PROVIDER (claude, codex, or grok), TIER (e.g.
 .IR "Claude Max 20x" ),
 STATUS (valid/expiring soon/expired), EXPIRES (relative time), and an ACTIVE
 marker (*). For each non-expired credential, one line per quota window is
@@ -84,6 +84,10 @@ printed underneath showing remaining percentage and reset time (e.g.
 .IR "5h: 75% (resets in 1h12m)" ).
 Claude usage is fetched from api.anthropic.com/api/oauth/usage; codex
 usage from chatgpt.com/backend-api/wham/usage. Both run concurrently.
+Grok credentials show no quota window (no xAI usage endpoint
+integration) and are never reported as ACTIVE (grok has no
+.B "ccm use"
+activation path).
 Pass
 .B \-\-no\-quota
 to skip the fetch entirely (faster, offline-safe).
@@ -166,7 +170,7 @@ Omitted from JSON output (not emitted as a key) when no codex credential
 is active.
 .IP "credentials[].provider" 4
 The provider this credential targets:
-.BR \(dqclaude\(dq " or " \(dqcodex\(dq .
+.BR \(dqclaude\(dq ", " \(dqcodex\(dq ", or " \(dqgrok\(dq .
 Always present in every entry.
 .PP
 For codex credentials, the
@@ -292,14 +296,14 @@ forwards to; in bind-host mode it pins the LAN-reachable port the
 remote side connects to.
 .PP
 .BR \-\-model\-alias " " \fIsource\fR = \fItarget\fR
-(codex only, repeatable) Maps inbound model names to upstream codex
-model names. Source patterns may use
+(codex and grok only, repeatable) Maps inbound model names to upstream
+codex or grok model names. Source patterns may use
 .B *
 as a wildcard; targets are literal. Boot-time validation rejects
 overlapping patterns.
 .PP
 .BR \-\-max\-concurrency " " \fIn\fR
-(codex only) Maximum concurrent requests for this credential
+(codex and grok only) Maximum concurrent requests for this credential
 (default: 3).
 .RE
 .TP
@@ -356,8 +360,8 @@ must be on
 .BR PATH .
 .PP
 .BR \-\-model\-alias " " \fIsource\fR = \fItarget\fR
-(codex only, repeatable) Maps inbound model names to upstream codex
-model names. Source patterns may use
+(codex and grok only, repeatable) Maps inbound model names to upstream
+codex or grok model names. Source patterns may use
 .B *
 as a wildcard; targets are literal. Boot-time validation rejects
 overlapping patterns.
@@ -512,7 +516,7 @@ patterns for
 .B "ccm share"
 and
 .B "ccm launch"
-against codex credentials.
+against codex or grok credentials.
 .TP
 .B version
 Print the ccm version, the short git commit the binary was built from, and
@@ -707,7 +711,7 @@ Pairs naturally with
 .B CCM_LOG_FILE
 for off-terminal capture: set both to send the full trace to a file
 while keeping the live ticket on the terminal. Provider-agnostic —
-trace emits for both claude and codex traffic.
+trace emits for claude, codex, and grok traffic alike.
 .TP
 .B CCM_HOME
 Override ccm's data directory. When set to a non-empty path, that path
@@ -853,6 +857,39 @@ to map Claude model names to codex model names:
 .RS
 .nf
 ccm launch codex-cred --model-alias 'claude-opus-*=gpt-5-codex'
+.fi
+.RE
+.SH GROK UPSTREAM
+To use a grok (xAI) credential with
+.BR "ccm launch" " or " "ccm share" ,
+first authenticate with
+.BR "ccm login grok"
+(OAuth subscription login for SuperGrok / X Premium+). Unlike the codex
+path, no external CLI or identity capture is required \(em xAI's
+.B /v1/messages
+endpoint is already Anthropic-compatible, so the proxy only rewrites
+the request's model field and swaps in the grok OAuth bearer before
+forwarding upstream.
+.PP
+Grok credentials are single-active: there is no
+.B "ccm use"
+activation path, and they are never included in a
+.B \-\-load\-balance
+pool. They work only through
+.BR "ccm serve" ", " "ccm share" ", and " "ccm launch" .
+.PP
+Requests whose model does not match a
+.B \-\-model\-alias
+rule default to
+.BR grok\-composer\-2.5\-fast .
+Use
+.B \-\-model\-alias
+to route to a different model, e.g.
+.BR grok\-4.5 :
+.PP
+.RS
+.nf
+ccm launch grok-cred --model-alias 'claude-opus-*=grok-4.5'
 .fi
 .RE
 .SH EXAMPLES

@@ -23,7 +23,7 @@ var modelCmd = &cobra.Command{
 	Long: `model groups subcommands that inspect how Claude Code resolves
 ` + "`--model`" + ` arguments to the model strings it actually sends to the
 API. Useful when authoring ` + "`--model-alias`" + ` patterns for ` + "`ccm share`" + ` /
-` + "`ccm launch`" + ` against codex credentials.`,
+` + "`ccm launch`" + ` against codex or grok credentials.`,
 }
 
 var modelDiscoveryFrom string
