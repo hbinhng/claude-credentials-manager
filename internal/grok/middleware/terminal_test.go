@@ -560,3 +560,102 @@ func TestOrderPreservingRewrite_NoSecondQuote(t *testing.T) {
 		t.Errorf("body changed unexpectedly: %s", result)
 	}
 }
+
+// ── xAI tool-schema compatibility (ensureToolRequired) ────────────────────────
+
+func TestEnsureToolRequired_InjectsMissingRequired(t *testing.T) {
+	body := []byte(`{"model":"m","tools":[` +
+		`{"name":"a","input_schema":{"type":"object","properties":{"x":{"type":"string"}}}},` +
+		`{"name":"b","input_schema":{"type":"object","required":["y"],"properties":{"y":{"type":"string"}}}}` +
+		`],"messages":[]}`)
+	out := ensureToolRequired(body)
+
+	var m struct {
+		Tools []struct {
+			Name        string `json:"name"`
+			InputSchema struct {
+				Required *[]string `json:"required"`
+			} `json:"input_schema"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatalf("output not JSON: %v", err)
+	}
+	if m.Tools[0].InputSchema.Required == nil {
+		t.Errorf("tool a: required should have been injected as an array")
+	}
+	if len(*m.Tools[0].InputSchema.Required) != 0 {
+		t.Errorf("tool a: injected required should be empty, got %v", *m.Tools[0].InputSchema.Required)
+	}
+	if m.Tools[1].InputSchema.Required == nil || len(*m.Tools[1].InputSchema.Required) != 1 {
+		t.Errorf("tool b: existing required must be preserved, got %v", m.Tools[1].InputSchema.Required)
+	}
+}
+
+func TestEnsureToolRequired_NoToolSchema_Unchanged(t *testing.T) {
+	body := []byte(`{"model":"m","messages":[{"role":"user","content":"hi"}]}`)
+	if out := ensureToolRequired(body); !bytes.Equal(out, body) {
+		t.Errorf("body without tool schemas must be returned unchanged (order-preserving)")
+	}
+}
+
+func TestEnsureToolRequired_AllRequiredPresent_Unchanged(t *testing.T) {
+	body := []byte(`{"tools":[{"name":"a","input_schema":{"type":"object","required":["x"]}}]}`)
+	if out := ensureToolRequired(body); !bytes.Equal(out, body) {
+		t.Errorf("body whose tools all have required must be returned unchanged")
+	}
+}
+
+func TestEnsureToolRequired_BadJSON_Unchanged(t *testing.T) {
+	body := []byte(`{"input_schema": not json`)
+	if out := ensureToolRequired(body); !bytes.Equal(out, body) {
+		t.Errorf("unparseable body must be returned unchanged (best-effort)")
+	}
+}
+
+func TestTerminal_InjectsToolRequired_EndToEnd(t *testing.T) {
+	var gotRequiredPresent bool
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		var m struct {
+			Tools []struct {
+				InputSchema struct {
+					Required *[]string `json:"required"`
+				} `json:"input_schema"`
+			} `json:"tools"`
+		}
+		_ = json.Unmarshal(b, &m)
+		gotRequiredPresent = len(m.Tools) == 1 && m.Tools[0].InputSchema.Required != nil
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message"}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "tok"}})
+	body := `{"model":"claude-sonnet","tools":[{"name":"a","input_schema":{"type":"object","properties":{}}}],"messages":[]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-sonnet=grok-4.5", term, req, rr)
+
+	if !gotRequiredPresent {
+		t.Fatal("upstream should have received a tool schema with an injected required array")
+	}
+}
+
+func TestEnsureToolRequired_ToolsNotArray_Unchanged(t *testing.T) {
+	// Has the "input_schema" substring (passes the fast-path guard) and is
+	// valid JSON, but tools is not an array → returned unchanged.
+	body := []byte(`{"input_schema":0,"tools":{"nope":true}}`)
+	if out := ensureToolRequired(body); !bytes.Equal(out, body) {
+		t.Errorf("non-array tools must be returned unchanged")
+	}
+}
+
+func TestEnsureToolRequired_MalformedToolEntries_Unchanged(t *testing.T) {
+	// Tool entries that aren't objects, or whose input_schema isn't an
+	// object, are skipped; with nothing to fix the body is unchanged.
+	body := []byte(`{"tools":[123,{"name":"a","input_schema":"notobj"}]}`)
+	if out := ensureToolRequired(body); !bytes.Equal(out, body) {
+		t.Errorf("malformed tool entries must be skipped, body unchanged")
+	}
+}

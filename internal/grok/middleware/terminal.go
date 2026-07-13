@@ -88,7 +88,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if sharemw.AliasMatched(r.Context()) {
 		targetModel = sharemw.EffectiveModel(r.Context())
 	}
-	outBody := orderPreservingRewrite(body, targetModel)
+	outBody := ensureToolRequired(orderPreservingRewrite(body, targetModel))
 
 	resp, err := t.doWith401Retry(r.Context(), outBody)
 	if err != nil {
@@ -178,6 +178,56 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 // rewriteModelField in internal/share/middleware/alias.go, which this
 // mirrors). Falls back to returning body unchanged when the "model" key
 // isn't present in the expected shape.
+// ensureToolRequired makes every tool's input_schema carry a `required`
+// array. xAI's /v1/messages validator rejects a tool schema whose
+// `required` is absent or null ("/required: null is not of type array"),
+// whereas Anthropic treats it as optional — so Claude Code omits it for
+// tools with no required parameters. Injecting an empty array is
+// semantically identical (no required params) and unblocks the request.
+//
+// Best-effort and order-preserving-friendly: a body with no tool schemas,
+// one whose tools already all carry `required`, or one that doesn't parse
+// as JSON is returned unchanged (no re-marshal, so the order-preserving
+// model rewrite upstream is untouched). Only when a fix is actually needed
+// is the body re-serialized.
+func ensureToolRequired(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"input_schema"`)) {
+		return body
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	tools, ok := m["tools"].([]any)
+	if !ok {
+		return body
+	}
+	changed := false
+	for _, raw := range tools {
+		tool, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		schema, ok := tool["input_schema"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if v, has := schema["required"]; !has || v == nil {
+			schema["required"] = []any{}
+			changed = true
+		}
+	}
+	if !changed {
+		return body
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		// untestable: a map decoded from valid JSON always re-marshals.
+		return body
+	}
+	return out
+}
+
 func orderPreservingRewrite(body []byte, model string) []byte {
 	const key = `"model"`
 	idx := bytes.Index(body, []byte(key))
