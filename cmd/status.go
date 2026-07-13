@@ -208,12 +208,19 @@ func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, cla
 		// Compute ExpiresAt in a provider-aware way.
 		// For claude: ClaudeAiOauth.ExpiresAt is the canonical ms timestamp.
 		// For codex: parse the access token JWT exp claim (seconds → ms).
+		// For grok: ExpiresAtMillis() returns the stored expiresAtMillis
+		// (grok has no ClaudeAiOauth and no JWT to parse).
 		var expiresAtMillis int64
-		if provider == "codex" && c.Tokens != nil {
-			if claims, err := codexoauth.ParseClaims(c.Tokens.AccessToken); err == nil {
-				expiresAtMillis = claims.ExpUnixSeconds * 1000
+		switch provider {
+		case "codex":
+			if c.Tokens != nil {
+				if claims, err := codexoauth.ParseClaims(c.Tokens.AccessToken); err == nil {
+					expiresAtMillis = claims.ExpUnixSeconds * 1000
+				}
 			}
-		} else {
+		case "grok":
+			expiresAtMillis = c.ExpiresAtMillis()
+		default: // claude
 			expiresAtMillis = c.ClaudeAiOauth.ExpiresAt
 		}
 
