@@ -90,7 +90,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if sharemw.AliasMatched(r.Context()) {
 		targetModel = sharemw.EffectiveModel(r.Context())
 	}
-	outBody := ensureToolRequired(hoistSystemMessages(orderPreservingRewrite(body, targetModel)))
+	outBody := ensureToolRequired(clampEffort(hoistSystemMessages(orderPreservingRewrite(body, targetModel))))
 
 	resp, err := t.doWith401Retry(r.Context(), outBody)
 	if err != nil {
@@ -192,6 +192,32 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 // rewriteModelField in internal/share/middleware/alias.go, which this
 // mirrors). Falls back to returning body unchanged when the "model" key
 // isn't present in the expected shape.
+// clampEffort maps output_config.effort "xhigh" down to "high". Claude Code
+// emits four effort levels (low/medium/high/xhigh) but grok's scale is only
+// low/medium/high, so xhigh would be rejected. Best-effort and cheap: skips
+// unless the literal "xhigh" is present, and only re-marshals when it is
+// actually the effort value.
+func clampEffort(body []byte) []byte {
+	if !bytes.Contains(body, []byte(`"xhigh"`)) {
+		return body
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return body
+	}
+	oc, ok := m["output_config"].(map[string]any)
+	if !ok {
+		return body
+	}
+	if eff, _ := oc["effort"].(string); eff == "xhigh" {
+		oc["effort"] = "high"
+		if out, err := json.Marshal(m); err == nil {
+			return out
+		}
+	}
+	return body
+}
+
 // hoistSystemMessages moves any role:"system" message out of the messages
 // array and into the top-level `system` field. Claude Code injects
 // SessionStart-hook / skill context as a role:"system" message, which the
