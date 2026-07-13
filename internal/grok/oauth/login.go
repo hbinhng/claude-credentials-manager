@@ -34,20 +34,23 @@ func Login(ctx context.Context, stdout io.Writer, stdin io.Reader) (*store.Crede
 	fmt.Fprintln(stdout)
 	fmt.Fprintln(stdout, "After authorizing, your browser will redirect to a localhost URL.")
 	fmt.Fprintln(stdout, "The page won't load (ccm doesn't run a local server) — that's expected.")
-	fmt.Fprintln(stdout, "Copy the FULL URL from your browser's address bar and paste it here:")
+	fmt.Fprintln(stdout, "Paste EITHER the full redirect URL from your browser's address bar,")
+	fmt.Fprintln(stdout, "OR just the authorization code shown on the page:")
 	fmt.Fprint(stdout, "> ")
 
 	br := bufio.NewReader(stdin)
 	line, err := br.ReadString('\n')
 	if err != nil && line == "" {
-		return nil, fmt.Errorf("grokoauth: read pasted URL: %w", err)
+		return nil, fmt.Errorf("grokoauth: read pasted input: %w", err)
 	}
 
-	code, state, err := parseCallbackURL(line)
+	code, state, wasURL, err := parseCallbackInput(line)
 	if err != nil {
 		return nil, err
 	}
-	if state != pkce.State {
+	// State is only carried by the full redirect URL; validate it there to
+	// defend against CSRF. A bare pasted code has no state to compare.
+	if wasURL && state != pkce.State {
 		return nil, ErrStateMismatch
 	}
 
@@ -127,6 +130,23 @@ func parseCallbackURL(input string) (code, state string, err error) {
 		return "", "", fmt.Errorf("grokoauth: pasted URL has no code parameter")
 	}
 	return code, state, nil
+}
+
+// parseCallbackInput accepts either the full browser redirect URL or a
+// bare authorization code, distinguished by an http(s):// prefix. For a
+// URL it delegates to parseCallbackURL (code + state, with OAuth-error
+// handling) and reports wasURL=true so the caller validates state. For a
+// bare code it returns the trimmed input verbatim with an empty state.
+func parseCallbackInput(input string) (code, state string, wasURL bool, err error) {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return "", "", false, fmt.Errorf("grokoauth: pasted input is empty")
+	}
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		code, state, err = parseCallbackURL(trimmed)
+		return code, state, true, err
+	}
+	return trimmed, "", false, nil
 }
 
 // ExportedParseCallbackURL exposes parseCallbackURL for external tests.
