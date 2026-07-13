@@ -184,6 +184,69 @@ func TestBuildStatusReport_QuotaFetchErrorSurfaced(t *testing.T) {
 	}
 }
 
+func TestBuildStatusReport_GrokExpiryIsCorrect(t *testing.T) {
+	// Grok credentials store their expiry in expiresAtMillis (via
+	// GrokTokens + SetTokens), NOT in ClaudeAiOauth. buildStatusReport
+	// must use the provider-aware c.ExpiresAtMillis() accessor so the
+	// displayed ExpiresAt isn't stuck at the 1970 epoch.
+	cred := &store.Credential{
+		ID:              "ffff1111-0000-0000-0000-000000000001",
+		Name:            "grok1",
+		Provider:        "grok",
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+	}
+	cred.SetTokens("a", "r", time.Now().Add(time.Hour).UnixMilli())
+
+	r := buildStatusReport([]*store.Credential{cred}, []*oauth.UsageInfo{nil}, "", "", true)
+
+	e := r.Credentials[0]
+	if e.Provider != "grok" {
+		t.Errorf("Provider = %q, want grok", e.Provider)
+	}
+	if e.Status != "valid" {
+		t.Errorf("Status = %q, want valid", e.Status)
+	}
+	if e.Active {
+		t.Errorf("Active = true, want false")
+	}
+	expiresAt, err := time.Parse(time.RFC3339, e.ExpiresAt)
+	if err != nil {
+		t.Fatalf("ExpiresAt %q did not parse as RFC3339: %v", e.ExpiresAt, err)
+	}
+	if !expiresAt.After(time.Now()) {
+		t.Errorf("ExpiresAt = %v, want a time after now (not the 1970 epoch)", expiresAt)
+	}
+	if time.Until(expiresAt) > 2*time.Hour {
+		t.Errorf("ExpiresAt = %v, want within ~1h of now", expiresAt)
+	}
+}
+
+func TestBuildStatusReport_GrokExpiredCredential(t *testing.T) {
+	cred := &store.Credential{
+		ID:              "ffff2222-0000-0000-0000-000000000002",
+		Name:            "grok2",
+		Provider:        "grok",
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+	}
+	cred.SetTokens("a", "r", time.Now().Add(-time.Hour).UnixMilli())
+
+	r := buildStatusReport([]*store.Credential{cred}, []*oauth.UsageInfo{nil}, "", "", true)
+
+	e := r.Credentials[0]
+	if e.Status != "expired" {
+		t.Errorf("Status = %q, want expired", e.Status)
+	}
+	expiresAt, err := time.Parse(time.RFC3339, e.ExpiresAt)
+	if err != nil {
+		t.Fatalf("ExpiresAt %q did not parse as RFC3339: %v", e.ExpiresAt, err)
+	}
+	if !expiresAt.Before(time.Now()) {
+		t.Errorf("ExpiresAt = %v, want a time before now", expiresAt)
+	}
+}
+
 func TestWriteStatusJSON_NoRemainingField(t *testing.T) {
 	// The quota windows in JSON output carry only `used` — consumers
 	// that want "remaining" can compute `100 - used` themselves. Having
