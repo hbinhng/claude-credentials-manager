@@ -22,6 +22,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -230,8 +231,20 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 	}
 	setupHomeWithCcm(t)
 
-	// Fake codex backend: just return 200 for any request
+	// Fake codex backend. Captures the path + translated model so this
+	// test can prove (Task 13) that `ccm launch` now routes through the
+	// codex Terminal instead of forwarding untranslated to upstreamBase().
+	var upstreamPath string
+	var upstreamModel atomic.Value
 	upstream := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamPath = r.URL.Path
+		b, _ := io.ReadAll(r.Body)
+		var parsed map[string]any
+		if err := json.Unmarshal(b, &parsed); err == nil {
+			if m, _ := parsed["model"].(string); m != "" {
+				upstreamModel.Store(m)
+			}
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, "data: {\"type\":\"response.created\"}\n\n")
 		io.WriteString(w, "data: [DONE]\n\n")
@@ -251,14 +264,35 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 	launchModelAliases = []string{"claude-opus-*=gpt-5-codex"}
 	t.Cleanup(func() { launchModelAliases = orig })
 
-	// Capture the environment that runLaunchLocal will pass to the exec stub.
+	// Capture the environment that runLaunchLocal will pass to the exec stub,
+	// and use it to fire a real POST /v1/messages through the launch proxy so
+	// we can observe what the codex terminal actually forwards upstream.
 	var receivedBaseURL atomic.Value
 	restoreExec := share.SetLaunchExecFnForTest(func(name string, args []string, env []string) error {
+		var baseURL string
 		for _, e := range env {
 			if strings.HasPrefix(e, "ANTHROPIC_BASE_URL=") {
-				receivedBaseURL.Store(strings.TrimPrefix(e, "ANTHROPIC_BASE_URL="))
+				baseURL = strings.TrimPrefix(e, "ANTHROPIC_BASE_URL=")
 			}
 		}
+		receivedBaseURL.Store(baseURL)
+		if baseURL == "" {
+			return fmt.Errorf("no ANTHROPIC_BASE_URL in env")
+		}
+		waitForProxy(t, baseURL)
+
+		req, err := http.NewRequest("POST", baseURL+"/v1/messages",
+			strings.NewReader(`{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
+		if err != nil {
+			return err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return err
+		}
+		defer resp.Body.Close()
+		io.Copy(io.Discard, resp.Body) //nolint:errcheck — draining is enough
 		return nil
 	})
 	defer restoreExec()
@@ -270,6 +304,12 @@ func TestCodexLaunch_WithAlias(t *testing.T) {
 	got, _ := receivedBaseURL.Load().(string)
 	if !strings.HasPrefix(got, "http://") {
 		t.Errorf("ANTHROPIC_BASE_URL = %q, want an http:// address", got)
+	}
+	if upstreamPath != "/backend-api/codex/responses" {
+		t.Errorf("upstream URL path = %q, want /backend-api/codex/responses (codex terminal path)", upstreamPath)
+	}
+	if m, _ := upstreamModel.Load().(string); m != "gpt-5-codex" {
+		t.Errorf("upstream model = %q, want gpt-5-codex (alias translation of claude-opus-4.7)", m)
 	}
 }
 

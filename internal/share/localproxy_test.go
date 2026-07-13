@@ -1,6 +1,7 @@
 package share
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -233,5 +234,118 @@ func TestLaunchSingleCredInvalidGrantReLoginMessage(t *testing.T) {
 	}
 	if !strings.Contains(rr.Body.String(), "ccm login") {
 		t.Errorf("single-cred invalid_grant body should mention `ccm login`; got %s", rr.Body.String())
+	}
+}
+
+// TestNewLocalProxyGrokHandlersError verifies that when grokHandlersFn
+// fails, NewLocalProxy propagates a wrapped error (and closes the
+// partially-built proxy) instead of returning a LocalProxy whose launch
+// requests would silently fall through to the Anthropic passthrough.
+// Exercises setupProviderTerminal's grok error branch and the
+// "setupProviderTerminal failed -> Close + propagate" branch NewLocalProxy
+// added around it (Task 13).
+func TestNewLocalProxyGrokHandlersError(t *testing.T) {
+	restore := SetGrokHandlersFnForTest(func(cred *store.Credential) (GrokHandlers, error) {
+		return GrokHandlers{}, errors.New("grok handlers boom")
+	})
+	defer restore()
+
+	cred := grokCred(t, "aaaa1111-0000-0000-0000-localproxy001")
+
+	lp, err := NewLocalProxy(cred)
+	if err == nil {
+		if lp != nil {
+			_ = lp.Close()
+		}
+		t.Fatal("NewLocalProxy succeeded; want grok handlers error")
+	}
+	if !strings.Contains(err.Error(), "grok handlers") {
+		t.Errorf("err = %v, want to contain %q", err, "grok handlers")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("err = %v, want wrapped cause to survive", err)
+	}
+}
+
+// TestNewLocalProxyCodexHandlersError is the codex mirror of
+// TestNewLocalProxyGrokHandlersError: codexHandlersFn failing must
+// likewise abort NewLocalProxy with a wrapped error, exercising
+// setupProviderTerminal's codex error branch.
+func TestNewLocalProxyCodexHandlersError(t *testing.T) {
+	restore := SetCodexHandlersFnForTest(func(cred *store.Credential) (CodexHandlers, error) {
+		return CodexHandlers{}, errors.New("codex handlers boom")
+	})
+	defer restore()
+
+	setupFakeHome(t)
+	cred := mkCodexCred(t, "bbbb2222-0000-0000-0000-localproxy002")
+
+	lp, err := NewLocalProxy(cred)
+	if err == nil {
+		if lp != nil {
+			_ = lp.Close()
+		}
+		t.Fatal("NewLocalProxy succeeded; want codex handlers error")
+	}
+	if !strings.Contains(err.Error(), "codex handlers") {
+		t.Errorf("err = %v, want to contain %q", err, "codex handlers")
+	}
+	if !strings.Contains(err.Error(), "boom") {
+		t.Errorf("err = %v, want wrapped cause to survive", err)
+	}
+}
+
+// TestNewLocalProxyGrokDieFastClosesProxy proves the onDie closure wired
+// in setupProviderTerminal (`func(string) { go p.Close() }`) actually
+// closes the LocalProxy when the grok terminal signals model_not_found —
+// the same die-fast contract share.Proxy enforces via
+// terminalForProvider/OnSessionDie (see TestGrokShare_DieFastOnUnknownModel
+// in cmd/share_grok_acceptance_test.go), now reachable through `ccm
+// launch` too.
+func TestNewLocalProxyGrokDieFastClosesProxy(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":{"code":"model_not_found","message":"unknown model 'grok-nope'"}}`)
+	}))
+	defer upstream.Close()
+
+	restore := SetGrokHandlersFnForTest(func(cred *store.Credential) (GrokHandlers, error) {
+		return GrokHandlers{Cred: cred, Transport: http.DefaultClient, UpstreamURL: upstream.URL}, nil
+	})
+	defer restore()
+
+	cred := grokCred(t, "cccc3333-0000-0000-0000-localproxy003")
+	lp, err := NewLocalProxy(cred)
+	if err != nil {
+		t.Fatalf("NewLocalProxy: %v", err)
+	}
+	defer lp.Close()
+
+	go func() { _ = lp.Start() }()
+	waitForListener(t, lp.Addr())
+
+	req, _ := http.NewRequest("POST", lp.Addr()+"/v1/messages",
+		strings.NewReader(`{"model":"grok-nope","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`))
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+
+	addr := strings.TrimPrefix(lp.Addr(), "http://")
+	deadline := time.Now().Add(3 * time.Second)
+	down := false
+	for time.Now().Before(deadline) {
+		conn, dialErr := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if dialErr != nil {
+			down = true
+			break
+		}
+		_ = conn.Close()
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !down {
+		t.Error("proxy did not close within 3s after grok model_not_found die-fast")
 	}
 }
