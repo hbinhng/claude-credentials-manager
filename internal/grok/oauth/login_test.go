@@ -289,3 +289,36 @@ func TestLogin_EmptyEmail_FallsBackToUUIDPrefix(t *testing.T) {
 		t.Fatalf("uuid prefix should be <=8 chars; got %q", cred.Name)
 	}
 }
+
+// TestLogin_BareCodePaste covers pasting just the authorization code
+// (no redirect URL). Detection is by http(s) prefix: input without one is
+// treated as the bare code, and no state validation applies (there is no
+// state to compare). The code must reach ExchangeCode verbatim.
+func TestLogin_BareCodePaste(t *testing.T) {
+	idToken := mkIDToken(t, "bare@x.ai")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		if got := r.Form.Get("code"); got != "BARECODE123" {
+			t.Errorf("exchange code = %q, want BARECODE123", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"a","refresh_token":"r","expires_in":3600,"id_token":"` + idToken + `"}`))
+	}))
+	defer srv.Close()
+	setTokenURLStr(t, srv.URL)
+
+	// Surrounding whitespace should be trimmed; no state needed.
+	cred, err := grokoauth.Login(context.Background(), new(bytes.Buffer), strings.NewReader("  BARECODE123  \n"))
+	if err != nil {
+		t.Fatalf("Login (bare code): %v", err)
+	}
+	if cred == nil {
+		t.Fatal("expected credential, got nil")
+	}
+	if got := cred.AccessToken(); got != "a" {
+		t.Fatalf("AccessToken() = %q, want a", got)
+	}
+	if cred.Name != "bare@x.ai" {
+		t.Fatalf("Name = %q, want bare@x.ai", cred.Name)
+	}
+}

@@ -2,8 +2,40 @@ package grokoauth
 
 import (
 	"encoding/base64"
+	"errors"
 	"testing"
 )
+
+// TestParseCallbackInput covers the http-prefix detection that lets the
+// user paste either the full redirect URL or the bare authorization code.
+func TestParseCallbackInput(t *testing.T) {
+	// Full redirect URL → parsed as URL, code+state extracted, wasURL=true.
+	code, state, wasURL, err := parseCallbackInput("http://127.0.0.1:56121/callback?code=C&state=S")
+	if err != nil || !wasURL || code != "C" || state != "S" {
+		t.Fatalf("URL: got code=%q state=%q wasURL=%v err=%v", code, state, wasURL, err)
+	}
+
+	// https prefix is also treated as a URL.
+	if _, _, wasURL, _ := parseCallbackInput("https://x/?code=C&state=S"); !wasURL {
+		t.Fatal("https input should be detected as a URL")
+	}
+
+	// Bare code → used verbatim, no state, wasURL=false (whitespace trimmed).
+	code, state, wasURL, err = parseCallbackInput("  RAWCODE  ")
+	if err != nil || wasURL || code != "RAWCODE" || state != "" {
+		t.Fatalf("bare: got code=%q state=%q wasURL=%v err=%v", code, state, wasURL, err)
+	}
+
+	// Empty input → error.
+	if _, _, _, err := parseCallbackInput("   "); err == nil {
+		t.Fatal("empty input should error")
+	}
+
+	// A URL carrying an OAuth error still propagates that error.
+	if _, _, _, err := parseCallbackInput("http://x/?error=access_denied"); !errors.Is(err, ErrAuthDenied) {
+		t.Fatalf("access_denied URL should surface ErrAuthDenied, got %v", err)
+	}
+}
 
 // TestClaimEmail covers claimEmail's branches directly (white-box), since
 // Login's happy path can't be driven black-box (state is generated inside
