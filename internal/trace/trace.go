@@ -168,6 +168,23 @@ func EmitRequest(reqID, dir, url string, headers http.Header, body []byte) {
 	Emit(reqID, dir, rec)
 }
 
+// EmitResponseHead emits a response-side event carrying the upstream
+// status code and redacted headers. Rate-limit / quota headers (e.g.
+// x-ratelimit-*, anthropic-ratelimit-*) are not sensitive, so they
+// survive redaction — this is what makes the upstream provider's quota
+// signalling visible in a trace. Body chunks are emitted separately via
+// EmitEvent.
+func EmitResponseHead(reqID, dir string, status int, headers http.Header) {
+	if !Enabled() {
+		return
+	}
+	rec := map[string]any{"status": status}
+	if headers != nil {
+		rec["headers"] = redactHeaders(headers)
+	}
+	Emit(reqID, dir, rec)
+}
+
 // EmitEvent emits a streaming-event row. event is the SSE event name
 // (or "" for non-SSE chunks); data is the raw event data string.
 func EmitEvent(reqID, dir, event, data string) {
