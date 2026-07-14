@@ -16,6 +16,7 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex"
 	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
+	grokoauth "github.com/hbinhng/claude-credentials-manager/internal/grok/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -219,6 +220,50 @@ func TestBuildStatusReport_GrokExpiryIsCorrect(t *testing.T) {
 	}
 	if time.Until(expiresAt) > 2*time.Hour {
 		t.Errorf("ExpiresAt = %v, want within ~1h of now", expiresAt)
+	}
+}
+
+func TestFetchUsagesParallel_GrokWeeklyQuotaAndTier(t *testing.T) {
+	// The grok branch of fetchUsagesParallel dispatches through the
+	// grokoauth.FetchUsageFn seam; buildStatusReport then renders the weekly
+	// window and surfaces the live tier (grok has no persisted Subscription.Tier).
+	prev := grokoauth.FetchUsageFn
+	grokoauth.FetchUsageFn = func(at string) *oauth.UsageInfo {
+		if at != "gtok" {
+			t.Errorf("FetchUsage token = %q, want gtok", at)
+		}
+		return &oauth.UsageInfo{
+			Quotas: []oauth.Quota{{Name: "weekly", Used: 56.0, ResetsAt: "2026-07-20T04:01:19.173373+00:00"}},
+			Tier:   "SuperGrok Heavy",
+		}
+	}
+	defer func() { grokoauth.FetchUsageFn = prev }()
+
+	cred := &store.Credential{
+		ID:              "aaaa3333-0000-0000-0000-000000000003",
+		Name:            "grokq",
+		Provider:        "grok",
+		CreatedAt:       "2026-01-01T00:00:00Z",
+		LastRefreshedAt: "2026-01-01T00:00:00Z",
+	}
+	cred.SetTokens("gtok", "r", time.Now().Add(time.Hour).UnixMilli())
+
+	usages := fetchUsagesParallel([]*store.Credential{cred})
+	r := buildStatusReport([]*store.Credential{cred}, usages, "", "", false)
+
+	e := r.Credentials[0]
+	if !e.Quota.Fetched || e.Quota.Error != "" {
+		t.Fatalf("quota not fetched cleanly: %+v", e.Quota)
+	}
+	if len(e.Quota.Windows) != 1 {
+		t.Fatalf("want 1 quota window, got %d", len(e.Quota.Windows))
+	}
+	w := e.Quota.Windows[0]
+	if w.Name != "weekly" || w.Used != 56.0 || w.ResetsAt != "2026-07-20T04:01:19.173373+00:00" {
+		t.Errorf("weekly window = %+v", w)
+	}
+	if e.Tier == nil || *e.Tier != "SuperGrok Heavy" {
+		t.Errorf("tier = %v, want SuperGrok Heavy", e.Tier)
 	}
 }
 

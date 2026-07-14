@@ -13,6 +13,7 @@ import (
 	"github.com/hbinhng/claude-credentials-manager/internal/claude"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex"
 	codexoauth "github.com/hbinhng/claude-credentials-manager/internal/codex/oauth"
+	grokoauth "github.com/hbinhng/claude-credentials-manager/internal/grok/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/oauth"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 	"github.com/spf13/cobra"
@@ -150,6 +151,15 @@ func fetchUsagesParallel(creds []*store.Credential) []*oauth.UsageInfo {
 				defer wg.Done()
 				usages[i] = codexoauth.FetchUsageFn(at, acct)
 			}(i, c.Tokens.AccessToken, c.Tokens.AccountID)
+		case "grok":
+			if c.GrokTokens == nil {
+				continue
+			}
+			wg.Add(1)
+			go func(i int, at string) {
+				defer wg.Done()
+				usages[i] = grokoauth.FetchUsageFn(at)
+			}(i, c.GrokTokens.AccessToken)
 		}
 	}
 	wg.Wait()
@@ -189,8 +199,14 @@ func buildStatusReport(creds []*store.Credential, usages []*oauth.UsageInfo, cla
 				}
 			}
 		} else {
+			// grok has no persisted tier yet; surface the tier the live quota
+			// fetch returned (from /v1/settings). Persisted Subscription.Tier
+			// still wins when present.
 			if c.Subscription.Tier != "" {
 				t := c.Subscription.Tier
+				tier = &t
+			} else if provider == "grok" && i < len(usages) && usages[i] != nil && usages[i].Tier != "" {
+				t := usages[i].Tier
 				tier = &t
 			}
 			detail = ""
