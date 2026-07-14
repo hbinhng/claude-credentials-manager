@@ -12,6 +12,9 @@ package middleware
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +24,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/andybalholm/brotli"
 
 	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/trace"
@@ -106,6 +111,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(resp.Body)
+		errBody = decodeBody(resp.Header, errBody)
 		if shouldDieFast(errBody, targetModel) {
 			t.opts.OnSessionDie(fmt.Sprintf("grok returned model_not_found for %q", targetModel))
 		}
@@ -211,6 +217,54 @@ func bodyStreams(body []byte) bool {
 		return true
 	}
 	return probe.Stream == nil || *probe.Stream
+}
+
+// decodeBody returns raw decompressed per the response's Content-Encoding.
+// ccm sends grok-shell's authentic Accept-Encoding ("gzip, br, deflate") to
+// present as the real client, which disables Go's transparent response
+// decompression — so on the error path, where ccm inspects the body
+// (die-fast, context-overflow detection), it must inflate the body itself.
+// The 2xx relay path is a faithful header+body passthrough and needs no
+// decoding (it forwards Content-Encoding alongside the raw bytes and the end
+// client decompresses). Unknown/empty encodings and any inflate error fall
+// back to raw — best-effort, never worse than forwarding the bytes as-is.
+func decodeBody(h http.Header, raw []byte) []byte {
+	switch strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding"))) {
+	case "", "identity":
+		return raw
+	case "gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return raw
+		}
+		defer zr.Close()
+		if out, err := io.ReadAll(zr); err == nil {
+			return out
+		}
+		return raw
+	case "br":
+		if out, err := io.ReadAll(brotli.NewReader(bytes.NewReader(raw))); err == nil {
+			return out
+		}
+		return raw
+	case "deflate":
+		// HTTP "deflate" is nominally zlib-wrapped (RFC 1950); some servers
+		// send raw DEFLATE (RFC 1951). Try zlib first, fall back to raw flate.
+		if zr, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
+			defer zr.Close()
+			if out, err := io.ReadAll(zr); err == nil {
+				return out
+			}
+		}
+		fr := flate.NewReader(bytes.NewReader(raw))
+		defer fr.Close()
+		if out, err := io.ReadAll(fr); err == nil {
+			return out
+		}
+		return raw
+	default:
+		return raw
+	}
 }
 
 // orderPreservingRewrite does a best-effort textual rewrite of the body's

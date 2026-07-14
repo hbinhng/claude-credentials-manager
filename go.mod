@@ -3,6 +3,7 @@ module github.com/hbinhng/claude-credentials-manager
 go 1.24.1
 
 require (
+	github.com/andybalholm/brotli v1.2.0
 	github.com/bogdanfinn/fhttp v0.6.8
 	github.com/bogdanfinn/tls-client v1.14.0
 	github.com/danieljoos/wincred v1.2.3
@@ -15,7 +16,6 @@ require (
 )
 
 require (
-	github.com/andybalholm/brotli v1.2.0 // indirect
 	github.com/bdandy/go-errors v1.2.2 // indirect
 	github.com/bdandy/go-socks4 v1.2.3 // indirect
 	github.com/bogdanfinn/quic-go-utls v1.0.9-utls // indirect
