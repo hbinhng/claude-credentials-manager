@@ -121,7 +121,7 @@ func grokUAArch() string {
 func newTraceparent() string {
 	var traceID [16]byte
 	var spanID [8]byte
-	_, _ = rand.Read(traceID[:]) // crypto/rand.Read panics on OS failure (Go 1.20+)
+	_, _ = rand.Read(traceID[:]) // crypto/rand.Read panics on OS failure (Go 1.24+)
 	_, _ = rand.Read(spanID[:])
 	return "00-" + hex.EncodeToString(traceID[:]) + "-" + hex.EncodeToString(spanID[:]) + "-01"
 }
