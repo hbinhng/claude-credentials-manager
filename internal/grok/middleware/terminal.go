@@ -443,6 +443,11 @@ func detectContextOverflow(errBody []byte) (overflow bool, inTokens, maxTokens i
 		"context length", "context window", "maximum context",
 		"context_length_exceeded", "too long", "too many tokens",
 		"reduce the length", "exceeds the maximum", "maximum number of tokens",
+		// grok/xAI phrasing: "This model's maximum prompt length is 500000
+		// but the request contains 500317 tokens." None of the above catch it,
+		// so the overflow -> "prompt is too long" translation (which drives
+		// Claude Code's auto-compaction) never fired for grok. These do.
+		"maximum prompt length", "prompt length", "prompt is too long",
 	}
 	hit := false
 	for _, m := range markers {
