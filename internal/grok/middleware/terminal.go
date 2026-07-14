@@ -1,9 +1,10 @@
-// Package middleware provides the grok proxy terminal handler. xAI's
-// /v1/messages is Anthropic-compatible, so this is a near-passthrough:
+// Package middleware provides the grok proxy terminal handler.
+// cli-chat-proxy.grok.com's /v1/messages is Anthropic-compatible, so this is
+// a near-passthrough:
 //  1. rewrite the request's model field (alias target when matched, else
 //     DefaultModel), preserving JSON key order for prompt-cache prefixes
-//  2. swap in the grok OAuth bearer (only ever sent to UpstreamURL)
-//  3. POST to UpstreamURL/v1/messages
+//  2. swap in the grok OAuth bearer (only ever sent to cli-chat-proxy.grok.com)
+//  3. POST to UpstreamURL/v1/messages, presenting as grok-shell
 //  4. 401 -> refresh + retry once
 //  5. model_not_found -> die-fast
 //  6. relay the response (flushing for SSE)
@@ -11,6 +12,9 @@ package middleware
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,15 +23,17 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+
+	"github.com/andybalholm/brotli"
 
 	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/trace"
 )
 
 const (
-	defaultUpstream = "https://api.x.ai"
+	defaultUpstream = "https://cli-chat-proxy.grok.com"
 	defaultModel    = "grok-composer-2.5-fast"
-	userAgent       = "grok-cli (ccm)"
 )
 
 // TerminalOpts configures the grok terminal handler.
@@ -35,8 +41,9 @@ type TerminalOpts struct {
 	// Transport is anything that can execute HTTP requests. Defaults to
 	// trace.WrapDoer(&http.Client{}) when nil.
 	Transport trace.Doer
-	// UpstreamURL overrides the grok backend (default "https://api.x.ai").
-	// Test-only; production callers leave it blank.
+	// UpstreamURL overrides the grok backend (default
+	// "https://cli-chat-proxy.grok.com"). Test-only; production callers
+	// leave it blank.
 	UpstreamURL string
 	// BearerSrc fetches the cred's current grok access token. On a 401
 	// from upstream, the terminal calls BearerSrc.Fresh() to trigger
@@ -53,7 +60,9 @@ type TerminalOpts struct {
 // Terminal is the grok-specific http.Handler that lives at the end of the
 // share pipeline.
 type Terminal struct {
-	opts TerminalOpts
+	opts   TerminalOpts
+	turnMu sync.Mutex
+	turns  map[string]int
 }
 
 // NewTerminal constructs a Terminal, filling in defaults for UpstreamURL,
@@ -71,7 +80,7 @@ func NewTerminal(opts TerminalOpts) *Terminal {
 	if opts.Transport == nil {
 		opts.Transport = trace.WrapDoer(&http.Client{})
 	}
-	return &Terminal{opts: opts}
+	return &Terminal{opts: opts, turns: map[string]int{}}
 }
 
 // ServeHTTP implements http.Handler.
@@ -92,7 +101,8 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	outBody := ensureToolRequired(clampEffort(hoistSystemMessages(orderPreservingRewrite(body, targetModel))))
 
-	resp, err := t.doWith401Retry(r.Context(), outBody)
+	sessionID := r.Header.Get("X-Claude-Code-Session-Id")
+	resp, err := t.doWith401Retry(r.Context(), outBody, targetModel, sessionID, bodyStreams(outBody))
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream: "+err.Error())
 		return
@@ -101,6 +111,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode >= 400 {
 		errBody, _ := io.ReadAll(resp.Body)
+		errBody = decodeBody(resp.Header, errBody)
 		if shouldDieFast(errBody, targetModel) {
 			t.opts.OnSessionDie(fmt.Sprintf("grok returned model_not_found for %q", targetModel))
 		}
@@ -146,9 +157,10 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// doWith401Retry POSTs body to UpstreamURL/v1/messages. On a 401 response
-// it calls BearerSrc.Fresh() and retries once with the rotated token.
-func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Response, error) {
+// doWith401Retry POSTs body to UpstreamURL/v1/messages with grok-shell's
+// identity headers. On a 401 it calls BearerSrc.Fresh() and retries once with
+// the rotated token (and fresh per-request identity headers).
+func (t *Terminal) doWith401Retry(ctx context.Context, body []byte, model, sessionID string, stream bool) (*http.Response, error) {
 	build := func() (*http.Request, error) {
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.opts.UpstreamURL+"/v1/messages", bytes.NewReader(body))
 		if err != nil {
@@ -159,9 +171,7 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 			return nil, terr
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("User-Agent", userAgent)
+		applyGrokIdentity(req, model, sessionID, t.nextTurn(sessionID), stream)
 		return req, nil
 	}
 
@@ -184,6 +194,77 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte) (*http.Respo
 		return nil, err
 	}
 	return t.opts.Transport.Do(req2)
+}
+
+// nextTurn returns a monotonic per-session request counter (1-based), used for
+// x-grok-turn-idx. Sessions accumulate for the process lifetime; the map is
+// tiny (one int per Claude Code session) so no eviction is needed.
+func (t *Terminal) nextTurn(sessionID string) int {
+	t.turnMu.Lock()
+	defer t.turnMu.Unlock()
+	t.turns[sessionID]++
+	return t.turns[sessionID]
+}
+
+// bodyStreams reports whether the request asks for a streamed response
+// (Anthropic "stream" flag; defaults to true when absent/unparseable so the
+// Accept header matches Claude Code's usual streaming requests).
+func bodyStreams(body []byte) bool {
+	var probe struct {
+		Stream *bool `json:"stream"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return true
+	}
+	return probe.Stream == nil || *probe.Stream
+}
+
+// decodeBody returns raw decompressed per the response's Content-Encoding.
+// ccm sends grok-shell's authentic Accept-Encoding ("gzip, br, deflate") to
+// present as the real client, which disables Go's transparent response
+// decompression — so on the error path, where ccm inspects the body
+// (die-fast, context-overflow detection), it must inflate the body itself.
+// The 2xx relay path is a faithful header+body passthrough and needs no
+// decoding (it forwards Content-Encoding alongside the raw bytes and the end
+// client decompresses). Unknown/empty encodings and any inflate error fall
+// back to raw — best-effort, never worse than forwarding the bytes as-is.
+func decodeBody(h http.Header, raw []byte) []byte {
+	switch strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding"))) {
+	case "", "identity":
+		return raw
+	case "gzip":
+		zr, err := gzip.NewReader(bytes.NewReader(raw))
+		if err != nil {
+			return raw
+		}
+		defer zr.Close()
+		if out, err := io.ReadAll(zr); err == nil {
+			return out
+		}
+		return raw
+	case "br":
+		if out, err := io.ReadAll(brotli.NewReader(bytes.NewReader(raw))); err == nil {
+			return out
+		}
+		return raw
+	case "deflate":
+		// HTTP "deflate" is nominally zlib-wrapped (RFC 1950); some servers
+		// send raw DEFLATE (RFC 1951). Try zlib first, fall back to raw flate.
+		if zr, err := zlib.NewReader(bytes.NewReader(raw)); err == nil {
+			defer zr.Close()
+			if out, err := io.ReadAll(zr); err == nil {
+				return out
+			}
+		}
+		fr := flate.NewReader(bytes.NewReader(raw))
+		defer fr.Close()
+		if out, err := io.ReadAll(fr); err == nil {
+			return out
+		}
+		return raw
+	default:
+		return raw
+	}
 }
 
 // orderPreservingRewrite does a best-effort textual rewrite of the body's
