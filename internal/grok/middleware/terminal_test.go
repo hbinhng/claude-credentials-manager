@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -43,6 +44,90 @@ func withAlias(t *testing.T, aliasRule string, term *Terminal, req *http.Request
 	}
 	ar := sharemw.NewAliasRewrite(m)
 	ar.Apply(term).ServeHTTP(rr, req)
+}
+
+// ── TestTerminal_SendsGrokShellIdentity ──────────────────────────────────────
+
+func TestTerminal_SendsGrokShellIdentity(t *testing.T) {
+	var gotPath, gotUA, gotIdent, gotTokenAuth, gotModelOverride, gotAuth, gotConv string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotUA = r.Header.Get("User-Agent")
+		gotIdent = r.Header.Get("x-grok-client-identifier")
+		gotTokenAuth = r.Header.Get("x-xai-token-auth")
+		gotModelOverride = r.Header.Get("x-grok-model-override")
+		gotAuth = r.Header.Get("Authorization")
+		gotConv = r.Header.Get("x-grok-conv-id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message"}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "tok"}})
+	body := `{"model":"claude-sonnet","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("X-Claude-Code-Session-Id", "sess-xyz")
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-sonnet=grok-4.5", term, req, rr)
+
+	if gotPath != "/v1/messages" {
+		t.Errorf("path = %q, want /v1/messages", gotPath)
+	}
+	if !strings.HasPrefix(gotUA, "grok-shell/") {
+		t.Errorf("User-Agent = %q, want grok-shell/ prefix (not the old fake UA)", gotUA)
+	}
+	if gotIdent != "grok-shell" || gotTokenAuth != "xai-grok-cli" {
+		t.Errorf("identity headers wrong: ident=%q tokenAuth=%q", gotIdent, gotTokenAuth)
+	}
+	if gotModelOverride != "grok-4.5" {
+		t.Errorf("x-grok-model-override = %q, want grok-4.5", gotModelOverride)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want Bearer tok", gotAuth)
+	}
+	if gotConv != "sess-xyz" {
+		t.Errorf("x-grok-conv-id = %q, want the session id", gotConv)
+	}
+}
+
+func TestTerminal_TurnIdxIncrementsPerSession(t *testing.T) {
+	var mu sync.Mutex
+	var turns []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		turns = append(turns, r.Header.Get("x-grok-turn-idx"))
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+		req.Header.Set("X-Claude-Code-Session-Id", "s")
+		withAlias(t, "", term, req, httptest.NewRecorder())
+	}
+	if len(turns) != 2 || turns[0] != "1" || turns[1] != "2" {
+		t.Fatalf("turn-idx per session should be 1 then 2, got %v", turns)
+	}
+}
+
+func TestBodyStreams_MalformedJSON_DefaultsTrue(t *testing.T) {
+	if !bodyStreams([]byte(`not json`)) {
+		t.Error("malformed body should default to streaming (true)")
+	}
+}
+
+func TestBodyStreams_AbsentDefaultsTrue(t *testing.T) {
+	if !bodyStreams([]byte(`{"model":"x"}`)) {
+		t.Error("absent stream field should default to true")
+	}
+}
+
+func TestBodyStreams_FalseHonored(t *testing.T) {
+	if bodyStreams([]byte(`{"model":"x","stream":false}`)) {
+		t.Error("stream:false should be honored")
+	}
 }
 
 // ── TestTerminal_RewritesModelOnMatch ────────────────────────────────────────
@@ -474,8 +559,8 @@ func TestNewTerminal_Defaults(t *testing.T) {
 	if term == nil {
 		t.Fatal("NewTerminal returned nil")
 	}
-	if term.opts.UpstreamURL != "https://api.x.ai" {
-		t.Errorf("UpstreamURL = %q, want https://api.x.ai", term.opts.UpstreamURL)
+	if term.opts.UpstreamURL != "https://cli-chat-proxy.grok.com" {
+		t.Errorf("UpstreamURL = %q, want https://cli-chat-proxy.grok.com", term.opts.UpstreamURL)
 	}
 	if term.opts.DefaultModel != "grok-composer-2.5-fast" {
 		t.Errorf("DefaultModel = %q, want grok-composer-2.5-fast", term.opts.DefaultModel)
