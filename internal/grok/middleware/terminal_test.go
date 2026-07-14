@@ -2,14 +2,20 @@ package middleware
 
 import (
 	"bytes"
+	"compress/flate"
+	"compress/gzip"
+	"compress/zlib"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/andybalholm/brotli"
 
 	"github.com/hbinhng/claude-credentials-manager/internal/share/alias"
 	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
@@ -43,6 +49,90 @@ func withAlias(t *testing.T, aliasRule string, term *Terminal, req *http.Request
 	}
 	ar := sharemw.NewAliasRewrite(m)
 	ar.Apply(term).ServeHTTP(rr, req)
+}
+
+// ── TestTerminal_SendsGrokShellIdentity ──────────────────────────────────────
+
+func TestTerminal_SendsGrokShellIdentity(t *testing.T) {
+	var gotPath, gotUA, gotIdent, gotTokenAuth, gotModelOverride, gotAuth, gotConv string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotUA = r.Header.Get("User-Agent")
+		gotIdent = r.Header.Get("x-grok-client-identifier")
+		gotTokenAuth = r.Header.Get("x-xai-token-auth")
+		gotModelOverride = r.Header.Get("x-grok-model-override")
+		gotAuth = r.Header.Get("Authorization")
+		gotConv = r.Header.Get("x-grok-conv-id")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"type":"message"}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "tok"}})
+	body := `{"model":"claude-sonnet","messages":[{"role":"user","content":"hi"}]}`
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(body))
+	req.Header.Set("X-Claude-Code-Session-Id", "sess-xyz")
+	rr := httptest.NewRecorder()
+	withAlias(t, "claude-sonnet=grok-4.5", term, req, rr)
+
+	if gotPath != "/v1/messages" {
+		t.Errorf("path = %q, want /v1/messages", gotPath)
+	}
+	if !strings.HasPrefix(gotUA, "grok-shell/") {
+		t.Errorf("User-Agent = %q, want grok-shell/ prefix (not the old fake UA)", gotUA)
+	}
+	if gotIdent != "grok-shell" || gotTokenAuth != "xai-grok-cli" {
+		t.Errorf("identity headers wrong: ident=%q tokenAuth=%q", gotIdent, gotTokenAuth)
+	}
+	if gotModelOverride != "grok-4.5" {
+		t.Errorf("x-grok-model-override = %q, want grok-4.5", gotModelOverride)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("Authorization = %q, want Bearer tok", gotAuth)
+	}
+	if gotConv != "sess-xyz" {
+		t.Errorf("x-grok-conv-id = %q, want the session id", gotConv)
+	}
+}
+
+func TestTerminal_TurnIdxIncrementsPerSession(t *testing.T) {
+	var mu sync.Mutex
+	var turns []string
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		turns = append(turns, r.Header.Get("x-grok-turn-idx"))
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+		req.Header.Set("X-Claude-Code-Session-Id", "s")
+		withAlias(t, "", term, req, httptest.NewRecorder())
+	}
+	if len(turns) != 2 || turns[0] != "1" || turns[1] != "2" {
+		t.Fatalf("turn-idx per session should be 1 then 2, got %v", turns)
+	}
+}
+
+func TestBodyStreams_MalformedJSON_DefaultsTrue(t *testing.T) {
+	if !bodyStreams([]byte(`not json`)) {
+		t.Error("malformed body should default to streaming (true)")
+	}
+}
+
+func TestBodyStreams_AbsentDefaultsTrue(t *testing.T) {
+	if !bodyStreams([]byte(`{"model":"x"}`)) {
+		t.Error("absent stream field should default to true")
+	}
+}
+
+func TestBodyStreams_FalseHonored(t *testing.T) {
+	if bodyStreams([]byte(`{"model":"x","stream":false}`)) {
+		t.Error("stream:false should be honored")
+	}
 }
 
 // ── TestTerminal_RewritesModelOnMatch ────────────────────────────────────────
@@ -474,8 +564,8 @@ func TestNewTerminal_Defaults(t *testing.T) {
 	if term == nil {
 		t.Fatal("NewTerminal returned nil")
 	}
-	if term.opts.UpstreamURL != "https://api.x.ai" {
-		t.Errorf("UpstreamURL = %q, want https://api.x.ai", term.opts.UpstreamURL)
+	if term.opts.UpstreamURL != "https://cli-chat-proxy.grok.com" {
+		t.Errorf("UpstreamURL = %q, want https://cli-chat-proxy.grok.com", term.opts.UpstreamURL)
 	}
 	if term.opts.DefaultModel != "grok-composer-2.5-fast" {
 		t.Errorf("DefaultModel = %q, want grok-composer-2.5-fast", term.opts.DefaultModel)
@@ -915,5 +1005,243 @@ func TestClampEffort_XhighElsewhere_ConfigNotXhigh_Unchanged(t *testing.T) {
 	body := []byte(`{"output_config":{"effort":"high"},"marker":"xhigh"}`)
 	if out := clampEffort(body); !bytes.Equal(out, body) {
 		t.Errorf("must not mutate when output_config.effort is not xhigh, got %s", out)
+	}
+}
+
+// ── decodeBody: undo grok-shell's Accept-Encoding on error-path bodies ───────
+//
+// ccm sends grok-shell's authentic "Accept-Encoding: gzip, br, deflate", which
+// disables Go's transparent response decompression. The error path inspects
+// the body (shouldDieFast, detectContextOverflow), so it must inflate it
+// itself; decodeBody is that inflate step.
+
+func gzipBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	if _, err := zw.Write([]byte(s)); err != nil {
+		t.Fatalf("gzip write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("gzip close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func brotliBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	bw := brotli.NewWriter(&buf)
+	if _, err := bw.Write([]byte(s)); err != nil {
+		t.Fatalf("brotli write: %v", err)
+	}
+	if err := bw.Close(); err != nil {
+		t.Fatalf("brotli close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func zlibBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	if _, err := zw.Write([]byte(s)); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// rawDeflateBytes builds a raw RFC 1951 DEFLATE stream (no zlib wrapper) —
+// what some servers send for "Content-Encoding: deflate" despite the HTTP
+// spec nominally meaning zlib-wrapped.
+func rawDeflateBytes(t *testing.T, s string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	fw, err := flate.NewWriter(&buf, flate.DefaultCompression)
+	if err != nil {
+		t.Fatalf("flate.NewWriter: %v", err)
+	}
+	if _, err := fw.Write([]byte(s)); err != nil {
+		t.Fatalf("flate write: %v", err)
+	}
+	if err := fw.Close(); err != nil {
+		t.Fatalf("flate close: %v", err)
+	}
+	return buf.Bytes()
+}
+
+func TestDecodeBody(t *testing.T) {
+	const want = `{"ok":1}`
+
+	header := func(encoding string) http.Header {
+		h := http.Header{}
+		if encoding != "" {
+			h.Set("Content-Encoding", encoding)
+		}
+		return h
+	}
+
+	t.Run("gzip", func(t *testing.T) {
+		got := decodeBody(header("gzip"), gzipBytes(t, want))
+		if string(got) != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("br", func(t *testing.T) {
+		got := decodeBody(header("br"), brotliBytes(t, want))
+		if string(got) != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("deflate", func(t *testing.T) {
+		got := decodeBody(header("deflate"), zlibBytes(t, want))
+		if string(got) != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("empty_passthrough", func(t *testing.T) {
+		raw := []byte(want)
+		got := decodeBody(header(""), raw)
+		if !bytes.Equal(got, raw) {
+			t.Errorf("got %q, want raw passthrough %q", got, raw)
+		}
+	})
+
+	t.Run("identity_passthrough", func(t *testing.T) {
+		raw := []byte(want)
+		got := decodeBody(header("identity"), raw)
+		if !bytes.Equal(got, raw) {
+			t.Errorf("got %q, want raw passthrough %q", got, raw)
+		}
+	})
+
+	t.Run("unknown_encoding_passthrough", func(t *testing.T) {
+		raw := []byte(want)
+		got := decodeBody(header("weird"), raw)
+		if !bytes.Equal(got, raw) {
+			t.Errorf("got %q, want raw passthrough %q", got, raw)
+		}
+	})
+
+	t.Run("gzip_header_garbage_body_passthrough", func(t *testing.T) {
+		raw := []byte("not actually gzip")
+		got := decodeBody(header("gzip"), raw)
+		if !bytes.Equal(got, raw) {
+			t.Errorf("got %q, want raw passthrough %q", got, raw)
+		}
+	})
+
+	t.Run("gzip_valid_header_truncated_body_passthrough", func(t *testing.T) {
+		// A valid gzip header (so gzip.NewReader succeeds) truncated before
+		// the stream's end, so gzip.NewReader succeeds but io.ReadAll fails
+		// (unexpected EOF) — exercises the post-header inflate-error branch.
+		full := gzipBytes(t, want)
+		truncated := full[:len(full)-4]
+		got := decodeBody(header("gzip"), truncated)
+		if !bytes.Equal(got, truncated) {
+			t.Errorf("got %q, want raw passthrough %q", got, truncated)
+		}
+	})
+
+	t.Run("br_garbage_body_passthrough", func(t *testing.T) {
+		// brotli.NewReader never errors on construction (lazy decode); the
+		// failure surfaces from io.ReadAll on invalid stream bytes.
+		raw := []byte("not actually brotli, just plain garbage bytes")
+		got := decodeBody(header("br"), raw)
+		if !bytes.Equal(got, raw) {
+			t.Errorf("got %q, want raw passthrough %q", got, raw)
+		}
+	})
+
+	t.Run("deflate_raw_rfc1951_fallback", func(t *testing.T) {
+		// Some servers send raw DEFLATE (no zlib wrapper) for
+		// "Content-Encoding: deflate" — zlib.NewReader rejects the missing
+		// header, so decodeBody must fall back to the raw flate reader.
+		got := decodeBody(header("deflate"), rawDeflateBytes(t, want))
+		if string(got) != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("deflate_garbage_body_passthrough", func(t *testing.T) {
+		// Neither zlib nor raw flate can decode this — both fallbacks are
+		// exhausted and decodeBody returns the raw bytes.
+		raw := []byte("not zlib and not raw deflate either")
+		got := decodeBody(header("deflate"), raw)
+		if !bytes.Equal(got, raw) {
+			t.Errorf("got %q, want raw passthrough %q", got, raw)
+		}
+	})
+}
+
+// ── error-path bodies arrive compressed (grok-shell Accept-Encoding) ─────────
+
+func TestTerminal_GzipErrorBody_DieFast(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(gzipBytes(t, `{"error":{"code":"model_not_found","message":"nope"}}`))
+	}))
+	defer up.Close()
+
+	var died atomic.Value
+	term := NewTerminal(TerminalOpts{
+		UpstreamURL:  up.URL,
+		BearerSrc:    fakeBearer{tok: "t"},
+		OnSessionDie: func(reason string) { died.Store(reason) },
+	})
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+	req.Header.Set("X-Claude-Code-Session-Id", "sess-1")
+	rr := httptest.NewRecorder()
+
+	withAlias(t, "x=grok-4.5", term, req, rr)
+
+	got := died.Load()
+	if got == nil {
+		t.Fatal("OnSessionDie not called — die-fast must survive a gzip-compressed error body")
+	}
+	if !strings.Contains(got.(string), "grok-4.5") {
+		t.Errorf("die reason = %v, want to mention target model", got)
+	}
+	if rr.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", rr.Code)
+	}
+}
+
+func TestTerminal_GzipErrorBody_OverflowTranslated(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Encoding", "gzip")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write(gzipBytes(t, `{"error":{"message":"This model's maximum context length is 500000 tokens, however you requested 620000 tokens"}}`))
+	}))
+	defer up.Close()
+
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+	req.Header.Set("X-Claude-Code-Session-Id", "sess-1")
+	rr := httptest.NewRecorder()
+
+	withAlias(t, "", term, req, rr)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+	var out struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rr.Body.Bytes(), &out); err != nil {
+		t.Fatalf("body not JSON: %v", err)
+	}
+	if !strings.Contains(out.Error.Message, "prompt is too long") {
+		t.Errorf("message = %q, want it to contain 'prompt is too long' (reactive-compaction trigger survives a gzip-compressed error body)", out.Error.Message)
 	}
 }
