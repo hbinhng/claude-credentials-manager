@@ -35,6 +35,19 @@ func grokClientVersion() string {
 	return grokVersionVal
 }
 
+// ApplyGrokConstantIdentity sets grok-shell's constant identity headers (UA +
+// client identity). Shared by the message terminal (applyGrokIdentity) and the
+// quota poller in the grok oauth package, so both present the same client on
+// the wire. Does NOT set Authorization — the caller owns the bearer.
+func ApplyGrokConstantIdentity(req *http.Request) {
+	ver := grokClientVersion()
+	req.Header.Set("User-Agent", fmt.Sprintf("grok-shell/%s (%s; %s)", ver, grokUAOS(), grokUAArch()))
+	req.Header.Set("x-xai-token-auth", "xai-grok-cli")
+	req.Header.Set("x-grok-client-identifier", "grok-shell")
+	req.Header.Set("x-grok-client-version", ver)
+	req.Header.Set("x-grok-client-mode", "headless")
+}
+
 // readGrokVersion reads $HOME/.grok/version.json (grok-shell's own dir, never
 // redirected by CCM_HOME) and returns its version, falling back to
 // defaultGrokClientVersion on any error.
@@ -69,12 +82,7 @@ func readGrokVersion() string {
 // sessionID is the inbound X-Claude-Code-Session-Id ("" when absent); turnIdx
 // is a per-session monotonic counter; stream selects the Accept type.
 func applyGrokIdentity(req *http.Request, model, sessionID string, turnIdx int, stream bool) {
-	ver := grokClientVersion()
-	req.Header.Set("User-Agent", fmt.Sprintf("grok-shell/%s (%s; %s)", ver, grokUAOS(), grokUAArch()))
-	req.Header.Set("x-xai-token-auth", "xai-grok-cli")
-	req.Header.Set("x-grok-client-identifier", "grok-shell")
-	req.Header.Set("x-grok-client-version", ver)
-	req.Header.Set("x-grok-client-mode", "headless")
+	ApplyGrokConstantIdentity(req)
 	req.Header.Set("x-authenticateresponse", "authenticate-response")
 	req.Header.Set("x-compaction-at", "400000")
 	req.Header.Set("Content-Type", "application/json")
