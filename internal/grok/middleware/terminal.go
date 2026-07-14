@@ -36,6 +36,16 @@ const (
 	defaultModel    = "grok-composer-2.5-fast"
 )
 
+// ctxCompactThreshold is the fraction of grok's context window at which ccm
+// proactively returns "prompt is too long" to force Claude Code compaction
+// BEFORE the window is exhausted. The headroom (~8% of ~500k ≈ 40k tokens)
+// lets the compaction request itself still fit under grok's hard limit — the
+// reactive translation alone fires only once the window is already blown, when
+// compaction can no longer fit and the session wedges. Grok reports the window
+// via the x-grok-context-window response header and the prompt size via the
+// response usage, so this is driven by grok's own counts, not an estimate.
+const ctxCompactThreshold = 0.92
+
 // TerminalOpts configures the grok terminal handler.
 type TerminalOpts struct {
 	// Transport is anything that can execute HTTP requests. Defaults to
@@ -63,6 +73,16 @@ type Terminal struct {
 	opts   TerminalOpts
 	turnMu sync.Mutex
 	turns  map[string]int
+	ctxMu  sync.Mutex
+	ctx    map[string]ctxState
+}
+
+// ctxState is the last observed prompt size and context window for a session,
+// captured from grok's response usage + x-grok-context-window header and used
+// by the proactive-compaction gate on the next request.
+type ctxState struct {
+	promptTokens int
+	window       int
 }
 
 // NewTerminal constructs a Terminal, filling in defaults for UpstreamURL,
@@ -80,7 +100,7 @@ func NewTerminal(opts TerminalOpts) *Terminal {
 	if opts.Transport == nil {
 		opts.Transport = trace.WrapDoer(&http.Client{})
 	}
-	return &Terminal{opts: opts, turns: map[string]int{}}
+	return &Terminal{opts: opts, turns: map[string]int{}, ctx: map[string]ctxState{}}
 }
 
 // ServeHTTP implements http.Handler.
@@ -102,6 +122,20 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	outBody := ensureToolRequired(clampEffort(hoistSystemMessages(orderPreservingRewrite(body, targetModel))))
 
 	sessionID := r.Header.Get("X-Claude-Code-Session-Id")
+
+	// Proactive compaction: if the previous turn on this session used >= 92%
+	// of grok's context window, force compaction now — before the window is
+	// blown — by returning the Anthropic "prompt is too long" 400, and clear
+	// the tracked count so the smaller post-compaction retry forwards (this
+	// clear is what breaks the reject/retry loop). Grok's real 400 stays the
+	// backstop for the first turn of a session and any under-shrink.
+	if used, window, over := t.overCtx(sessionID); over {
+		t.clearCtx(sessionID)
+		writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error",
+			fmt.Sprintf("prompt is too long: %d tokens > %d maximum", used, window))
+		return
+	}
+
 	resp, err := t.doWith401Retry(r.Context(), outBody, targetModel, sessionID, bodyStreams(outBody))
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream: "+err.Error())
@@ -142,6 +176,11 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if flusher != nil {
 		flusher.Flush()
 	}
+	// Tee the head of the response so we can read grok's reported prompt-token
+	// usage (message_start event for SSE, or the JSON body) for the next-turn
+	// proactive-compaction gate. Capped — the usage lands in the first event.
+	var head bytes.Buffer
+	const headCap = 16 << 10
 	buf := make([]byte, 32*1024)
 	for {
 		n, rerr := resp.Body.Read(buf)
@@ -150,8 +189,19 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if flusher != nil {
 				flusher.Flush()
 			}
+			if head.Len() < headCap {
+				if grow := headCap - head.Len(); n <= grow {
+					head.Write(buf[:n])
+				} else {
+					head.Write(buf[:grow])
+				}
+			}
 		}
 		if rerr != nil {
+			if pt, ok := extractPromptTokens(head.Bytes()); ok {
+				window, _ := strconv.Atoi(resp.Header.Get("x-grok-context-window"))
+				t.recordCtx(sessionID, pt, window)
+			}
 			break
 		}
 	}
@@ -204,6 +254,78 @@ func (t *Terminal) nextTurn(sessionID string) int {
 	defer t.turnMu.Unlock()
 	t.turns[sessionID]++
 	return t.turns[sessionID]
+}
+
+// overCtx reports whether the last observed prompt size for a session reached
+// the proactive-compaction threshold, returning the tracked prompt size and
+// window for the error message.
+func (t *Terminal) overCtx(sessionID string) (used, window int, over bool) {
+	if sessionID == "" {
+		return 0, 0, false
+	}
+	t.ctxMu.Lock()
+	defer t.ctxMu.Unlock()
+	s := t.ctx[sessionID]
+	if s.window > 0 && float64(s.promptTokens) >= ctxCompactThreshold*float64(s.window) {
+		return s.promptTokens, s.window, true
+	}
+	return 0, 0, false
+}
+
+// clearCtx forgets a session's tracked usage so the next request forwards
+// unconditionally — called right after a proactive trip so the smaller
+// post-compaction retry isn't rejected in a loop.
+func (t *Terminal) clearCtx(sessionID string) {
+	t.ctxMu.Lock()
+	defer t.ctxMu.Unlock()
+	delete(t.ctx, sessionID)
+}
+
+// recordCtx stores grok's reported prompt size + window for a session. No-op
+// on missing session id / window / usage (nothing to gate on).
+func (t *Terminal) recordCtx(sessionID string, promptTokens, window int) {
+	if sessionID == "" || window <= 0 || promptTokens <= 0 {
+		return
+	}
+	t.ctxMu.Lock()
+	defer t.ctxMu.Unlock()
+	t.ctx[sessionID] = ctxState{promptTokens: promptTokens, window: window}
+}
+
+// extractPromptTokens finds grok's reported input-side prompt size in a
+// response head: the first "usage" object carrying input_tokens (Anthropic's
+// message_start event for a streamed response, or the top-level usage of a
+// non-streamed JSON body). Returns input_tokens + cache_read + cache_creation
+// — the full prompt the model actually saw. The usage object is flat, so the
+// first "}" closes it.
+func extractPromptTokens(b []byte) (int, bool) {
+	needle := []byte(`"usage"`)
+	for i := bytes.Index(b, needle); i >= 0; {
+		rest := b[i+len(needle):]
+		open := bytes.IndexByte(rest, '{')
+		if open < 0 {
+			return 0, false
+		}
+		end := bytes.IndexByte(rest[open:], '}')
+		if end < 0 {
+			return 0, false
+		}
+		var u struct {
+			InputTokens   *int `json:"input_tokens"`
+			CacheRead     int  `json:"cache_read_input_tokens"`
+			CacheCreation int  `json:"cache_creation_input_tokens"`
+		}
+		if json.Unmarshal(rest[open:open+end+1], &u) == nil && u.InputTokens != nil {
+			return *u.InputTokens + u.CacheRead + u.CacheCreation, true
+		}
+		adv := i + len(needle) + open + end + 1
+		next := bytes.Index(b[adv:], needle)
+		if next < 0 {
+			return 0, false
+		}
+		i = adv + next
+	}
+	return 0, false
 }
 
 // bodyStreams reports whether the request asks for a streamed response

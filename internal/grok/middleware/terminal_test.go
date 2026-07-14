@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -780,6 +781,121 @@ func TestDetectContextOverflow(t *testing.T) {
 				t.Errorf("tokens = %d/%d, want %d/%d", in, max, c.in, c.max)
 			}
 		})
+	}
+}
+
+func TestExtractPromptTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want int
+		ok   bool
+	}{
+		{"sse-message-start", "event: message_start\ndata: {\"message\":{\"usage\":{\"input_tokens\":470000,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}}\n\n", 470000, true},
+		{"with-cache", `{"usage":{"input_tokens":100,"cache_read_input_tokens":50,"cache_creation_input_tokens":20,"output_tokens":9}}`, 170, true},
+		{"json-body", `{"type":"message","usage":{"input_tokens":207,"cache_read_input_tokens":128,"output_tokens":47}}`, 335, true},
+		{"delta-then-start", `data: {"usage":{"output_tokens":5}}` + "\n" + `data: {"message":{"usage":{"input_tokens":300}}}`, 300, true},
+		{"no-usage", `{"type":"message","content":"hi"}`, 0, false},
+		{"usage-no-input", `{"usage":{"output_tokens":5}}`, 0, false},
+		{"truncated-no-brace", `blah "usage"`, 0, false},
+		{"truncated-no-close", `{"usage":{"input_tokens":5`, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := extractPromptTokens([]byte(c.body))
+			if ok != c.ok || (ok && got != c.want) {
+				t.Errorf("extractPromptTokens = %d,%v want %d,%v", got, ok, c.want, c.ok)
+			}
+		})
+	}
+}
+
+// grokUsageSSE is a minimal streamed response whose message_start reports the
+// given input-side prompt size, with grok's context-window header.
+func grokUsageSSE(w http.ResponseWriter, inputTokens int) {
+	w.Header().Set("x-grok-context-window", "500000")
+	w.Header().Set("Content-Type", "text/event-stream")
+	_, _ = w.Write([]byte(`event: message_start
+data: {"type":"message_start","message":{"usage":{"input_tokens":` + strconv.Itoa(inputTokens) + `,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,"output_tokens":1}}}
+
+event: message_stop
+data: {}
+
+`))
+}
+
+func TestTerminal_ProactiveCompactAtThresholdThenClears(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		grokUsageSSE(w, 470000) // 470k / 500k = 94% >= 92% threshold
+	}))
+	defer up.Close()
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+
+	send := func() *httptest.ResponseRecorder {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x","messages":[]}`))
+		req.Header.Set("X-Claude-Code-Session-Id", "s1")
+		rr := httptest.NewRecorder()
+		withAlias(t, "", term, req, rr)
+		return rr
+	}
+	callCount := func() int { mu.Lock(); defer mu.Unlock(); return calls }
+
+	// Turn 1: forwarded; grok reports 94% -> recorded.
+	send()
+	if callCount() != 1 {
+		t.Fatalf("turn 1 should forward; calls = %d", callCount())
+	}
+	// Turn 2: proactive -> 'prompt is too long' 400, NOT forwarded.
+	rr2 := send()
+	if rr2.Code != http.StatusBadRequest || !strings.Contains(rr2.Body.String(), "prompt is too long") {
+		t.Fatalf("turn 2 want proactive 400 'prompt is too long', got %d: %s", rr2.Code, rr2.Body.String())
+	}
+	if callCount() != 1 {
+		t.Fatalf("turn 2 must not reach upstream; calls = %d, want 1", callCount())
+	}
+	// Turn 3: the clear-after-trigger means ctx is forgotten -> forwarded again
+	// (the loop is broken; a real compacted retry would be smaller and pass).
+	send()
+	if callCount() != 2 {
+		t.Fatalf("turn 3 should forward after clear (no loop); calls = %d, want 2", callCount())
+	}
+}
+
+func TestRecordCtx_NoOpOnMissingData(t *testing.T) {
+	term := NewTerminal(TerminalOpts{UpstreamURL: "http://x", BearerSrc: fakeBearer{tok: "t"}})
+	term.recordCtx("", 100, 500000)  // empty session id
+	term.recordCtx("s", 100, 0)      // no window (header absent)
+	term.recordCtx("s", 0, 500000)   // no usage
+	if _, _, over := term.overCtx("s"); over {
+		t.Error("no-op records must not set gating state")
+	}
+}
+
+func TestTerminal_UnderThresholdAlwaysForwards(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		grokUsageSSE(w, 100000) // 20% -> never trips
+	}))
+	defer up.Close()
+	term := NewTerminal(TerminalOpts{UpstreamURL: up.URL, BearerSrc: fakeBearer{tok: "t"}})
+	for range 3 {
+		req := httptest.NewRequest("POST", "/v1/messages", strings.NewReader(`{"model":"x"}`))
+		req.Header.Set("X-Claude-Code-Session-Id", "s2")
+		withAlias(t, "", term, req, httptest.NewRecorder())
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 3 {
+		t.Fatalf("under threshold all 3 should forward; calls = %d", calls)
 	}
 }
 
