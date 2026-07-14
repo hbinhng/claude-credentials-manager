@@ -761,6 +761,10 @@ func TestDetectContextOverflow(t *testing.T) {
 	}{
 		{"openai-nested", `{"error":{"code":"context_length_exceeded","message":"This model's maximum context length is 131072 tokens. However, your messages resulted in 200000 tokens."}}`, true, 200000, 131072},
 		{"xai-flat", `{"code":"context_length_exceeded","error":"maximum context length is 256000 tokens, but the request has 300000 tokens"}`, true, 300000, 256000},
+		// The real grok-4.5 overflow shape (cli-chat-proxy, 2026-07-14). Uses
+		// "maximum prompt length", which the original marker set missed → the
+		// raw 400 leaked to Claude Code instead of triggering auto-compaction.
+		{"grok-prompt-length", `{"code":"invalid-argument","error":"This model's maximum prompt length is 500000 but the request contains 500317 tokens."}`, true, 500317, 500000},
 		{"generic-too-long", `{"code":"invalid_request_error","error":"prompt is too long"}`, true, 0, 0},
 		{"not-overflow-required", `{"code":"invalid-argument","error":"Invalid request content: Schema validation failed: /required: null is not of type array"}`, false, 0, 0},
 		{"not-overflow-modelnf", `{"error":{"code":"model_not_found","message":"unknown model"}}`, false, 0, 0},
