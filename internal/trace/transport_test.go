@@ -230,12 +230,22 @@ func TestWrapDoer_EnabledTeesRoundTrip(t *testing.T) {
 	lines := parseJSONLinesT(t, out)
 	var sawReq bool
 	var sawEvent bool
+	var sawResp bool
 	for _, l := range lines {
 		switch l["dir"] {
 		case "upstream.req":
 			sawReq = true
 			if l["body"] != `{"a":1}` {
 				t.Errorf("upstream.req body wrong: %v", l["body"])
+			}
+		case "upstream.resp":
+			sawResp = true
+			if status, _ := l["status"].(float64); status != 200 {
+				t.Errorf("upstream.resp status = %v, want 200", l["status"])
+			}
+			hdrs, _ := l["headers"].(map[string]any)
+			if hdrs["Content-Type"] != "text/event-stream" {
+				t.Errorf("upstream.resp headers missing Content-Type: %v", hdrs)
 			}
 		case "upstream.resp.event":
 			if l["event"] == "ping" {
@@ -245,6 +255,9 @@ func TestWrapDoer_EnabledTeesRoundTrip(t *testing.T) {
 	}
 	if !sawReq {
 		t.Errorf("upstream.req not emitted via WrapDoer")
+	}
+	if !sawResp {
+		t.Errorf("upstream.resp (status+headers) not emitted via WrapDoer")
 	}
 	if !sawEvent {
 		t.Errorf("upstream SSE event not emitted via WrapDoer")

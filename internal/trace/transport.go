@@ -97,6 +97,10 @@ func (t *traceTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return nil, err
 	}
 
+	// Emit the response status + headers (upstream rate-limit / quota
+	// headers land here) before wrapping the body for the chunk tee.
+	EmitResponseHead(reqID, "upstream.resp", resp.StatusCode, resp.Header)
+
 	// Wrap the response body so we can tee bytes as the caller
 	// reads them.
 	resp.Body = newRespTeeReader(resp.Body, reqID, isSSEResp(resp))
