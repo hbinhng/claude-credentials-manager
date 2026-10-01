@@ -13,14 +13,15 @@
 //     load-balance variant to cover.
 //
 // Scenario coverage table:
-//  S1 — grok launch with alias                    → TestGrokLaunch_WithAlias
-//  S2 — grok share with alias                     → TestGrokShare_WithAlias
-//  S3 — grok default model (no alias)              → TestGrokShare_DefaultModel
-//  S4 — mid-session 401 refresh                    → TestGrokShare_MidSession401Refresh
-//  S5 — die-fast on unknown model                  → TestGrokShare_DieFastOnUnknownModel
-//  S6 — claude launch/share unaffected (regression) → TestClaudeLaunch_UnaffectedByGrokWiring,
-//                                                      TestClaudeShare_UnaffectedByGrokWiring
-//  S7 — unauthenticated inbound request rejected   → TestGrokShare_RejectsUnauthenticated (Task 15)
+//
+//	S1 — grok launch with alias                    → TestGrokLaunch_WithAlias
+//	S2 — grok share with alias                     → TestGrokShare_WithAlias
+//	S3 — grok default model (no alias)              → TestGrokShare_DefaultModel
+//	S4 — mid-session 401 refresh                    → TestGrokShare_MidSession401Refresh
+//	S5 — die-fast on unknown model                  → TestGrokShare_DieFastOnUnknownModel
+//	S6 — claude launch/share unaffected (regression) → TestClaudeLaunch_UnaffectedByGrokWiring,
+//	                                                    TestClaudeShare_UnaffectedByGrokWiring
+//	S7 — unauthenticated inbound request rejected   → TestGrokShare_RejectsUnauthenticated (Task 15)
 package cmd
 
 import (
@@ -108,6 +109,20 @@ func extractJSONField(t *testing.T, body []byte, field string) string {
 	return v
 }
 
+// writeGrokResponsesSSE answers like cli-chat-proxy's /v1/responses: a
+// minimal Responses stream carrying one text message.
+func writeGrokResponsesSSE(w http.ResponseWriter, text string) {
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	q, _ := json.Marshal(text)
+	_, _ = io.WriteString(w,
+		"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n"+
+			"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n"+
+			"data: {\"type\":\"response.output_text.delta\",\"delta\":"+string(q)+"}\n\n"+
+			"data: {\"type\":\"response.output_text.done\"}\n\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n")
+}
+
 // startSessionWithFakeGrokBackend starts a share.Session against the
 // given fake grok upstream. It installs the grok handlers seam plus the
 // same captureFn / cloudflared seams startSessionWithFakeCodexBackend
@@ -172,14 +187,14 @@ func TestGrokLaunch_WithAlias(t *testing.T) {
 	setupHomeWithCcm(t)
 	cred := newGrokCred(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaa01", "grok-launch-alias")
 
-	var gotModel, gotAuth, gotPath string
+	var gotModel, gotAuth, gotPath, gotAgent string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
+		gotAgent = r.Header.Get("x-grok-agent-id")
 		gotAuth = r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
 		gotModel = extractJSONField(t, b, "model")
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"hi from grok launch"}]}`))
+		writeGrokResponsesSSE(w, "hi from grok launch")
 	}))
 	defer upstream.Close()
 
@@ -222,8 +237,11 @@ func TestGrokLaunch_WithAlias(t *testing.T) {
 		t.Fatalf("runLaunchLocal: %v", err)
 	}
 
-	if gotPath != "/v1/messages" {
-		t.Errorf("upstream path = %q, want /v1/messages (grok terminal path)", gotPath)
+	if gotPath != "/v1/responses" {
+		t.Errorf("upstream path = %q, want /v1/responses (grok terminal path)", gotPath)
+	}
+	if gotAgent == "" {
+		t.Error("x-grok-agent-id missing — CredentialID not wired into the grok terminal (launch)")
 	}
 	if gotModel != "grok-4.5" {
 		t.Errorf("upstream model = %q, want grok-4.5", gotModel)
@@ -249,14 +267,13 @@ func TestGrokLaunch_WithAlias(t *testing.T) {
 func TestGrokShare_WithAlias(t *testing.T) {
 	setupHomeWithCcm(t)
 
-	var gotModel, gotAuth string
+	var gotModel, gotAuth, gotAgent string
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
+		gotAgent = r.Header.Get("x-grok-agent-id")
 		b, _ := io.ReadAll(r.Body)
 		gotModel = extractJSONField(t, b, "model")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"hi from grok share"}]}`))
+		writeGrokResponsesSSE(w, "hi from grok share")
 	}))
 	defer upstream.Close()
 
@@ -279,6 +296,9 @@ func TestGrokShare_WithAlias(t *testing.T) {
 	if gotAuth != "Bearer gk-access" {
 		t.Errorf("upstream Authorization = %q, want %q", gotAuth, "Bearer gk-access")
 	}
+	if gotAgent == "" {
+		t.Error("x-grok-agent-id missing — CredentialID not wired into the grok terminal (share)")
+	}
 
 	out, _ := io.ReadAll(resp.Body)
 	if !strings.Contains(string(out), "hi from grok share") {
@@ -290,7 +310,7 @@ func TestGrokShare_WithAlias(t *testing.T) {
 
 // TestGrokShare_DefaultModel verifies that with no alias rules
 // configured (or none matching), the grok Terminal falls back to its
-// DefaultModel constant, "grok-composer-2.5-fast", exactly.
+// DefaultModel constant, "grok-4.7", exactly.
 func TestGrokShare_DefaultModel(t *testing.T) {
 	setupHomeWithCcm(t)
 
@@ -298,9 +318,7 @@ func TestGrokShare_DefaultModel(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
 		gotModel = extractJSONField(t, b, "model")
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"default model reply"}]}`))
+		writeGrokResponsesSSE(w, "default model reply")
 	}))
 	defer upstream.Close()
 
@@ -317,8 +335,8 @@ func TestGrokShare_DefaultModel(t *testing.T) {
 		t.Fatalf("status = %d, want 200; body: %s", resp.StatusCode, body)
 	}
 
-	if gotModel != "grok-composer-2.5-fast" {
-		t.Errorf("upstream model = %q, want the grok default model %q", gotModel, "grok-composer-2.5-fast")
+	if gotModel != "grok-4.7" {
+		t.Errorf("upstream model = %q, want the grok default model %q", gotModel, "grok-4.7")
 	}
 }
 
@@ -344,9 +362,7 @@ func TestGrokShare_MidSession401Refresh(t *testing.T) {
 			io.WriteString(w, `{"error":{"type":"auth_error","message":"unauthorized"}}`)
 			return
 		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"post-refresh ok"}]}`))
+		writeGrokResponsesSSE(w, "post-refresh ok")
 	}))
 	defer upstream.Close()
 
@@ -566,9 +582,7 @@ func TestGrokShare_RejectsUnauthenticated(t *testing.T) {
 	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		upstreamHits.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"should never be seen"}]}`))
+		writeGrokResponsesSSE(w, "should never be seen")
 	}))
 	defer upstream.Close()
 

@@ -67,14 +67,24 @@ func TestStartSession_GrokBranchWiresProxyAndRoutesUpstream(t *testing.T) {
 	var (
 		gotAuth  string
 		gotModel string
+		gotAgent string
+		gotPath  string
 	)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth = r.Header.Get("Authorization")
 		b, _ := io.ReadAll(r.Body)
 		gotModel = string(b)
-		w.Header().Set("Content-Type", "application/json")
+		gotAgent = r.Header.Get("x-grok-agent-id")
+		gotPath = r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"type":"message","role":"assistant","content":[{"type":"text","text":"hi"}]}`))
+		q := `"hi"`
+		_, _ = io.WriteString(w,
+			"data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n"+
+				"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"message\",\"id\":\"m1\"}}\n\n"+
+				"data: {\"type\":\"response.output_text.delta\",\"delta\":"+string(q)+"}\n\n"+
+				"data: {\"type\":\"response.output_text.done\"}\n\n"+
+				"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\",\"usage\":{\"input_tokens\":5,\"output_tokens\":1}}}\n\n")
 	}))
 	defer upstream.Close()
 
@@ -132,7 +142,13 @@ func TestStartSession_GrokBranchWiresProxyAndRoutesUpstream(t *testing.T) {
 	if gotAuth != "Bearer grok-acc" {
 		t.Errorf("upstream Authorization = %q, want %q (bearer source wired via SetBearerSource)", gotAuth, "Bearer grok-acc")
 	}
-	if !strings.Contains(gotModel, "grok-composer-2.5-fast") {
+	if gotPath != "/v1/responses" {
+		t.Errorf("upstream path = %q, want /v1/responses", gotPath)
+	}
+	if gotAgent == "" {
+		t.Error("x-grok-agent-id missing — CredentialID not wired")
+	}
+	if !strings.Contains(gotModel, "grok-4.7") {
 		t.Errorf("upstream body = %q, want it to contain the grok default model (no alias rules configured)", gotModel)
 	}
 

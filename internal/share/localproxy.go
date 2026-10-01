@@ -135,6 +135,7 @@ func (p *LocalProxy) setupProviderTerminal(cred *store.Credential, bearerSrc mid
 			UpstreamURL:  h.UpstreamURL,
 			BearerSrc:    bearerSrc,
 			OnSessionDie: onDie,
+			CredentialID: cred.ID,
 		})
 	case "codex":
 		h, err := codexHandlersFn(cred)
