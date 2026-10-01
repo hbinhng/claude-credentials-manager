@@ -406,6 +406,7 @@ func (p *Proxy) terminalForProvider() http.Handler {
 			UpstreamURL:  p.grokUpstreamURL,
 			BearerSrc:    p.bearerSrc,
 			OnSessionDie: p.handleSessionDie,
+			CredentialID: p.cred().ID,
 		})
 	default:
 		return http.HandlerFunc(p.handle)
