@@ -100,7 +100,7 @@ func TestTranslateRequest_InboundModelFallback(t *testing.T) {
 
 func TestTranslateRequest_UnsupportedRole(t *testing.T) {
 	_, err := responses.TranslateRequest(
-		[]byte(`{"model":"claude-opus-4.7","messages":[{"role":"system","content":[{"type":"text","text":"hi"}]}]}`),
+		[]byte(`{"model":"claude-opus-4.7","messages":[{"role":"tool","content":[{"type":"text","text":"hi"}]}]}`),
 		responses.RequestOpts{TargetModel: "gpt-5"},
 	)
 	if err == nil {

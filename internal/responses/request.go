@@ -156,7 +156,15 @@ func flattenSystem(sys any) string {
 
 func appendMessageInput(out *codexRequest, m anthropicMessage, d Dialect) (bool, error) {
 	role := m.Role
-	if role != "user" && role != "assistant" {
+	switch role {
+	case "user", "assistant":
+	case "system":
+		// Claude Code (2.1.286+, mid-conversation-system beta) injects
+		// SessionStart-hook / skill context as an in-conversation
+		// role:"system" message. Keep it in place — hoisting it would
+		// rewrite the cached prompt prefix every time one appears.
+		role = d.midSystemRole()
+	default:
 		return false, fmt.Errorf("translator: unsupported role %q", role)
 	}
 
