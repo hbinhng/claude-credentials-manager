@@ -17,6 +17,9 @@ type RequestOpts struct {
 	TargetModel string
 	ServiceTier string
 	SessionID   string
+	// Dialect selects the upstream's Responses flavour. The zero value is
+	// codex. Not settable from JSON (fixture opts use a "dialect" name).
+	Dialect Dialect `json:"-"`
 }
 
 // Errors returned by TranslateRequest.
@@ -43,15 +46,20 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 		ServiceTier: opts.ServiceTier,
 	}
 
-	// Per spec 2026-05-09-codex-omniroute-bridging §5.4: hoist
-	// inbound system content to the top-level `instructions` field
-	// (NOT a developer-role item in input[]). Fall back to OmniRoute's
-	// CODEX_CHAT_DEFAULT_INSTRUCTIONS when inbound has no system
-	// content — chatgpt.com requires the field on every request.
-	if sys := flattenSystem(in.System); sys != "" {
-		out.Instructions = sys
-	} else {
-		out.Instructions = "You are a ChatGPT agent."
+	d := opts.Dialect
+
+	// Per spec 2026-05-09-codex-omniroute-bridging §5.4: codex hoists
+	// inbound system content to the top-level `instructions` field, with a
+	// fallback because chatgpt.com requires it. Grok (SystemAsInputItem)
+	// sends it as input[0] {role:"system"} like grok-shell, prepended
+	// below once the conversation items exist.
+	sys := flattenSystem(in.System)
+	if !d.SystemAsInputItem {
+		instr := sys
+		if instr == "" {
+			instr = "You are a ChatGPT agent."
+		}
+		out.Instructions = &instr
 	}
 
 	// Per spec §5.4: populate prompt_cache_key from the inbound session
@@ -62,21 +70,19 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 
 	// messages[] → input[]
 	for _, m := range in.Messages {
-		appended, err := appendMessageInput(&out, m)
-		if err != nil {
+		if _, err := appendMessageInput(&out, m, d); err != nil {
 			return nil, err
 		}
-		_ = appended
 	}
 
 	// Empty input[] guard: codex rejects zero-input requests; synthesize
 	// a placeholder per spec §5.4.
 	if len(out.Input) == 0 {
-		out.Input = []codexInput{{
-			Type: "message",
-			Role: "user",
-			Content: []codexContent{{Type: "input_text", Text: "continue"}},
-		}}
+		out.Input = []codexInput{d.message("user", []codexContent{{Type: "input_text", Text: "continue"}})}
+	}
+
+	if d.SystemAsInputItem && sys != "" {
+		out.Input = append([]codexInput{d.message("system", []codexContent{{Type: "input_text", Text: sys}})}, out.Input...)
 	}
 
 	// Drop orphan tool_results (no matching tool_use in same request).
@@ -100,16 +106,23 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 		out.ToolChoice = translateToolChoice(in.ToolChoice, out.Tools)
 	}
 
-	// Always emit reasoning.effort — defaults to "none" when the
-	// client expressed no thinking intent. When effort is non-none,
-	// also send summary="auto" and include=["reasoning.encrypted_content"]
-	// to match codex CLI's request shape; without these chatgpt.com
-	// paces the budget such that the model reasons silently and
-	// returns response.incomplete{max_output_tokens} with empty output.
+	// Codex always emits reasoning.effort, defaulting to "none" when the
+	// client expressed no thinking intent; grok (OmitNoneEffort) drops the
+	// object instead because it 400s on "none". When effort is non-none,
+	// also send the dialect's summary mode — without it chatgpt.com paces
+	// the budget such that the model reasons silently and returns
+	// response.incomplete{max_output_tokens} with empty output.
 	effort := resolveReasoningEffort(&in)
-	out.Reasoning = &codexReasoning{Effort: effort}
-	if effort != "none" {
-		out.Reasoning.Summary = "auto"
+	if effort != "none" || !d.OmitNoneEffort {
+		out.Reasoning = &codexReasoning{Effort: effort}
+		if effort != "none" {
+			out.Reasoning.Summary = d.reasoningSummary()
+		}
+	}
+	switch {
+	case d.Include != nil:
+		out.Include = d.Include
+	case effort != "none":
 		out.Include = []string{"reasoning.encrypted_content"}
 	}
 
@@ -141,7 +154,7 @@ func flattenSystem(sys any) string {
 	return ""
 }
 
-func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
+func appendMessageInput(out *codexRequest, m anthropicMessage, d Dialect) (bool, error) {
 	role := m.Role
 	if role != "user" && role != "assistant" {
 		return false, fmt.Errorf("translator: unsupported role %q", role)
@@ -167,7 +180,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 			}
 		case "tool_use":
 			if len(msgContent) > 0 {
-				out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
+				out.Input = append(out.Input, d.message(role, msgContent))
 				msgContent = nil
 			}
 			args, _ := json.Marshal(b.Input)
@@ -179,7 +192,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 			})
 		case "tool_result":
 			if len(msgContent) > 0 {
-				out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
+				out.Input = append(out.Input, d.message(role, msgContent))
 				msgContent = nil
 			}
 			out.Input = append(out.Input, codexInput{
@@ -193,7 +206,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage) (bool, error) {
 		}
 	}
 	if len(msgContent) > 0 {
-		out.Input = append(out.Input, codexInput{Type: "message", Role: role, Content: msgContent})
+		out.Input = append(out.Input, d.message(role, msgContent))
 	}
 	return true, nil
 }

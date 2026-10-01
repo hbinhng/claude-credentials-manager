@@ -41,6 +41,13 @@ func TestTranslateRequest_Fixtures(t *testing.T) {
 			if err := json.Unmarshal(optsBytes, &opts); err != nil {
 				t.Fatalf("unmarshal opts: %v", err)
 			}
+			var meta struct {
+				Dialect string `json:"dialect"`
+			}
+			_ = json.Unmarshal(optsBytes, &meta)
+			if meta.Dialect == "grok" {
+				opts.Dialect = responses.Grok
+			}
 
 			got, err := responses.TranslateRequest(in, opts)
 			if err != nil {
