@@ -31,9 +31,12 @@ func decodeStream(h http.Header, r io.Reader) io.Reader {
 	case "deflate":
 		// HTTP "deflate" is nominally zlib (RFC 1950); some servers send
 		// raw DEFLATE (RFC 1951). A zlib stream starts with a CMF/FLG pair
-		// whose 16-bit value is a multiple of 31 with CM=8.
+		// whose 16-bit value is a multiple of 31 with CM=8. FDICT (FLG bit
+		// 0x20) is excluded: HTTP zlib never uses a preset dictionary, and
+		// zlib.NewReader would consume the 4-byte dictionary id before
+		// failing, leaving the raw flate fallback to start mid-stream.
 		br := bufio.NewReader(r)
-		if hdr, err := br.Peek(2); err == nil && hdr[0]&0x0f == 8 && (uint16(hdr[0])<<8|uint16(hdr[1]))%31 == 0 {
+		if hdr, err := br.Peek(2); err == nil && hdr[0]&0x0f == 8 && hdr[1]&0x20 == 0 && (uint16(hdr[0])<<8|uint16(hdr[1]))%31 == 0 {
 			if zr, err := zlib.NewReader(br); err == nil {
 				return zr
 			}
