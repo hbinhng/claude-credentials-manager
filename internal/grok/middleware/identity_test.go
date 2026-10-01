@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"encoding/base64"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -117,92 +118,115 @@ func TestVersionAtLeast(t *testing.T) {
 	}
 }
 
-func TestApplyGrokIdentity_ConstantHeaders(t *testing.T) {
-	req, _ := http.NewRequest("POST", "https://cli-chat-proxy.grok.com/v1/messages", nil)
-	applyGrokIdentity(req, "grok-4.5", "sess-1", 1, true)
+// jwtWithSub builds an unsigned JWT-shaped token whose payload has sub.
+func jwtWithSub(sub string) string {
+	enc := base64.RawURLEncoding.EncodeToString
+	return enc([]byte(`{"alg":"none"}`)) + "." + enc([]byte(`{"sub":"`+sub+`"}`)) + ".sig"
+}
+
+func newIdentityReq(bearer string) *http.Request {
+	req, _ := http.NewRequest("POST", "https://cli-chat-proxy.grok.com/v1/responses", nil)
+	if bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	return req
+}
+
+func TestApplyGrokIdentity_ResponsesHeaders(t *testing.T) {
+	req := newIdentityReq(jwtWithSub("user-123"))
+	applyGrokIdentity(req, grokRequestIdentity{Model: "grok-4.7", SessionID: "sess-1", CredentialID: "cred-1", TurnIdx: 3})
 
 	if !strings.HasPrefix(req.Header.Get("User-Agent"), "grok-shell/") {
-		t.Errorf("User-Agent = %q, want grok-shell/ prefix", req.Header.Get("User-Agent"))
+		t.Errorf("User-Agent = %q", req.Header.Get("User-Agent"))
 	}
-	checks := map[string]string{
-		"x-xai-token-auth":         "xai-grok-cli",
-		"x-grok-client-identifier": "grok-shell",
-		"x-grok-client-mode":       "headless",
-		"x-authenticateresponse":   "authenticate-response",
-		"x-compaction-at":          "400000",
-		"Content-Type":             "application/json",
-		"Accept-Encoding":          "gzip, br, deflate",
-		"Accept":                   "text/event-stream",
-		"x-grok-model-override":    "grok-4.5",
+	want := map[string]string{
+		"x-xai-token-auth":              "xai-grok-cli",
+		"x-grok-client-identifier":      "grok-shell",
+		"x-grok-client-mode":            "headless",
+		"x-grok-user-id":                "user-123",
+		"x-authenticateresponse":        "authenticate-response",
+		"x-compaction-at":               "204800",
+		"x-compactions-remaining":       "1",
+		"x-grok-doom-loop-check":        "1024",
+		"x-grok-exact-repetition-check": "64",
+		"Content-Type":                  "application/json",
+		"Accept":                        "text/event-stream",
+		"Accept-Encoding":               "gzip, br, deflate",
+		"x-grok-conv-id":                "sess-1",
+		"x-grok-session-id":             "sess-1",
+		"x-grok-turn-idx":               "3",
+		"x-grok-model-override":         "grok-4.7",
 	}
-	for k, want := range checks {
-		if got := req.Header.Get(k); got != want {
-			t.Errorf("%s = %q, want %q", k, got, want)
+	for k, v := range want {
+		if got := req.Header.Get(k); got != v {
+			t.Errorf("%s = %q, want %q", k, got, v)
 		}
 	}
-	if req.Header.Get("x-grok-client-version") == "" {
-		t.Error("x-grok-client-version empty")
+	if req.Header.Get("x-grok-conv-group-id") == "" || req.Header.Get("x-grok-agent-id") == "" {
+		t.Error("conv-group-id / agent-id must be set")
 	}
-	// Authorization is the caller's responsibility — identity must not set it.
-	if req.Header.Get("Authorization") != "" {
-		t.Error("applyGrokIdentity must not set Authorization")
-	}
-}
-
-func TestApplyGrokIdentity_AcceptFollowsStream(t *testing.T) {
-	req, _ := http.NewRequest("POST", "https://x/v1/messages", nil)
-	applyGrokIdentity(req, "m", "s", 1, false)
-	if got := req.Header.Get("Accept"); got != "application/json" {
-		t.Errorf("non-stream Accept = %q, want application/json", got)
+	if req.Header.Get("x-grok-conv-group-id") == req.Header.Get("x-grok-agent-id") {
+		t.Error("conv-group-id and agent-id must be distinct derivations")
 	}
 }
 
-func TestApplyGrokIdentity_SessionScoped(t *testing.T) {
-	req, _ := http.NewRequest("POST", "https://x/v1/messages", nil)
-	applyGrokIdentity(req, "m", "sess-abc", 2, true)
-	if req.Header.Get("x-grok-conv-id") != "sess-abc" || req.Header.Get("x-grok-session-id") != "sess-abc" {
-		t.Errorf("conv/session id should equal the session id")
+func TestApplyGrokIdentity_AgentIDFollowsCredentialNotSession(t *testing.T) {
+	a := newIdentityReq("")
+	b := newIdentityReq("")
+	c := newIdentityReq("")
+	applyGrokIdentity(a, grokRequestIdentity{SessionID: "s1", CredentialID: "cred-1"})
+	applyGrokIdentity(b, grokRequestIdentity{SessionID: "s2", CredentialID: "cred-1"})
+	applyGrokIdentity(c, grokRequestIdentity{SessionID: "s1", CredentialID: "cred-2"})
+	if a.Header.Get("x-grok-agent-id") != b.Header.Get("x-grok-agent-id") {
+		t.Error("agent-id must be stable across sessions of one credential")
 	}
-	if req.Header.Get("x-grok-agent-id") == "" {
-		t.Error("agent-id should be set when a session id is present")
+	if a.Header.Get("x-grok-agent-id") == c.Header.Get("x-grok-agent-id") {
+		t.Error("agent-id must differ per credential")
 	}
-	if req.Header.Get("x-grok-turn-idx") != "2" {
-		t.Errorf("turn-idx = %q, want 2", req.Header.Get("x-grok-turn-idx"))
-	}
-
-	// agent-id is deterministic per session.
-	req2, _ := http.NewRequest("POST", "https://x/v1/messages", nil)
-	applyGrokIdentity(req2, "m", "sess-abc", 5, true)
-	if req.Header.Get("x-grok-agent-id") != req2.Header.Get("x-grok-agent-id") {
-		t.Error("agent-id must be stable for the same session id")
+	if a.Header.Get("x-grok-conv-group-id") == b.Header.Get("x-grok-conv-group-id") {
+		t.Error("conv-group-id must differ per session")
 	}
 }
 
-func TestApplyGrokIdentity_EmptySessionOmits(t *testing.T) {
-	req, _ := http.NewRequest("POST", "https://x/v1/messages", nil)
-	applyGrokIdentity(req, "m", "", 1, true)
-	for _, h := range []string{"x-grok-conv-id", "x-grok-session-id", "x-grok-agent-id"} {
+func TestApplyGrokIdentity_OmitsWhatItCannotDerive(t *testing.T) {
+	req := newIdentityReq("not-a-jwt")
+	applyGrokIdentity(req, grokRequestIdentity{})
+	for _, h := range []string{"x-grok-user-id", "x-grok-conv-id", "x-grok-session-id", "x-grok-conv-group-id", "x-grok-agent-id", "x-grok-model-override"} {
 		if req.Header.Get(h) != "" {
-			t.Errorf("%s should be omitted when session id is empty", h)
+			t.Errorf("%s = %q, want omitted", h, req.Header.Get(h))
 		}
+	}
+	if req.Header.Get("Authorization") != "Bearer not-a-jwt" {
+		t.Error("identity must not touch Authorization")
 	}
 }
 
 func TestApplyGrokIdentity_PerRequestFresh(t *testing.T) {
 	tp := regexp.MustCompile(`^00-[0-9a-f]{32}-[0-9a-f]{16}-01$`)
-	req1, _ := http.NewRequest("POST", "https://x/v1/messages", nil)
-	req2, _ := http.NewRequest("POST", "https://x/v1/messages", nil)
-	applyGrokIdentity(req1, "m", "s", 1, true)
-	applyGrokIdentity(req2, "m", "s", 1, true)
-
-	if !tp.MatchString(req1.Header.Get("traceparent")) {
-		t.Errorf("traceparent %q not W3C-shaped", req1.Header.Get("traceparent"))
+	r1, r2 := newIdentityReq(""), newIdentityReq("")
+	applyGrokIdentity(r1, grokRequestIdentity{SessionID: "s"})
+	applyGrokIdentity(r2, grokRequestIdentity{SessionID: "s"})
+	if !tp.MatchString(r1.Header.Get("traceparent")) || r1.Header.Get("traceparent") == r2.Header.Get("traceparent") {
+		t.Error("traceparent must be W3C-shaped and fresh per request")
 	}
-	if req1.Header.Get("traceparent") == req2.Header.Get("traceparent") {
-		t.Error("traceparent must be fresh per request")
-	}
-	if req1.Header.Get("x-grok-req-id") == "" || req1.Header.Get("x-grok-req-id") == req2.Header.Get("x-grok-req-id") {
+	if r1.Header.Get("x-grok-req-id") == "" || r1.Header.Get("x-grok-req-id") == r2.Header.Get("x-grok-req-id") {
 		t.Error("x-grok-req-id must be fresh per request")
+	}
+}
+
+func TestBearerSubject(t *testing.T) {
+	enc := base64.RawURLEncoding.EncodeToString
+	for name, tc := range map[string]struct{ bearer, want string }{
+		"valid":            {jwtWithSub("u1"), "u1"},
+		"padded payload":   {enc([]byte(`{}`)) + "." + base64.URLEncoding.EncodeToString([]byte(`{"sub":"u2"}`)) + ".s", "u2"},
+		"no header":        {"", ""},
+		"two parts":        {"a.b", ""},
+		"bad base64":       {"a.!!!.c", ""},
+		"payload not json": {"a." + enc([]byte("nope")) + ".c", ""},
+	} {
+		if got := bearerSubject(newIdentityReq(tc.bearer)); got != tc.want {
+			t.Errorf("%s: bearerSubject = %q, want %q", name, got, tc.want)
+		}
 	}
 }
 

@@ -221,7 +221,7 @@ func (t *Terminal) doWith401Retry(ctx context.Context, body []byte, model, sessi
 			return nil, terr
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
-		applyGrokIdentity(req, model, sessionID, t.nextTurn(sessionID), stream)
+		applyGrokIdentity(req, grokRequestIdentity{Model: model, SessionID: sessionID, TurnIdx: t.nextTurn(sessionID)})
 		return req, nil
 	}
 

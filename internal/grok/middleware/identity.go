@@ -2,6 +2,7 @@ package middleware
 
 import (
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -25,9 +26,8 @@ import (
 // claimed version below it.
 const defaultGrokClientVersion = "1.0.46"
 
-// grokAgentNamespace is a fixed UUID namespace for deriving a stable per-session
-// x-grok-agent-id via UUIDv5. Arbitrary but constant.
-var grokAgentNamespace = uuid.MustParse("6b6f7267-0000-0000-0000-000000000001")
+// grokIDNamespace is a fixed UUID namespace for ccm's stable UUIDv5 derivations (x-grok-agent-id, x-grok-conv-group-id). Arbitrary but constant.
+var grokIDNamespace = uuid.MustParse("6b6f7267-0000-0000-0000-000000000001")
 
 var (
 	grokVersionOnce sync.Once
@@ -135,36 +135,74 @@ func parseVersion(v string) ([]int, bool) {
 	return out, true
 }
 
-// applyGrokIdentity sets the header set grok-shell sends to cli-chat-proxy so
-// ccm presents as the official client on the wire. It does NOT set
-// Authorization — the caller owns the bearer. model is the target grok model;
-// sessionID is the inbound X-Claude-Code-Session-Id ("" when absent); turnIdx
-// is a per-session monotonic counter; stream selects the Accept type.
-func applyGrokIdentity(req *http.Request, model, sessionID string, turnIdx int, stream bool) {
-	ApplyGrokConstantIdentity(req)
-	req.Header.Set("x-authenticateresponse", "authenticate-response")
-	req.Header.Set("x-compaction-at", "400000")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept-Encoding", "gzip, br, deflate")
-	if stream {
-		req.Header.Set("Accept", "text/event-stream")
-	} else {
-		req.Header.Set("Accept", "application/json")
-	}
+// grokRequestIdentity carries the per-request inputs to applyGrokIdentity.
+type grokRequestIdentity struct {
+	Model        string // x-grok-model-override ("" omits)
+	SessionID    string // inbound X-Claude-Code-Session-Id ("" omits session headers)
+	CredentialID string // ccm credential id; x-grok-agent-id derives from it ("" omits)
+	TurnIdx      int    // user-turn index; constant across tool round-trips
+}
 
-	if sessionID != "" {
-		req.Header.Set("x-grok-conv-id", sessionID)
-		req.Header.Set("x-grok-session-id", sessionID)
-		req.Header.Set("x-grok-agent-id", uuid.NewSHA1(grokAgentNamespace, []byte(sessionID)).String())
+// applyGrokIdentity sets the header set grok-shell 1.0.46 sends to
+// cli-chat-proxy's /v1/responses (captured 2026-10-01), so ccm presents as
+// the official client. It does NOT set Authorization — the caller owns the
+// bearer and must set it first (x-grok-user-id is read from it).
+//
+// grok-shell's x-grok-agent-id is per install; ccm derives it from the
+// credential id so it is stable per credential. x-grok-conv-group-id is an
+// opaque per-conversation UUIDv5 in grok-shell whose input isn't
+// reproducible; ccm derives its own from the session id.
+func applyGrokIdentity(req *http.Request, id grokRequestIdentity) {
+	ApplyGrokConstantIdentity(req)
+	if uid := bearerSubject(req); uid != "" {
+		req.Header.Set("x-grok-user-id", uid)
+	}
+	req.Header.Set("x-authenticateresponse", "authenticate-response")
+	req.Header.Set("x-compaction-at", "204800")
+	req.Header.Set("x-compactions-remaining", "1")
+	req.Header.Set("x-grok-doom-loop-check", "1024")
+	req.Header.Set("x-grok-exact-repetition-check", "64")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	req.Header.Set("Accept-Encoding", "gzip, br, deflate")
+
+	if id.SessionID != "" {
+		req.Header.Set("x-grok-conv-id", id.SessionID)
+		req.Header.Set("x-grok-session-id", id.SessionID)
+		req.Header.Set("x-grok-conv-group-id", uuid.NewSHA1(grokIDNamespace, []byte("conv-group:"+id.SessionID)).String())
+	}
+	if id.CredentialID != "" {
+		req.Header.Set("x-grok-agent-id", uuid.NewSHA1(grokIDNamespace, []byte("agent:"+id.CredentialID)).String())
 	}
 
 	req.Header.Set("x-grok-req-id", uuid.NewString())
 	req.Header.Set("traceparent", newTraceparent())
-	req.Header.Set("x-grok-turn-idx", fmt.Sprintf("%d", turnIdx))
-
-	if model != "" {
-		req.Header.Set("x-grok-model-override", model)
+	req.Header.Set("x-grok-turn-idx", fmt.Sprintf("%d", id.TurnIdx))
+	if id.Model != "" {
+		req.Header.Set("x-grok-model-override", id.Model)
 	}
+}
+
+// bearerSubject returns the `sub` claim of the request's bearer JWT (the
+// xAI user id grok-shell sends as x-grok-user-id), or "" when there is no
+// bearer or it isn't a parseable JWT. Unsigned parse: ccm only mirrors the
+// value, it never trusts it.
+func bearerSubject(req *http.Request) string {
+	parts := strings.Split(strings.TrimPrefix(req.Header.Get("Authorization"), "Bearer "), ".")
+	if len(parts) != 3 {
+		return ""
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(strings.TrimRight(parts[1], "="))
+	if err != nil {
+		return ""
+	}
+	var claims struct {
+		Sub string `json:"sub"`
+	}
+	if json.Unmarshal(payload, &claims) != nil {
+		return ""
+	}
+	return claims.Sub
 }
 
 // grokUAOS/grokUAArch map Go's GOOS/GOARCH to grok-shell's UA tokens.
