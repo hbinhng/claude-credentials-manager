@@ -167,6 +167,13 @@ type Proxy struct {
 	grokTransport   trace.Doer
 	grokUpstreamURL string // test override; empty in production
 
+	// grokTerm is the grok Terminal, built once on first use and reused
+	// for every request: it holds per-session state (user-turn counter,
+	// proactive-compaction context usage) that a per-request rebuild would
+	// discard. Lazy because the grok fields above are set after NewProxy.
+	grokTermOnce sync.Once
+	grokTerm     http.Handler
+
 	// viaID is a per-process loop-detection marker. NewProxy mints
 	// it; handleServe rejects inbound requests whose Via header
 	// contains this id; director appends it when forwarding to a
@@ -383,6 +390,8 @@ func (p *Proxy) handleSessionDie(reason string) {
 // terminalForProvider returns the terminal http.Handler for the current
 // provider. "codex" returns a codex Terminal with a freshly built
 // identity.Bundle (synthesized from the credential per spec §5.1).
+// "grok" returns the Proxy's single grok Terminal (built on first call),
+// since it carries per-session state across requests.
 // Any other value (including empty, meaning claude) returns the
 // existing p.handle claude handler.
 func (p *Proxy) terminalForProvider() http.Handler {
@@ -401,13 +410,16 @@ func (p *Proxy) terminalForProvider() http.Handler {
 			OnSessionDie: p.handleSessionDie,
 		})
 	case "grok":
-		return grokmw.NewTerminal(grokmw.TerminalOpts{
-			Transport:    p.grokTransport,
-			UpstreamURL:  p.grokUpstreamURL,
-			BearerSrc:    p.bearerSrc,
-			OnSessionDie: p.handleSessionDie,
-			CredentialID: p.cred().ID,
+		p.grokTermOnce.Do(func() {
+			p.grokTerm = grokmw.NewTerminal(grokmw.TerminalOpts{
+				Transport:    p.grokTransport,
+				UpstreamURL:  p.grokUpstreamURL,
+				BearerSrc:    p.bearerSrc,
+				OnSessionDie: p.handleSessionDie,
+				CredentialID: p.cred().ID,
+			})
 		})
+		return p.grokTerm
 	default:
 		return http.HandlerFunc(p.handle)
 	}
