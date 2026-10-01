@@ -83,7 +83,8 @@ type anthropicContentBlock struct {
 	Content   any    `json:"content,omitempty"` // string or []anthropicContentBlock
 	IsError   bool   `json:"is_error,omitempty"`
 	// thinking:
-	Thinking string `json:"thinking,omitempty"`
+	Thinking  string `json:"thinking,omitempty"`
+	Signature string `json:"signature,omitempty"` // thinking: opaque; ccm's grok round-trip uses the ccmrs1. format
 }
 
 type anthropicImageSrc struct {
@@ -154,6 +155,11 @@ type codexInput struct {
 	Arguments string `json:"arguments,omitempty"`
 	// function_call_output:
 	Output string `json:"output,omitempty"`
+	// reasoning (Dialect.CarryReasoning): replayed verbatim from the
+	// thinking-block signature, as grok-shell replays its own items.
+	ID               string          `json:"id,omitempty"`
+	Summary          json.RawMessage `json:"summary,omitempty"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
 }
 
 type codexContent struct {

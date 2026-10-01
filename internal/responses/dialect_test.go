@@ -132,3 +132,66 @@ func TestGrok_AssistantTextIsString(t *testing.T) {
 		t.Errorf("assistant item = %v, want string content", a)
 	}
 }
+
+func TestGrok_SignedThinkingBecomesReasoningItemInPlace(t *testing.T) {
+	sig := responses.EncodeReasoningSignatureForTest("rs_1", json.RawMessage(`[{"type":"summary_text","text":"s"}]`), "ENC")
+	body := `{"model":"x","messages":[
+		{"role":"user","content":"run it"},
+		{"role":"assistant","content":[
+			{"type":"thinking","thinking":"","signature":"` + sig + `"},
+			{"type":"text","text":"running"},
+			{"type":"tool_use","id":"call-1","name":"Bash","input":{"command":"ls"}}]},
+		{"role":"user","content":[{"type":"tool_result","tool_use_id":"call-1","content":"a.txt"}]}]}`
+	in := translateMap(t, body, responses.Grok)["input"].([]any)
+	types := []string{}
+	for _, it := range in {
+		types = append(types, it.(map[string]any)["type"].(string))
+	}
+	want := []string{"message", "reasoning", "message", "function_call", "function_call_output"}
+	if !reflect.DeepEqual(types, want) {
+		t.Fatalf("types = %v, want %v", types, want)
+	}
+	r := in[1].(map[string]any)
+	if r["id"] != "rs_1" || r["encrypted_content"] != "ENC" {
+		t.Errorf("reasoning item = %v", r)
+	}
+}
+
+func TestGrok_ThinkingAfterTextFlushesPendingMessage(t *testing.T) {
+	sig := responses.EncodeReasoningSignatureForTest("rs_2", nil, "ENC")
+	body := `{"model":"x","messages":[{"role":"user","content":"q"},{"role":"assistant","content":[
+		{"type":"text","text":"before"},
+		{"type":"thinking","thinking":"","signature":"` + sig + `"},
+		{"type":"text","text":"after"}]}]}`
+	in := translateMap(t, body, responses.Grok)["input"].([]any)
+	types := []string{}
+	for _, it := range in {
+		types = append(types, it.(map[string]any)["type"].(string))
+	}
+	if want := []string{"message", "message", "reasoning", "message"}; !reflect.DeepEqual(types, want) {
+		t.Fatalf("types = %v, want %v", types, want)
+	}
+}
+
+func TestGrok_ForeignOrRedactedThinkingDropped(t *testing.T) {
+	body := `{"model":"x","messages":[{"role":"user","content":"q"},{"role":"assistant","content":[
+		{"type":"thinking","thinking":"t","signature":"EqQBCkgIARAB"},
+		{"type":"redacted_thinking","data":"xx"},
+		{"type":"text","text":"a"}]}]}`
+	in := translateMap(t, body, responses.Grok)["input"].([]any)
+	if len(in) != 2 {
+		t.Fatalf("input = %v, want [user, assistant] only", in)
+	}
+}
+
+func TestCodex_SignedThinkingStillDropped(t *testing.T) {
+	sig := responses.EncodeReasoningSignatureForTest("rs_1", nil, "ENC")
+	body := `{"model":"x","messages":[{"role":"user","content":"q"},{"role":"assistant","content":[
+		{"type":"thinking","thinking":"","signature":"` + sig + `"},{"type":"text","text":"a"}]}]}`
+	in := translateMap(t, body, responses.Codex)["input"].([]any)
+	for _, it := range in {
+		if it.(map[string]any)["type"] == "reasoning" {
+			t.Fatal("codex (CarryReasoning off) must drop thinking")
+		}
+	}
+}

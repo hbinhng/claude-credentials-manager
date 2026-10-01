@@ -208,8 +208,24 @@ func appendMessageInput(out *codexRequest, m anthropicMessage, d Dialect) (bool,
 				CallID: stripStoredPrefix(b.ToolUseID),
 				Output: stringifyToolResult(b.Content),
 			})
-		case "thinking", "redacted_thinking":
-			// Dropped on request side per spec §5.1.
+		case "thinking":
+			// Dropped on request side per spec §5.1, unless the dialect
+			// round-trips reasoning and this block carries a ccm-minted
+			// signature — then it becomes the reasoning item grok-shell
+			// would have replayed, at the same position.
+			if !d.CarryReasoning {
+				continue
+			}
+			item, ok := decodeReasoningSignature(b.Signature)
+			if !ok {
+				continue
+			}
+			if len(msgContent) > 0 {
+				out.Input = append(out.Input, d.message(role, msgContent))
+				msgContent = nil
+			}
+			out.Input = append(out.Input, item)
+		case "redacted_thinking":
 			continue
 		}
 	}
