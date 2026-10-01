@@ -314,10 +314,12 @@ a logged reason.
 ## Grok upstream (single-account)
 
 ccm supports using a grok (xAI) credential as the upstream for Claude
-Code. xAI's `/v1/messages` endpoint is already Anthropic-compatible,
-so this is a near-passthrough: the proxy rewrites the request's
-`model` field and swaps in the grok OAuth bearer before forwarding to
-`api.x.ai`, with no request/response translation needed.
+Code via translation. The proxy translates Claude Code's Anthropic
+`/v1/messages` requests to the OpenAI Responses API and sends them to
+`cli-chat-proxy.grok.com/v1/responses` (the grok subscription endpoint),
+presenting as the official `grok-shell` client with the grok OAuth
+bearer; the SSE response is reshaped back to Anthropic shape. The
+translator is the same one the codex upstream uses.
 
 ### Requirements
 
@@ -335,7 +337,7 @@ ccm share <grok-cred-name>
 ```
 
 A request whose model doesn't match a `--model-alias` rule is sent as
-`grok-composer-2.5-fast` by default:
+`grok-4.7` by default:
 
 ```bash
 --model-alias 'claude-opus-*=grok-4.5'         # opus variants → grok-4.5
