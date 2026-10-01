@@ -179,6 +179,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Model:            displayModel,
 		Dialect:          responses.Grok,
 		OmitThinkingText: responses.ThinkingOmitted(body),
+		UpstreamModel:    targetModel,
 	})
 	src := decodeStream(resp.Header, resp.Body)
 

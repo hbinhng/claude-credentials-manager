@@ -21,6 +21,10 @@ type StreamOpts struct {
 	// asked for thinking.display:"omitted"); blocks and signatures are
 	// still emitted.
 	OmitThinkingText bool
+	// UpstreamModel is the model the upstream ran (post-alias target).
+	// CarryReasoning records it in reasoning signatures so the request side
+	// can refuse to replay reasoning to a different model.
+	UpstreamModel string
 }
 
 // StreamTranslator consumes codex SSE events and emits Anthropic SSE
@@ -368,7 +372,7 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 				"index": t.currentBlockIdx,
 				"delta": map[string]any{
 					"type":      "signature_delta",
-					"signature": encodeReasoningSignature(ev.Item.ID, ev.Item.Summary, ev.Item.EncryptedContent),
+					"signature": encodeReasoningSignature(ev.Item.ID, ev.Item.Summary, ev.Item.EncryptedContent, t.opts.UpstreamModel),
 				},
 			})
 			return append([]emission{{name: "content_block_delta", data: string(body)}}, t.closeBlock()...)

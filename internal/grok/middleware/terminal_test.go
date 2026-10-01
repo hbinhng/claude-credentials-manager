@@ -513,6 +513,46 @@ func TestTerminal_ReasoningRoundTripsThroughThinkingSignature(t *testing.T) {
 	}
 }
 
+// After a model switch (alias now maps to a different grok model) the
+// reasoning minted by the previous model is not replayed.
+func TestTerminal_ReasoningNotReplayedAcrossModels(t *testing.T) {
+	f, srv := newFakeGrok(t)
+	f.override = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"response.created\",\"response\":{\"id\":\"r1\"}}\n\n"+
+			"data: {\"type\":\"response.output_item.added\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_9\"}}\n\n"+
+			"data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"reasoning\",\"id\":\"rs_9\",\"summary\":[],\"encrypted_content\":\"ENC9\"}}\n\n"+
+			"data: {\"type\":\"response.completed\",\"response\":{\"id\":\"r1\"}}\n\n")
+	}
+	term := NewTerminal(TerminalOpts{UpstreamURL: srv.URL, BearerSrc: fakeBearer{tok: "t"}})
+	out := post(t, term, "claude-opus-*=grok-4.7", "s", `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"q"}]}`).Body.String()
+	i := strings.Index(out, `"signature":"`)
+	if i < 0 {
+		t.Fatalf("no signature in %s", out)
+	}
+	sig := out[i+len(`"signature":"`):]
+	sig = sig[:strings.IndexByte(sig, '"')]
+
+	f.override = nil
+	next := `{"model":"claude-opus-5-5","messages":[{"role":"user","content":"q"},{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"` + sig + `"},{"type":"text","text":"a"}]},{"role":"user","content":"more"}]}`
+	post(t, term, "claude-opus-*=grok-4.7", "s", next)
+	post(t, term, "claude-opus-*=grok-4.6", "s", next)
+	hasReasoning := func(body map[string]any) bool {
+		for _, it := range body["input"].([]any) {
+			if it.(map[string]any)["type"] == "reasoning" {
+				return true
+			}
+		}
+		return false
+	}
+	if !hasReasoning(f.bodies[1]) {
+		t.Error("same model: reasoning must be replayed")
+	}
+	if hasReasoning(f.bodies[2]) {
+		t.Error("different model: reasoning must be dropped")
+	}
+}
+
 func TestTerminal_NonStreamReturnsMessageJSON(t *testing.T) {
 	_, srv := newFakeGrok(t)
 	term := NewTerminal(TerminalOpts{UpstreamURL: srv.URL, BearerSrc: fakeBearer{tok: "t"}})
