@@ -108,6 +108,28 @@ func TestGrokStream_OneSignedThinkingBlockPerReasoningItem(t *testing.T) {
 	}
 }
 
+// Reasoning is only replayed to the model that produced it: the stream side
+// records StreamOpts.UpstreamModel in the signature, and the request side
+// drops the item when RequestOpts.TargetModel differs.
+func TestGrokStream_ReasoningReplayedOnlyToProducingModel(t *testing.T) {
+	var sig string
+	for _, e := range runStream(t, responses.StreamOpts{Model: "claude-x", UpstreamModel: "grok-4.7", Dialect: responses.Grok}, reasoningTwoParts) {
+		if d, ok := e.Data["delta"].(map[string]any); ok && d["type"] == "signature_delta" {
+			sig = d["signature"].(string)
+		}
+	}
+	body := []byte(`{"model":"x","messages":[{"role":"user","content":"q"},{"role":"assistant","content":[{"type":"thinking","thinking":"","signature":"` + sig + `"},{"type":"text","text":"a"}]},{"role":"user","content":"q2"}]}`)
+	for model, want := range map[string]bool{"grok-4.7": true, "grok-4.6": false} {
+		out, err := responses.TranslateRequest(body, responses.RequestOpts{TargetModel: model, Dialect: responses.Grok})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := strings.Contains(string(out), `"type":"reasoning"`); got != want {
+			t.Errorf("target %s: reasoning replayed = %v, want %v (%s)", model, got, want, out)
+		}
+	}
+}
+
 func TestGrokStream_OmitThinkingTextKeepsSignature(t *testing.T) {
 	evs := runStream(t, responses.StreamOpts{Model: "m", Dialect: responses.Grok, OmitThinkingText: true}, reasoningTwoParts)
 	for _, e := range evs {

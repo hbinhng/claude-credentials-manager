@@ -70,7 +70,7 @@ func TranslateRequest(claudeBody []byte, opts RequestOpts) ([]byte, error) {
 
 	// messages[] → input[]
 	for _, m := range in.Messages {
-		if _, err := appendMessageInput(&out, m, d); err != nil {
+		if _, err := appendMessageInput(&out, m, d, opts.TargetModel); err != nil {
 			return nil, err
 		}
 	}
@@ -154,7 +154,7 @@ func flattenSystem(sys any) string {
 	return ""
 }
 
-func appendMessageInput(out *codexRequest, m anthropicMessage, d Dialect) (bool, error) {
+func appendMessageInput(out *codexRequest, m anthropicMessage, d Dialect, targetModel string) (bool, error) {
 	role := m.Role
 	switch role {
 	case "user", "assistant":
@@ -216,7 +216,7 @@ func appendMessageInput(out *codexRequest, m anthropicMessage, d Dialect) (bool,
 			if !d.CarryReasoning {
 				continue
 			}
-			item, ok := decodeReasoningSignature(b.Signature)
+			item, ok := decodeReasoningSignature(b.Signature, targetModel)
 			if !ok {
 				continue
 			}
