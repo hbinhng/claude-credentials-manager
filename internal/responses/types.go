@@ -14,7 +14,7 @@ import (
 type anthropicRequest struct {
 	Model         string                 `json:"model"`
 	Messages      []anthropicMessage     `json:"messages"`
-	System        any                    `json:"system,omitempty"`        // string or []anthropicContentBlock
+	System        any                    `json:"system,omitempty"` // string or []anthropicContentBlock
 	Tools         []anthropicTool        `json:"tools,omitempty"`
 	ToolChoice    *anthropicToolChoice   `json:"tool_choice,omitempty"`
 	Thinking      *anthropicThinkingPref `json:"thinking,omitempty"`
@@ -99,12 +99,12 @@ type anthropicTool struct {
 }
 
 type anthropicToolChoice struct {
-	Type string `json:"type"` // "auto" | "any" | "tool"
+	Type string `json:"type"`           // "auto" | "any" | "tool"
 	Name string `json:"name,omitempty"` // for type:"tool"
 }
 
 type anthropicThinkingPref struct {
-	Type         string `json:"type"`                   // "enabled" | "disabled"
+	Type         string `json:"type"` // "enabled" | "disabled"
 	BudgetTokens int    `json:"budget_tokens,omitempty"`
 }
 
@@ -117,36 +117,37 @@ type anthropicOutputConfig struct {
 
 // Codex request shape — the outbound /backend-api/codex/responses body.
 // Per spec 2026-05-09-codex-omniroute-bridging §5.3:
-//   - Instructions has NO omitempty: chatgpt.com requires the field on
-//     every request and rejects with 400 "Instructions are required"
-//     if missing. Translator guarantees a non-empty value via the
-//     fallback in TranslateRequest.
+//   - Instructions is always set under the codex dialect: chatgpt.com
+//     requires the field on every request and rejects with 400
+//     "Instructions are required" if missing. Translator guarantees a
+//     non-empty value via the fallback in TranslateRequest.
 //   - PromptCacheKey is re-added (was removed in pivot Task 2). Empty
 //     value is omitted via the `omitempty` tag.
 //   - client_metadata stays gone; no installation_id is emitted.
 type codexRequest struct {
-	Model          string          `json:"model"`
-	Stream         bool            `json:"stream"`
-	Input          []codexInput    `json:"input"`
-	Instructions   string          `json:"instructions"`
-	Tools          []codexTool     `json:"tools,omitempty"`
-	ToolChoice     any             `json:"tool_choice,omitempty"`
-	Reasoning      *codexReasoning `json:"reasoning,omitempty"`
+	Model  string       `json:"model"`
+	Stream bool         `json:"stream"`
+	Input  []codexInput `json:"input"`
+	// Pointer so grok (SystemAsInputItem) can omit it; codex always sets it, so its bytes are unchanged.
+	Instructions *string         `json:"instructions,omitempty"`
+	Tools        []codexTool     `json:"tools,omitempty"`
+	ToolChoice   any             `json:"tool_choice,omitempty"`
+	Reasoning    *codexReasoning `json:"reasoning,omitempty"`
 	// Include matches what codex CLI sends when reasoning is active:
 	// ["reasoning.encrypted_content"]. Without this, chatgpt.com paces
 	// the reasoning budget differently and on long inputs with high
 	// effort can return response.incomplete{max_output_tokens} with no
 	// visible output (see codex-rs/core/src/client.rs:build_responses_request).
-	Include          []string `json:"include,omitempty"`
-	Store          bool            `json:"store"`
-	ServiceTier    string          `json:"service_tier,omitempty"`
-	PromptCacheKey   string          `json:"prompt_cache_key,omitempty"`
+	Include        []string `json:"include,omitempty"`
+	Store          bool     `json:"store"`
+	ServiceTier    string   `json:"service_tier,omitempty"`
+	PromptCacheKey string   `json:"prompt_cache_key,omitempty"`
 }
 
 type codexInput struct {
-	Type    string         `json:"type"` // "message" | "function_call" | "function_call_output"
-	Role    string         `json:"role,omitempty"`
-	Content []codexContent `json:"content,omitempty"`
+	Type    string `json:"type"` // "message" | "function_call" | "function_call_output"
+	Role    string `json:"role,omitempty"`
+	Content any    `json:"content,omitempty"` // []codexContent, or string under Dialect.StringContent
 	// function_call:
 	CallID    string `json:"call_id,omitempty"`
 	Name      string `json:"name,omitempty"`
@@ -162,14 +163,14 @@ type codexContent struct {
 }
 
 type codexTool struct {
-	Type        string         `json:"type"`                   // "function"
+	Type        string         `json:"type"` // "function"
 	Name        string         `json:"name"`
 	Description string         `json:"description,omitempty"`
 	Parameters  map[string]any `json:"parameters"`
 }
 
 type codexReasoning struct {
-	Effort  string `json:"effort"`            // "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
+	Effort string `json:"effort"` // "none" | "minimal" | "low" | "medium" | "high" | "xhigh"
 	// Summary matches codex CLI's default ("auto"). Omitted when
 	// effort is "none". Without it, chatgpt.com defaults to no
 	// summary emission, causing the model to reason silently and
