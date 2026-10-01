@@ -190,8 +190,10 @@ func TestApplyGrokIdentity_AgentIDFollowsCredentialNotSession(t *testing.T) {
 
 func TestApplyGrokIdentity_OmitsWhatItCannotDerive(t *testing.T) {
 	req := newIdentityReq("not-a-jwt")
-	applyGrokIdentity(req, grokRequestIdentity{})
-	for _, h := range []string{"x-grok-user-id", "x-grok-conv-id", "x-grok-session-id", "x-grok-conv-group-id", "x-grok-agent-id", "x-grok-model-override"} {
+	// TurnIdx is set but there is no session id: the turn index is
+	// session-dependent and must be omitted with the other session headers.
+	applyGrokIdentity(req, grokRequestIdentity{TurnIdx: 3})
+	for _, h := range []string{"x-grok-user-id", "x-grok-conv-id", "x-grok-session-id", "x-grok-conv-group-id", "x-grok-agent-id", "x-grok-model-override", "x-grok-turn-idx"} {
 		if req.Header.Get(h) != "" {
 			t.Errorf("%s = %q, want omitted", h, req.Header.Get(h))
 		}
