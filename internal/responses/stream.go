@@ -15,6 +15,12 @@ import (
 type StreamOpts struct {
 	MessageID string // synthesized; usually mirrors codex response.id
 	Model     string // post-alias model name (for message_start)
+	// Dialect selects upstream-specific stream handling (zero = codex).
+	Dialect Dialect
+	// OmitThinkingText suppresses thinking_delta text (the inbound request
+	// asked for thinking.display:"omitted"); blocks and signatures are
+	// still emitted.
+	OmitThinkingText bool
 }
 
 // StreamTranslator consumes codex SSE events and emits Anthropic SSE
@@ -29,6 +35,9 @@ type StreamTranslator struct {
 	messageEnded    bool
 	stopReason      string
 	usage           *anthropicUsage
+	// reasoningParts counts summary parts seen in the open reasoning block
+	// (CarryReasoning joins them into one block with a blank line).
+	reasoningParts int
 
 	// WORKAROUND: codex models emit Read({pages:""}) on non-PDF reads;
 	// Claude Code's validator rejects with "Invalid pages parameter"
@@ -180,11 +189,13 @@ type codexIncompleteDetails struct {
 }
 
 type codexOutputItem struct {
-	Type   string `json:"type"` // "message" | "reasoning" | "function_call"
-	ID     string `json:"id"`
-	CallID string `json:"call_id,omitempty"`
-	Name   string `json:"name,omitempty"`
-	Status string `json:"status,omitempty"`
+	Type             string          `json:"type"` // "message" | "reasoning" | "function_call"
+	ID               string          `json:"id"`
+	CallID           string          `json:"call_id,omitempty"`
+	Name             string          `json:"name,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	Summary          json.RawMessage `json:"summary,omitempty"`           // reasoning, on output_item.done
+	EncryptedContent string          `json:"encrypted_content,omitempty"` // reasoning, on output_item.done
 }
 
 type codexUsage struct {
@@ -246,14 +257,18 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.closeBlock()
 
 	case "response.reasoning_summary_text.delta":
-		body, _ := json.Marshal(map[string]any{
-			"type":  "content_block_delta",
-			"index": t.currentBlockIdx,
-			"delta": map[string]any{"type": "thinking_delta", "thinking": ev.Delta},
-		})
-		return []emission{{name: "content_block_delta", data: string(body)}}
+		if t.opts.OmitThinkingText {
+			return nil
+		}
+		return []emission{t.thinkingDelta(ev.Delta)}
 
 	case "response.reasoning_summary_text.done":
+		// CarryReasoning keeps the block open until the item's
+		// output_item.done, which carries encrypted_content for the
+		// signature.
+		if t.opts.Dialect.CarryReasoning {
+			return nil
+		}
 		return t.closeBlock()
 
 	case "response.reasoning_text.delta":
@@ -269,12 +284,10 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		if t.currentType != "reasoning" {
 			return nil
 		}
-		body, _ := json.Marshal(map[string]any{
-			"type":  "content_block_delta",
-			"index": t.currentBlockIdx,
-			"delta": map[string]any{"type": "thinking_delta", "thinking": ev.Delta},
-		})
-		return []emission{{name: "content_block_delta", data: string(body)}}
+		if t.opts.OmitThinkingText {
+			return nil
+		}
+		return []emission{t.thinkingDelta(ev.Delta)}
 
 	case "response.function_call_arguments.delta":
 		if t.bufferReadArgs {
@@ -346,6 +359,20 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.finalize(mapIncompleteReason(reason), usage)
 
 	case "response.output_item.done":
+		// CarryReasoning: sign the reasoning block with the item's
+		// encrypted_content (only present here), then close it.
+		if t.opts.Dialect.CarryReasoning && t.currentType == "reasoning" &&
+			ev.Item != nil && ev.Item.Type == "reasoning" && ev.Item.EncryptedContent != "" {
+			body, _ := json.Marshal(map[string]any{
+				"type":  "content_block_delta",
+				"index": t.currentBlockIdx,
+				"delta": map[string]any{
+					"type":      "signature_delta",
+					"signature": encodeReasoningSignature(ev.Item.ID, ev.Item.Summary, ev.Item.EncryptedContent),
+				},
+			})
+			return append([]emission{{name: "content_block_delta", data: string(body)}}, t.closeBlock()...)
+		}
 		// Defensive close. When the inner _text.done / _arguments.done
 		// already closed the block this is a no-op (closeBlock returns
 		// nil when currentBlockIdx < 0). When the item has no inner
@@ -356,6 +383,15 @@ func (t *StreamTranslator) apply(ev codexEvent) []emission {
 		return t.closeBlock()
 
 	case "response.reasoning_summary_part.added":
+		// CarryReasoning: one thinking block per reasoning item; later
+		// parts are joined with a blank line instead of opening a block.
+		if t.opts.Dialect.CarryReasoning && t.currentType == "reasoning" {
+			t.reasoningParts++
+			if t.reasoningParts > 1 && !t.opts.OmitThinkingText {
+				return []emission{t.thinkingDelta("\n\n")}
+			}
+			return nil
+		}
 		// chatgpt.com emits a fresh summary_part.added for every
 		// "paragraph" of thought inside one reasoning output_item.
 		// The first part is implicitly opened by the parent
@@ -403,6 +439,7 @@ func (t *StreamTranslator) openBlock(ev codexEvent) []emission {
 	case "message":
 		content = map[string]any{"type": "text", "text": ""}
 	case "reasoning":
+		t.reasoningParts = 0
 		content = map[string]any{"type": "thinking", "thinking": ""}
 	case "function_call":
 		if ev.Item.Name == "Read" {
@@ -566,6 +603,16 @@ func mapFailedCode(code string) string {
 		return "invalid_request_error"
 	}
 	return "api_error"
+}
+
+// thinkingDelta builds a thinking_delta emission for the open block.
+func (t *StreamTranslator) thinkingDelta(text string) emission {
+	body, _ := json.Marshal(map[string]any{
+		"type":  "content_block_delta",
+		"index": t.currentBlockIdx,
+		"delta": map[string]any{"type": "thinking_delta", "thinking": text},
+	})
+	return emission{name: "content_block_delta", data: string(body)}
 }
 
 func writeSSE(w io.Writer, name, data string) error {

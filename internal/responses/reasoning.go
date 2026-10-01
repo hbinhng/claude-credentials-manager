@@ -56,3 +56,18 @@ func decodeReasoningSignature(sig string) (codexInput, bool) {
 func EncodeReasoningSignatureForTest(id string, summary json.RawMessage, encrypted string) string {
 	return encodeReasoningSignature(id, summary, encrypted)
 }
+
+// ThinkingOmitted reports whether an inbound Anthropic request asked for
+// thinking.display:"omitted" (Claude Code 2.1.286+ on Opus/Sonnet 5.5).
+// Terminals pass it to StreamOpts.OmitThinkingText.
+func ThinkingOmitted(body []byte) bool {
+	var p struct {
+		Thinking *struct {
+			Display string `json:"display"`
+		} `json:"thinking"`
+	}
+	if json.Unmarshal(body, &p) != nil || p.Thinking == nil {
+		return false
+	}
+	return p.Thinking.Display == "omitted"
+}
