@@ -170,6 +170,9 @@ func applyGrokIdentity(req *http.Request, id grokRequestIdentity) {
 		req.Header.Set("x-grok-conv-id", id.SessionID)
 		req.Header.Set("x-grok-session-id", id.SessionID)
 		req.Header.Set("x-grok-conv-group-id", uuid.NewSHA1(grokIDNamespace, []byte("conv-group:"+id.SessionID)).String())
+		// The turn index counts user turns within a session; without a
+		// session id there is nothing to count against.
+		req.Header.Set("x-grok-turn-idx", fmt.Sprintf("%d", id.TurnIdx))
 	}
 	if id.CredentialID != "" {
 		req.Header.Set("x-grok-agent-id", uuid.NewSHA1(grokIDNamespace, []byte("agent:"+id.CredentialID)).String())
@@ -177,7 +180,6 @@ func applyGrokIdentity(req *http.Request, id grokRequestIdentity) {
 
 	req.Header.Set("x-grok-req-id", uuid.NewString())
 	req.Header.Set("traceparent", newTraceparent())
-	req.Header.Set("x-grok-turn-idx", fmt.Sprintf("%d", id.TurnIdx))
 	if id.Model != "" {
 		req.Header.Set("x-grok-model-override", id.Model)
 	}
