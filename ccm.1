@@ -865,11 +865,14 @@ To use a grok (xAI) credential with
 first authenticate with
 .BR "ccm login grok"
 (OAuth subscription login for SuperGrok / X Premium+). Unlike the codex
-path, no external CLI or identity capture is required \(em xAI's
+path, no external CLI or identity capture is required. The proxy
+translates Claude Code's Anthropic
 .B /v1/messages
-endpoint is already Anthropic-compatible, so the proxy only rewrites
-the request's model field and swaps in the grok OAuth bearer before
-forwarding upstream.
+requests to the OpenAI Responses API and sends them to
+.BR cli\-chat\-proxy.grok.com/v1/responses ,
+presenting as the official grok\-shell client with the grok OAuth
+bearer, then reshapes the streamed response back to Anthropic shape
+(the same translator the codex path uses).
 .PP
 Grok credentials are single-active: there is no
 .B "ccm use"
@@ -881,7 +884,7 @@ pool. They work only through
 Requests whose model does not match a
 .B \-\-model\-alias
 rule default to
-.BR grok\-composer\-2.5\-fast .
+.BR grok\-4.7 .
 Use
 .B \-\-model\-alias
 to route to a different model, e.g.
