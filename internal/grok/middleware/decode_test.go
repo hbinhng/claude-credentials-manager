@@ -36,3 +36,21 @@ func TestDecodeStream_BadGzipErrorsOnRead(t *testing.T) {
 		t.Error("want error reading a corrupt gzip stream")
 	}
 }
+
+// A raw DEFLATE stream can start with bytes that pass the zlib CMF/FLG
+// check but have FDICT set: 0x78 0x20 is a non-final stored block (BTYPE=00)
+// with LEN 0x0020. zlib.NewReader would consume the 4-byte dictionary id
+// before failing with ErrDictionary, so the raw flate fallback would start
+// mid-stream; the zlib attempt must be skipped for FDICT headers.
+func TestDecodeStream_RawDeflateLookingLikeZlibWithFDICT(t *testing.T) {
+	payload := bytes.Repeat([]byte("ab"), 16) // 32 bytes == LEN
+	raw := []byte{0x78, 0x20, 0x00, 0xdf, 0xff}
+	raw = append(raw, payload...)
+	raw = append(raw, 0x01, 0x00, 0x00, 0xff, 0xff) // final empty stored block
+	h := http.Header{}
+	h.Set("Content-Encoding", "deflate")
+	got, err := io.ReadAll(decodeStream(h, bytes.NewReader(raw)))
+	if err != nil || !bytes.Equal(got, payload) {
+		t.Errorf("got %q err %v, want %q", got, err, payload)
+	}
+}
