@@ -1,6 +1,6 @@
 // Internal white-box tests for branches that require accessing package-level
 // variables (collectMaxBytes) or helpers not exported to external test code.
-package translator
+package responses
 
 import (
 	"bytes"

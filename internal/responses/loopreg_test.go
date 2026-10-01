@@ -1,4 +1,4 @@
-package translator
+package responses
 
 import (
 	"bytes"

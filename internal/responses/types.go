@@ -1,9 +1,9 @@
-// Package translator implements pure request and stream translation
-// between the Anthropic Messages API and the OpenAI Responses API used
-// by codex. No HTTP, no I/O — every function is testable in isolation.
-//
-// See spec §5 (request translation) and §6 (stream translation).
-package translator
+// Package responses implements pure request and stream translation
+// between the Anthropic Messages API and OpenAI's Responses API, as spoken
+// by codex (chatgpt.com) and grok (cli-chat-proxy.grok.com). Upstream
+// differences are captured by Dialect. No HTTP, no I/O — every function is
+// testable in isolation.
+package responses
 
 import (
 	"encoding/json"

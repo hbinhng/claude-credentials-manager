@@ -1,4 +1,4 @@
-package translator_test
+package responses_test
 
 import (
 	"bytes"
@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
+	"github.com/hbinhng/claude-credentials-manager/internal/responses"
 )
 
 func TestTranslateRequest_Fixtures(t *testing.T) {
@@ -37,12 +37,12 @@ func TestTranslateRequest_Fixtures(t *testing.T) {
 			if err != nil {
 				t.Fatalf("read opts: %v", err)
 			}
-			var opts translator.RequestOpts
+			var opts responses.RequestOpts
 			if err := json.Unmarshal(optsBytes, &opts); err != nil {
 				t.Fatalf("unmarshal opts: %v", err)
 			}
 
-			got, err := translator.TranslateRequest(in, opts)
+			got, err := responses.TranslateRequest(in, opts)
 			if err != nil {
 				t.Fatalf("TranslateRequest: %v", err)
 			}
@@ -58,21 +58,21 @@ func TestTranslateRequest_Fixtures(t *testing.T) {
 }
 
 func TestTranslateRequest_InvalidJSON(t *testing.T) {
-	_, err := translator.TranslateRequest([]byte("{not json"), translator.RequestOpts{TargetModel: "gpt-5"})
+	_, err := responses.TranslateRequest([]byte("{not json"), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err == nil {
 		t.Error("want error on malformed JSON")
 	}
-	if !errors.Is(err, translator.ErrInvalidJSON) {
+	if !errors.Is(err, responses.ErrInvalidJSON) {
 		t.Errorf("want ErrInvalidJSON, got %v", err)
 	}
 }
 
 func TestTranslateRequest_MissingModel(t *testing.T) {
-	_, err := translator.TranslateRequest([]byte(`{"messages":[]}`), translator.RequestOpts{})
+	_, err := responses.TranslateRequest([]byte(`{"messages":[]}`), responses.RequestOpts{})
 	if err == nil {
 		t.Error("want error when both inbound model and TargetModel are empty")
 	}
-	if !errors.Is(err, translator.ErrMissingModel) {
+	if !errors.Is(err, responses.ErrMissingModel) {
 		t.Errorf("want ErrMissingModel, got %v", err)
 	}
 }
@@ -82,9 +82,9 @@ func TestTranslateRequest_InboundModelFallback(t *testing.T) {
 	// error — the caller may rely on pass-through when no alias is set.
 	// The outbound model field is opts.TargetModel (empty string), which
 	// matches the zero value. This exercises the ErrMissingModel guard.
-	_, err := translator.TranslateRequest(
+	_, err := responses.TranslateRequest(
 		[]byte(`{"model":"claude-opus-4.7","messages":[]}`),
-		translator.RequestOpts{TargetModel: "codex-model"},
+		responses.RequestOpts{TargetModel: "codex-model"},
 	)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -92,9 +92,9 @@ func TestTranslateRequest_InboundModelFallback(t *testing.T) {
 }
 
 func TestTranslateRequest_UnsupportedRole(t *testing.T) {
-	_, err := translator.TranslateRequest(
+	_, err := responses.TranslateRequest(
 		[]byte(`{"model":"claude-opus-4.7","messages":[{"role":"system","content":[{"type":"text","text":"hi"}]}]}`),
-		translator.RequestOpts{TargetModel: "gpt-5"},
+		responses.RequestOpts{TargetModel: "gpt-5"},
 	)
 	if err == nil {
 		t.Error("want error for unsupported role")
@@ -106,7 +106,7 @@ func TestTranslateRequest_ThinkingBlocksDropped(t *testing.T) {
 	// An assistant message containing only thinking blocks produces no message
 	// input item; the empty guard should then synthesize "continue".
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"assistant","content":[{"type":"thinking","thinking":"..."},{"type":"redacted_thinking","thinking":"..."}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -127,7 +127,7 @@ func TestTranslateRequest_ThinkingBlocksDropped(t *testing.T) {
 func TestTranslateRequest_ToolResultArrayContent(t *testing.T) {
 	// tool_result with array content → each text block concatenated.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"part1"},{"type":"text","text":"part2"}]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestTranslateRequest_ToolResultArrayContent(t *testing.T) {
 func TestTranslateRequest_ToolResultNilContent(t *testing.T) {
 	// tool_result with null content should produce empty output string.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":null}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestTranslateRequest_ToolResultNilContent(t *testing.T) {
 func TestTranslateRequest_ToolResultObjectContent(t *testing.T) {
 	// tool_result with non-string, non-array content → JSON-encoded.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":{"key":"value"}}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestTranslateRequest_ToolResultObjectContent(t *testing.T) {
 func TestTranslateRequest_ImageNonBase64Skipped(t *testing.T) {
 	// image blocks with non-base64 source type are skipped.
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"image","source":{"type":"url","media_type":"image/png","data":""}},{"type":"text","text":"describe"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -176,7 +176,7 @@ func TestTranslateRequest_ImageNonBase64Skipped(t *testing.T) {
 func TestTranslateRequest_ThinkingDisabled(t *testing.T) {
 	// thinking.type=="disabled" → reasoning.effort: "none"
 	body := `{"model":"claude-opus-4.7","thinking":{"type":"disabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -194,7 +194,7 @@ func TestTranslateRequest_ThinkingDisabled(t *testing.T) {
 func TestTranslateRequest_SystemEmptyBlocks(t *testing.T) {
 	// system as array but all blocks have empty text → no developer message
 	body := `{"model":"claude-opus-4.7","system":[{"type":"text","text":""}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -214,7 +214,7 @@ func TestTranslateRequest_ToolUseWithPrecedingText(t *testing.T) {
 	// assistant message with text then tool_use: text becomes a message item,
 	// tool_use becomes a separate function_call item.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"calc","description":"calc","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"text","text":"Let me calculate that."},{"type":"tool_use","id":"toolu_01","name":"calc","input":{"x":1}}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -237,7 +237,7 @@ func TestTranslateRequest_ToolUseWithPrecedingText(t *testing.T) {
 func TestTranslateRequest_SystemAsNonArray(t *testing.T) {
 	// system as an unexpected JSON type (e.g. number) → no developer message
 	body := `{"model":"claude-opus-4.7","system":42,"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -249,7 +249,7 @@ func TestTranslateRequest_SystemAsNonArray(t *testing.T) {
 func TestTranslateRequest_SystemArrayNonObject(t *testing.T) {
 	// system as array with non-object items → skipped
 	body := `{"model":"claude-opus-4.7","system":["text string item"],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestTranslateRequest_SystemArrayNonObject(t *testing.T) {
 func TestTranslateRequest_ToolResultArrayNoText(t *testing.T) {
 	// tool_result with array content where items have no text → falls through to JSON marshal
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"image","data":"abc"}]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -273,7 +273,7 @@ func TestTranslateRequest_ToolResultArrayNoText(t *testing.T) {
 func TestTranslateRequest_ToolChoiceUnknownType(t *testing.T) {
 	// tool_choice with unknown type → nil → field omitted
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{}}],"tool_choice":{"type":"unknown_type"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -285,7 +285,7 @@ func TestTranslateRequest_ToolChoiceUnknownType(t *testing.T) {
 func TestTranslateRequest_ImageNilSource(t *testing.T) {
 	// image block with nil source → skipped
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"image"},{"type":"text","text":"describe"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestTranslateRequest_ToolResultArrayNonObjectItems(t *testing.T) {
 	// tool_result with array content where items are not maps (e.g. strings)
 	// → inner ok=false path → falls through to JSON marshal of the array.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":["string item one","string item two"]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -311,7 +311,7 @@ func TestTranslateRequest_ToolResultPrecedingContent(t *testing.T) {
 	// user message with text then tool_result: text becomes message item first,
 	// then tool_result becomes function_call_output.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"toolu_01","name":"f","input":{}}]},{"role":"user","content":[{"type":"text","text":"Here's the result:"},{"type":"tool_result","tool_use_id":"toolu_01","content":"done"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -341,7 +341,7 @@ func jsonEqual(a, b any) bool {
 
 func TestTranslateRequest_HoistSystemToInstructions(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","system":"be helpful","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -363,7 +363,7 @@ func TestTranslateRequest_HoistSystemToInstructions(t *testing.T) {
 
 func TestTranslateRequest_FallbackInstructionsWhenNoSystem(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestTranslateRequest_FallbackInstructionsWhenSystemIsEmpty(t *testing.T) {
 		`{"model":"claude-opus-4.7","system":[{"type":"text","text":""}],"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`,
 	}
 	for i, body := range cases {
-		got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+		got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 		if err != nil {
 			t.Fatalf("case %d: unexpected error: %v", i, err)
 		}
@@ -400,7 +400,7 @@ func TestTranslateRequest_FallbackInstructionsWhenSystemIsEmpty(t *testing.T) {
 func TestTranslateRequest_PromptCacheKeyFromSessionID(t *testing.T) {
 	const sessionID = "019e0a01-5569-7480-8945-f61f37958342"
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5", SessionID: sessionID})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5", SessionID: sessionID})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -415,7 +415,7 @@ func TestTranslateRequest_PromptCacheKeyFromSessionID(t *testing.T) {
 
 func TestTranslateRequest_NoPromptCacheKeyWhenSessionIDEmpty(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -429,7 +429,7 @@ func TestTranslateRequest_NoPromptCacheKeyWhenSessionIDEmpty(t *testing.T) {
 // content blocks. The translator must accept both shapes.
 func TestTranslateRequest_MessageContentAsString(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":"Hello world"}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -444,7 +444,7 @@ func TestTranslateRequest_MessageContentAsString(t *testing.T) {
 func TestTranslateRequest_MessageContentAsString_AssistantRole(t *testing.T) {
 	// Assistant string content should be normalized into an output_text block.
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":"hi"},{"role":"assistant","content":"hello back"}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -460,7 +460,7 @@ func TestTranslateRequest_MessageContentAsEmptyString(t *testing.T) {
 	// Empty string content should still parse and synthesize a placeholder
 	// (text block is empty but the message itself is preserved).
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":""}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -472,7 +472,7 @@ func TestTranslateRequest_MessageContentAsEmptyString(t *testing.T) {
 func TestTranslateRequest_MessageContentNull(t *testing.T) {
 	// Explicit null content → nil Content slice; empty input synthesized.
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":null}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestTranslateRequest_MessageContentNull(t *testing.T) {
 func TestTranslateRequest_MessageContentMissing(t *testing.T) {
 	// content key missing entirely → nil Content slice; empty input synthesized.
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user"}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -496,7 +496,7 @@ func TestTranslateRequest_MessageContentMissing(t *testing.T) {
 func TestTranslateRequest_MessageContentInvalidType(t *testing.T) {
 	// Non-string, non-array content (number/object) is rejected.
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":42}]}`
-	_, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	_, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err == nil {
 		t.Fatalf("expected error for numeric content, got none")
 	}
@@ -511,7 +511,7 @@ func TestTranslateRequest_MessageContentInvalidType(t *testing.T) {
 // stringified output so codex sees them, not silently drop them.
 func TestTranslateRequest_ToolResultImageBase64(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"iVBORw0KGgo="}}]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -522,7 +522,7 @@ func TestTranslateRequest_ToolResultImageBase64(t *testing.T) {
 
 func TestTranslateRequest_ToolResultMixedTextImage(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"file1.txt"},{"type":"image","source":{"type":"base64","media_type":"image/jpeg","data":"BASE64DATA"}},{"type":"text","text":"file2.txt"}]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -540,7 +540,7 @@ func TestTranslateRequest_ToolResultMixedTextImage(t *testing.T) {
 func TestTranslateRequest_ToolResultImageEmptyData(t *testing.T) {
 	// Image block with empty data field is dropped (no data URI emitted).
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"base64","media_type":"image/png","data":""}}]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -556,7 +556,7 @@ func TestTranslateRequest_ToolResultImageNonBase64Skipped(t *testing.T) {
 	// Image with non-base64 source (e.g., url type) is dropped, matching
 	// the message-content handling in appendMessageInput.
 	body := `{"model":"claude-opus-4.7","tools":[{"name":"f","description":"fn","input_schema":{"type":"object","properties":{}}}],"messages":[{"role":"assistant","content":[{"type":"tool_use","id":"fc_xyz","name":"f","input":{}}]},{"role":"user","content":[{"type":"tool_result","tool_use_id":"fc_xyz","content":[{"type":"text","text":"hello"},{"type":"image","source":{"type":"url","url":"https://example.com/x.png"}}]}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -576,7 +576,7 @@ func TestTranslateRequest_ToolChoiceForUnknownToolReturnsNil(t *testing.T) {
         "tools":[{"name":"Bash","description":"x","input_schema":{"type":"object"}}],
         "tool_choice":{"type":"tool","name":"NoSuchTool"}
     }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	out, err := responses.TranslateRequest(body, responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
@@ -596,7 +596,7 @@ func TestTranslateRequest_TruncatesOverLongToolResult(t *testing.T) {
         ],
         "tools":[{"name":"Glob","description":"g","input_schema":{"type":"object"}}]
     }`)
-	out, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+	out, err := responses.TranslateRequest(body, responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
@@ -645,7 +645,7 @@ func TestResolveReasoningEffort_LabelPath(t *testing.T) {
 	}
 	for _, c := range cases {
 		body := []byte(`{"model":"claude-opus-4.7","output_config":{"effort":"` + c.label + `"},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
-		got, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+		got, err := responses.TranslateRequest(body, responses.RequestOpts{TargetModel: "gpt-5"})
 		if err != nil {
 			t.Fatalf("label=%q: %v", c.label, err)
 		}
@@ -663,7 +663,7 @@ func TestResolveReasoningEffort_LabelPath(t *testing.T) {
 
 func TestResolveReasoningEffort_UnknownLabelFallsThroughToBudget(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","output_config":{"effort":"ultra"},"thinking":{"type":"enabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -680,7 +680,7 @@ func TestResolveReasoningEffort_UnknownLabelFallsThroughToBudget(t *testing.T) {
 
 func TestResolveReasoningEffort_UnknownLabelNoBudgetDefaultsToNone(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","output_config":{"effort":"ultra"},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -714,7 +714,7 @@ func TestResolveReasoningEffort_BudgetBuckets(t *testing.T) {
 	}
 	for _, c := range cases {
 		body := []byte(`{"model":"claude-opus-4.7","thinking":{"type":"enabled","budget_tokens":` + fmt.Sprintf("%d", c.budget) + `},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`)
-		got, err := translator.TranslateRequest(body, translator.RequestOpts{TargetModel: "gpt-5"})
+		got, err := responses.TranslateRequest(body, responses.RequestOpts{TargetModel: "gpt-5"})
 		if err != nil {
 			t.Fatalf("budget=%d: %v", c.budget, err)
 		}
@@ -732,7 +732,7 @@ func TestResolveReasoningEffort_BudgetBuckets(t *testing.T) {
 
 func TestResolveReasoningEffort_NoSignalDefaultsToNone(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -751,7 +751,7 @@ func TestTranslateRequest_ReasoningSummaryAndIncludeWhenEffortOn(t *testing.T) {
 	// When effort is non-none, summary="auto" and include=["reasoning.encrypted_content"]
 	// must be emitted to match codex CLI's request shape.
 	body := `{"model":"claude-opus-4.7","output_config":{"effort":"high"},"messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
@@ -778,7 +778,7 @@ func TestTranslateRequest_ReasoningSummaryAndIncludeWhenEffortOn(t *testing.T) {
 func TestTranslateRequest_NoSummaryOrIncludeWhenEffortNone(t *testing.T) {
 	// When effort is "none", summary and include must be omitted.
 	body := `{"model":"claude-opus-4.7","messages":[{"role":"user","content":[{"type":"text","text":"hi"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("TranslateRequest: %v", err)
 	}
@@ -803,7 +803,7 @@ func TestTranslateRequest_NoSummaryOrIncludeWhenEffortNone(t *testing.T) {
 
 func TestResolveReasoningEffort_ThinkingDisabledDefaultsToNone(t *testing.T) {
 	body := `{"model":"claude-opus-4.7","thinking":{"type":"disabled","budget_tokens":5000},"messages":[{"role":"user","content":[{"type":"text","text":"x"}]}]}`
-	got, err := translator.TranslateRequest([]byte(body), translator.RequestOpts{TargetModel: "gpt-5"})
+	got, err := responses.TranslateRequest([]byte(body), responses.RequestOpts{TargetModel: "gpt-5"})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

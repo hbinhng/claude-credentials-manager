@@ -3,7 +3,7 @@
 //  1. AliasMatched? translate request body : pass through
 //  2. Apply identity bundle (synthesized headers + cred bearer)
 //  3. POST to upstream /backend-api/codex/responses via bogdanfinn
-//  4. SSE reshape on the response (translator.StreamTranslator)
+//  4. SSE reshape on the response (responses.StreamTranslator)
 //  5. Die-fast detection on model_not_found errors
 //  6. 401 → refresh + retry once
 package middleware
@@ -21,7 +21,7 @@ import (
 
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/identity"
 	"github.com/hbinhng/claude-credentials-manager/internal/codex/transport"
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
+	"github.com/hbinhng/claude-credentials-manager/internal/responses"
 	sharemw "github.com/hbinhng/claude-credentials-manager/internal/share/middleware"
 	"github.com/hbinhng/claude-credentials-manager/internal/store"
 )
@@ -95,11 +95,11 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// bridging follow-up: opts carry TargetModel + SessionID.
 		// SessionID is mirrored into prompt_cache_key inside the
 		// translator so cache slots line up with upstream Codex.
-		reqOpts := translator.RequestOpts{
+		reqOpts := responses.RequestOpts{
 			TargetModel: effectiveModel,
 			SessionID:   sessionID,
 		}
-		outBody, err = translator.TranslateRequest(body, reqOpts)
+		outBody, err = responses.TranslateRequest(body, reqOpts)
 		if err != nil {
 			writeAnthropicError(w, http.StatusBadRequest, "invalid_request_error", err.Error())
 			return
@@ -154,7 +154,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{
+	st := responses.NewStreamTranslator(responses.StreamOpts{
 		MessageID: resp.Header.Get("X-Response-Id"),
 		Model:     originalModel, // surface inbound model name to the client
 	})
@@ -205,7 +205,7 @@ func (t *Terminal) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// with no actionable delta) into an Anthropic-shape 400 that
 	// Claude Code's reactive-compact path recognizes. See
 	// docs/superpowers/specs/2026-05-11-codex-overflow-translation-design.md.
-	decision, replay, remaining, err := translator.ClassifyStream(r.Context(), resp.Body)
+	decision, replay, remaining, err := responses.ClassifyStream(r.Context(), resp.Body)
 	if err != nil {
 		writeAnthropicError(w, http.StatusBadGateway, "api_error", "upstream: "+err.Error())
 		return

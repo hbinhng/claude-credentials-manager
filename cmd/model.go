@@ -155,7 +155,7 @@ func runModelDiscovery(cmd *cobra.Command, _ []string) error {
 // writeSyntheticAnthropicSSE emits a minimal complete Anthropic SSE
 // response that satisfies Claude Code's stream parser so the child
 // process exits cleanly. Mirrors the shape produced by
-// internal/codex/translator/stream.go (message_start → text content
+// internal/responses/stream.go (message_start → text content
 // block → message_delta → message_stop).
 func writeSyntheticAnthropicSSE(w http.ResponseWriter, model string) {
 	w.Header().Set("Content-Type", "text/event-stream")

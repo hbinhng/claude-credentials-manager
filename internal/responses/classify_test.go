@@ -1,4 +1,4 @@
-package translator_test
+package responses_test
 
 import (
 	"bytes"
@@ -10,13 +10,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
+	"github.com/hbinhng/claude-credentials-manager/internal/responses"
 )
 
 // helper: feed SSE lines through ClassifyStream and assert replay+remaining round-trip.
-func runClassify(t *testing.T, input string) (translator.StreamDecision, []byte, io.Reader) {
+func runClassify(t *testing.T, input string) (responses.StreamDecision, []byte, io.Reader) {
 	t.Helper()
-	dec, replay, rem, err := translator.ClassifyStream(context.Background(), strings.NewReader(input))
+	dec, replay, rem, err := responses.ClassifyStream(context.Background(), strings.NewReader(input))
 	if err != nil {
 		t.Fatalf("ClassifyStream: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestClassifyStream_Fallthrough_EOF(t *testing.T) {
 		`data: {"type":"response.in_progress","response":{"id":"r1"}}`,
 		``,
 	}, "\n")
-	dec, replay, rem, err := translator.ClassifyStream(context.Background(), strings.NewReader(input))
+	dec, replay, rem, err := responses.ClassifyStream(context.Background(), strings.NewReader(input))
 	if err != nil {
 		t.Fatalf("err = %v, want nil on EOF", err)
 	}
@@ -277,8 +277,8 @@ func TestClassifyStream_Fallthrough_Timeout(t *testing.T) {
 	//   t<1ms  : classifier processes (non-decisive), loops back, blocks in ReadString
 	//   t=80ms : line 2 written, ReadString unblocks, classifier processes line 2, loops
 	//   t=81ms : deadline check (50ms deadline crossed at 50ms) → returns via timeout branch
-	t.Cleanup(func() { translator.SetClassifyFirstByteTimeoutForTest(30 * time.Second) })
-	translator.SetClassifyFirstByteTimeoutForTest(50 * time.Millisecond)
+	t.Cleanup(func() { responses.SetClassifyFirstByteTimeoutForTest(30 * time.Second) })
+	responses.SetClassifyFirstByteTimeoutForTest(50 * time.Millisecond)
 
 	pr, pw := io.Pipe()
 	go func() {
@@ -294,11 +294,11 @@ func TestClassifyStream_Fallthrough_Timeout(t *testing.T) {
 
 	done := make(chan struct{})
 	var (
-		dec    translator.StreamDecision
+		dec    responses.StreamDecision
 		gotErr error
 	)
 	go func() {
-		dec, _, _, gotErr = translator.ClassifyStream(context.Background(), pr)
+		dec, _, _, gotErr = responses.ClassifyStream(context.Background(), pr)
 		close(done)
 	}()
 	select {
@@ -325,7 +325,7 @@ func TestClassifyStream_ReadError(t *testing.T) {
 		_ = pw.CloseWithError(errors.New("upstream broken pipe"))
 	}()
 
-	dec, _, _, err := translator.ClassifyStream(context.Background(), pr)
+	dec, _, _, err := responses.ClassifyStream(context.Background(), pr)
 	if err == nil {
 		t.Fatalf("err = nil, want non-EOF read error to propagate")
 	}
@@ -344,7 +344,7 @@ func TestClassifyStream_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // cancel before starting so the first ctx check fires
 
-	dec, _, _, err := translator.ClassifyStream(ctx, pr)
+	dec, _, _, err := responses.ClassifyStream(ctx, pr)
 	if err == nil {
 		t.Fatalf("err = nil, want context.Canceled")
 	}
@@ -459,7 +459,7 @@ func TestClassifyStream_Fixture_OverflowEmptyReasoning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	dec, _, _, err := translator.ClassifyStream(context.Background(), bytes.NewReader(data))
+	dec, _, _, err := responses.ClassifyStream(context.Background(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("ClassifyStream: %v", err)
 	}
@@ -484,7 +484,7 @@ func TestClassifyStream_Fixture_OverflowContextLength(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	dec, _, _, err := translator.ClassifyStream(context.Background(), bytes.NewReader(data))
+	dec, _, _, err := responses.ClassifyStream(context.Background(), bytes.NewReader(data))
 	if err != nil {
 		t.Fatalf("ClassifyStream: %v", err)
 	}
