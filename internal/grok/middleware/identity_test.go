@@ -51,6 +51,72 @@ func TestReadGrokVersion_FallbackToStableVersion(t *testing.T) {
 	}
 }
 
+func TestReadGrokVersion_StaleLocalInstallClampedToFloor(t *testing.T) {
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".grok", "version.json"), []byte(`{"version":"0.2.101"}`), 0o644)
+	t.Setenv("HOME", home)
+	if got := readGrokVersion(); got != defaultGrokClientVersion {
+		t.Fatalf("stale local 0.2.101 → want floor %q, got %q", defaultGrokClientVersion, got)
+	}
+}
+
+func TestReadGrokVersion_NewerLocalInstallWins(t *testing.T) {
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".grok", "version.json"), []byte(`{"version":"1.2.0"}`), 0o644)
+	t.Setenv("HOME", home)
+	if got := readGrokVersion(); got != "1.2.0" {
+		t.Fatalf("newer local install → want 1.2.0, got %q", got)
+	}
+}
+
+func TestReadGrokVersion_JustBelowFloorClamped(t *testing.T) {
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".grok", "version.json"), []byte(`{"version":"1.0.45"}`), 0o644)
+	t.Setenv("HOME", home)
+	if got := readGrokVersion(); got != "1.0.46" {
+		t.Fatalf("local 1.0.45 → want floor 1.0.46, got %q", got)
+	}
+}
+
+func TestReadGrokVersion_UnparseableLocalFallsBackToFloor(t *testing.T) {
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".grok", "version.json"), []byte(`{"version":"nightly"}`), 0o644)
+	t.Setenv("HOME", home)
+	if got := readGrokVersion(); got != defaultGrokClientVersion {
+		t.Fatalf("unparseable local → want floor %q, got %q", defaultGrokClientVersion, got)
+	}
+}
+
+func TestVersionAtLeast(t *testing.T) {
+	cases := []struct {
+		v, floor string
+		want     bool
+	}{
+		{"1.0.46", "1.0.46", true},
+		{"1.0.47", "1.0.46", true},
+		{"1.1.0", "1.0.46", true},
+		{"2.0", "1.0.46", true},
+		{"1.0.46-beta.1", "1.0.46", true},
+		{"1.0.46+abc", "1.0.46", true},
+		{"1.0.45", "1.0.46", false},
+		{"1.0.13", "1.0.46", false},
+		{"0.2.101", "1.0.46", false},
+		{"1.0", "1.0.46", false},
+		{"nightly", "1.0.46", false},
+		{"1.x.3", "1.0.46", false},
+		{"1.-1.3", "1.0.46", false},
+	}
+	for _, c := range cases {
+		if got := versionAtLeast(c.v, c.floor); got != c.want {
+			t.Errorf("versionAtLeast(%q, %q) = %v, want %v", c.v, c.floor, got, c.want)
+		}
+	}
+}
+
 func TestApplyGrokIdentity_ConstantHeaders(t *testing.T) {
 	req, _ := http.NewRequest("POST", "https://cli-chat-proxy.grok.com/v1/messages", nil)
 	applyGrokIdentity(req, "grok-4.5", "sess-1", 1, true)
@@ -137,5 +203,23 @@ func TestApplyGrokIdentity_PerRequestFresh(t *testing.T) {
 	}
 	if req1.Header.Get("x-grok-req-id") == "" || req1.Header.Get("x-grok-req-id") == req2.Header.Get("x-grok-req-id") {
 		t.Error("x-grok-req-id must be fresh per request")
+	}
+}
+
+func TestReadGrokVersion_EmptyVersionFieldsFallBackToFloor(t *testing.T) {
+	home := t.TempDir()
+	_ = os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
+	_ = os.WriteFile(filepath.Join(home, ".grok", "version.json"), []byte(`{}`), 0o644)
+	t.Setenv("HOME", home)
+	if got := readGrokVersion(); got != defaultGrokClientVersion {
+		t.Fatalf("empty version.json → want floor %q, got %q", defaultGrokClientVersion, got)
+	}
+}
+
+func TestReadGrokVersion_NoHomeFallsBackToFloor(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	if got := readGrokVersion(); got != defaultGrokClientVersion {
+		t.Fatalf("no home → want floor %q, got %q", defaultGrokClientVersion, got)
 	}
 }

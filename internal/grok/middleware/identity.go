@@ -9,15 +9,21 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
 )
 
 // defaultGrokClientVersion is the grok-shell version ccm claims when the real
-// version can't be read from $HOME/.grok/version.json. Captured from grok-shell
-// 0.2.101 (2026-07-14); must stay >= the endpoint's min_client_version (0.1.202).
-const defaultGrokClientVersion = "0.2.101"
+// version can't be read from $HOME/.grok/version.json, and also the floor: a
+// local install older than this is ignored. cli-chat-proxy rejects clients
+// below 1.0.13 with HTTP 426 ("Your Grok CLI version (...) is outdated",
+// 2026-10-01); 1.0.46 is the version whose wire contract ccm mirrors
+// (captured 2026-10-01), so a stale grok-shell install must not drag the
+// claimed version below it.
+const defaultGrokClientVersion = "1.0.46"
 
 // grokAgentNamespace is a fixed UUID namespace for deriving a stable per-session
 // x-grok-agent-id via UUIDv5. Arbitrary but constant.
@@ -50,22 +56,32 @@ func ApplyGrokConstantIdentity(req *http.Request) {
 
 // readGrokVersion reads $HOME/.grok/version.json (grok-shell's own dir, never
 // redirected by CCM_HOME) and returns its version, falling back to
-// defaultGrokClientVersion on any error.
+// defaultGrokClientVersion on any error or when the local version is older
+// than (or not comparable to) that floor.
 func readGrokVersion() string {
+	if v := readLocalGrokVersion(); versionAtLeast(v, defaultGrokClientVersion) {
+		return v
+	}
+	return defaultGrokClientVersion
+}
+
+// readLocalGrokVersion returns the version recorded by the local grok-shell
+// install, or "" when it can't be determined.
+func readLocalGrokVersion() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return defaultGrokClientVersion
+		return ""
 	}
 	b, err := os.ReadFile(filepath.Join(home, ".grok", "version.json"))
 	if err != nil {
-		return defaultGrokClientVersion
+		return ""
 	}
 	var v struct {
 		Version       string `json:"version"`
 		StableVersion string `json:"stable_version"`
 	}
 	if err := json.Unmarshal(b, &v); err != nil {
-		return defaultGrokClientVersion
+		return ""
 	}
 	if v.Version != "" {
 		return v.Version
@@ -73,7 +89,50 @@ func readGrokVersion() string {
 	if v.StableVersion != "" {
 		return v.StableVersion
 	}
-	return defaultGrokClientVersion
+	return ""
+}
+
+// versionAtLeast reports whether dotted version v is >= floor, comparing
+// numeric components left to right (missing components count as 0). Any
+// pre-release/build suffix ("-beta.1", "+abc") is ignored. An unparseable v
+// is never at least the floor.
+func versionAtLeast(v, floor string) bool {
+	a, ok := parseVersion(v)
+	if !ok {
+		return false
+	}
+	b, _ := parseVersion(floor) // floor is a trusted constant
+	for i := 0; i < len(a) || i < len(b); i++ {
+		var x, y int
+		if i < len(a) {
+			x = a[i]
+		}
+		if i < len(b) {
+			y = b[i]
+		}
+		if x != y {
+			return x > y
+		}
+	}
+	return true
+}
+
+// parseVersion splits a dotted numeric version into its components,
+// ignoring any "-pre"/"+build" suffix.
+func parseVersion(v string) ([]int, bool) {
+	if i := strings.IndexAny(v, "-+"); i >= 0 {
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	out := make([]int, len(parts))
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return nil, false
+		}
+		out[i] = n
+	}
+	return out, true
 }
 
 // applyGrokIdentity sets the header set grok-shell sends to cli-chat-proxy so
