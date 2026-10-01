@@ -6,7 +6,7 @@
 // *.anthropic.txt files, run the tests once (they will fail and print the
 // actual output), then copy each "GOT:" block into the corresponding
 // *.anthropic.txt file and re-run. Verify the output is semantically correct.
-package translator_test
+package responses_test
 
 import (
 	"bytes"
@@ -18,7 +18,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hbinhng/claude-credentials-manager/internal/codex/translator"
+	"github.com/hbinhng/claude-credentials-manager/internal/responses"
 )
 
 // TestStreamTranslator_Pipe_Fixtures drives every *.codex.txt file in
@@ -45,7 +45,7 @@ func TestStreamTranslator_Pipe_Fixtures(t *testing.T) {
 				t.Fatalf("read anthropic fixture: %v", err)
 			}
 
-			st := translator.NewStreamTranslator(translator.StreamOpts{
+			st := responses.NewStreamTranslator(responses.StreamOpts{
 				MessageID: "msg_test",
 				Model:     "claude-opus-4.7",
 			})
@@ -67,7 +67,7 @@ func TestStreamTranslator_ContextCancel(t *testing.T) {
 	defer pw.Close()
 	defer pr.Close()
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "x", Model: "y"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "x", Model: "y"})
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Feed one line so the scanner has something to scan; we need the loop
@@ -88,7 +88,7 @@ func TestStreamTranslator_ContextCancel(t *testing.T) {
 		// that's fine as long as we don't panic. The cancel check is
 		// best-effort at loop-top.
 		// Re-run with a guaranteed-blocking reader to exercise the path.
-		st2 := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "x", Model: "y"})
+		st2 := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "x", Model: "y"})
 		ctx2, cancel2 := context.WithCancel(context.Background())
 		cancel2() // cancel before starting
 		pr2, pw2 := io.Pipe()
@@ -107,7 +107,7 @@ func TestStreamTranslator_FinalUsage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
 	}
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "claude-opus-4.7"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "claude-opus-4.7"})
 	if err := st.Pipe(context.Background(), bytes.NewReader(in), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Pipe: %v", err)
 	}
@@ -128,13 +128,13 @@ func TestStreamTranslator_Collect(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 
-	st1 := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "claude-opus-4.7"})
+	st1 := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "claude-opus-4.7"})
 	var buf bytes.Buffer
 	if err := st1.Pipe(context.Background(), bytes.NewReader(in), &buf); err != nil {
 		t.Fatalf("Pipe: %v", err)
 	}
 
-	st2 := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "claude-opus-4.7"})
+	st2 := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "claude-opus-4.7"})
 	got, err := st2.Collect(context.Background(), bytes.NewReader(in))
 	if err != nil {
 		t.Fatalf("Collect: %v", err)
@@ -147,7 +147,7 @@ func TestStreamTranslator_Collect(t *testing.T) {
 // TestStreamTranslator_FinalUsage_NoCompleted verifies that FinalUsage
 // returns zero values when no response.completed event was seen.
 func TestStreamTranslator_FinalUsage_NoCompleted(t *testing.T) {
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "x", Model: "y"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "x", Model: "y"})
 	// Run an empty stream — no completed event.
 	if err := st.Pipe(context.Background(), strings.NewReader("data: [DONE]\n\n"), &bytes.Buffer{}); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -187,7 +187,7 @@ func TestStreamTranslator_DropIgnoredEvents(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -222,7 +222,7 @@ func TestStreamTranslator_MalformedLineSkipped(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -246,7 +246,7 @@ func TestStreamTranslator_DuplicateCreated(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -278,7 +278,7 @@ func TestStreamTranslator_UnknownItemType(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -303,7 +303,7 @@ func TestStreamTranslator_NilItemInOutputItemAdded(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -332,7 +332,7 @@ func TestStreamTranslator_MaxTokensStopReason(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -358,7 +358,7 @@ func TestStreamTranslator_CloseBlockNoop(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -381,7 +381,7 @@ func TestStreamTranslator_WriteSSEFlush(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	fw := &flushWriter{buf: &bytes.Buffer{}}
 	if err := st.Pipe(context.Background(), strings.NewReader(input), fw); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -410,7 +410,7 @@ func TestStreamTranslator_WriteError(t *testing.T) {
 		``,
 	}, "\n")
 
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_test", Model: "m"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_test", Model: "m"})
 	if err := st.Pipe(context.Background(), strings.NewReader(input), &errorWriter{}); err == nil {
 		t.Error("expected write error to propagate, got nil")
 	}
@@ -426,7 +426,7 @@ func (e *errorWriter) Write(_ []byte) (int, error) {
 // TestStreamTranslator_Collect_ScanError verifies that Collect propagates a
 // scanner read error returned by the source reader.
 func TestStreamTranslator_Collect_ScanError(t *testing.T) {
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "x", Model: "y"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "x", Model: "y"})
 	_, err := st.Collect(context.Background(), &errorReader{})
 	if err == nil {
 		t.Error("expected read error from Collect, got nil")
@@ -452,7 +452,7 @@ func TestStream_PassesThroughUnknownToolName(t *testing.T) {
 		`data: {"type":"response.completed","status":"completed"}`,
 		``,
 	}, "\n\n")
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m2", Model: "claude-opus-4-7"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "m2", Model: "claude-opus-4-7"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -477,7 +477,7 @@ func TestStream_MessageStartUsesUpstreamResponseID(t *testing.T) {
 		`data: {"type":"response.completed","status":"completed"}`,
 		``,
 	}, "\n\n")
-	st := translator.NewStreamTranslator(translator.StreamOpts{Model: "claude-opus-4-7"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{Model: "claude-opus-4-7"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -497,7 +497,7 @@ func TestStream_MessageStartFallsBackToOptsMessageID(t *testing.T) {
 		`data: {"type":"response.completed","status":"completed"}`,
 		``,
 	}, "\n\n")
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fallback", Model: "claude-opus-4-7"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_fallback", Model: "claude-opus-4-7"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -518,7 +518,7 @@ func TestStream_TwoConsecutiveResponsesHaveDistinctMessageIDs(t *testing.T) {
 			`data: {"type":"response.completed","status":"completed"}`,
 			``,
 		}, "\n\n")
-		st := translator.NewStreamTranslator(translator.StreamOpts{Model: "claude-opus-4-7"})
+		st := responses.NewStreamTranslator(responses.StreamOpts{Model: "claude-opus-4-7"})
 		var out bytes.Buffer
 		_ = st.Pipe(context.Background(), strings.NewReader(in), &out)
 		return out.String()
@@ -550,7 +550,7 @@ func TestStream_MessageDeltaIncludesUsageFromResponseCompleted(t *testing.T) {
 		``,
 	}, "\n")
 
-	tr := translator.NewStreamTranslator(translator.StreamOpts{Model: "test-model", MessageID: "msg_fallback"})
+	tr := responses.NewStreamTranslator(responses.StreamOpts{Model: "test-model", MessageID: "msg_fallback"})
 	var out bytes.Buffer
 	if err := tr.Pipe(context.Background(), strings.NewReader(src), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -607,7 +607,7 @@ func TestStream_MessageDeltaUsageMissingFallsBackToZero(t *testing.T) {
 		``,
 	}, "\n")
 
-	tr := translator.NewStreamTranslator(translator.StreamOpts{Model: "test-model", MessageID: "msg_fallback"})
+	tr := responses.NewStreamTranslator(responses.StreamOpts{Model: "test-model", MessageID: "msg_fallback"})
 	var out bytes.Buffer
 	if err := tr.Pipe(context.Background(), strings.NewReader(src), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -651,7 +651,7 @@ func TestStream_DropsEmptyReadPages(t *testing.T) {
 		`data: {"type":"response.completed","status":"completed"}`,
 		``,
 	}, "\n\n")
-	st := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "m1", Model: "claude-opus-4.7"})
+	st := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "m1", Model: "claude-opus-4.7"})
 	var out bytes.Buffer
 	if err := st.Pipe(context.Background(), strings.NewReader(in), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -708,7 +708,7 @@ func TestStreamTranslator_EOFSafetyNet_OpenBlockAtEOF(t *testing.T) {
 		``,
 	}, "\n")
 
-	tr := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fb", Model: "m"})
+	tr := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_fb", Model: "m"})
 	var out bytes.Buffer
 	if err := tr.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -731,7 +731,7 @@ func TestStreamTranslator_EOFSafetyNet_OpenBlockAtEOF(t *testing.T) {
 // safety net is a no-op when the stream is empty (no message_start
 // was ever emitted).
 func TestStreamTranslator_EOFSafetyNet_EmptyInput(t *testing.T) {
-	tr := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fb", Model: "m"})
+	tr := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_fb", Model: "m"})
 	var out bytes.Buffer
 	if err := tr.Pipe(context.Background(), strings.NewReader(""), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)
@@ -753,7 +753,7 @@ func TestStreamTranslator_EOFSafetyNet_CreatedThenEOF(t *testing.T) {
 		``,
 	}, "\n")
 
-	tr := translator.NewStreamTranslator(translator.StreamOpts{MessageID: "msg_fb", Model: "m"})
+	tr := responses.NewStreamTranslator(responses.StreamOpts{MessageID: "msg_fb", Model: "m"})
 	var out bytes.Buffer
 	if err := tr.Pipe(context.Background(), strings.NewReader(input), &out); err != nil {
 		t.Fatalf("Pipe: %v", err)

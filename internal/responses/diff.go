@@ -1,4 +1,4 @@
-package translator
+package responses
 
 // NOTE: This file's functions are currently DORMANT — Phase 6 of the
 // codex loop comprehensive-fix originally planned to use them to
